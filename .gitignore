@@ -1,0 +1,28 @@
+# Rust
+target/
+src-tauri/target/
+
+# Node.js
+node_modules/
+dist/
+
+# Tauri
+src-tauri/gen/
+
+# 環境変数
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ログ
+*.log
+npm-debug.log*
