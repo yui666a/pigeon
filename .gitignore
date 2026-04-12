@@ -26,3 +26,6 @@ Thumbs.db
 # ログ
 *.log
 npm-debug.log*
+
+# Docker
+docker-compose.override.yaml
