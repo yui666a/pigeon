@@ -11,12 +11,15 @@ PigeonはAIによってメールを案件ごとに自動グルーピングする
 
 - **フレームワーク**: Tauri 2
 - **バックエンド**: Rust
-- **フロントエンド**: React + TypeScript
+- **フロントエンド**: React 19 + TypeScript
+- **パッケージマネージャ**: pnpm
+- **ツールチェーン管理**: mise (`mise.toml` でバージョン固定)
 - **DB**: SQLite + FTS5
 - **LLM**: Ollama（デフォルト）/ Claude API（オプション）
-- **状態管理**: Zustand
-- **スタイル**: Tailwind CSS
-- **D&D**: React DnD
+- **状態管理**: Zustand 5
+- **スタイル**: Tailwind CSS v4
+- **テスト**: Vitest + React Testing Library (フロント) / cargo test (Rust)
+- **D&D**: React DnD (Phase 3 で追加予定)
 
 ## 開発ルール
 

@@ -1,5 +1,15 @@
 # 開発ガイド
 
+## 前提条件
+
+```bash
+# mise でツールチェーンをインストール
+mise install
+
+# 依存関係をインストール
+pnpm install
+```
+
 ## 開発フロー
 
 1. **設計書を確認する** - `docs/superpowers/specs/` 配下の設計書を読み、変更対象の仕様を理解する
@@ -13,6 +23,8 @@
 - `main` - 安定版。直接コミットしない
 - `feature/<name>` - 機能開発ブランチ
 - `fix/<name>` - バグ修正ブランチ
+- `docs/<name>` - ドキュメント更新ブランチ
+- `chore/<name>` - ツール・設定変更ブランチ
 
 ```bash
 # 機能開発の開始
@@ -45,7 +57,7 @@ Conventional Commits 形式:
 
 ### scope
 
-`mail-sync`, `classifier`, `search`, `ui`, `db` 等、変更対象のモジュール名。
+`mail-sync`, `classifier`, `search`, `ui`, `db`, `commands` 等、変更対象のモジュール名。
 
 ## テスト
 
@@ -54,5 +66,15 @@ Conventional Commits 形式:
 cd src-tauri && cargo test
 
 # フロントエンド テスト
-npm test
+pnpm test
+
+# Rust リント
+cd src-tauri && cargo clippy -- -D warnings
+cd src-tauri && cargo fmt -- --check
+```
+
+## 開発サーバー
+
+```bash
+pnpm tauri dev
 ```

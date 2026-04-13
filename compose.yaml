@@ -51,7 +51,7 @@ services:
       - .:/app
       - node-modules:/app/node_modules
     working_dir: /app
-    command: npm test
+    command: sh -c "corepack enable && pnpm test"
     profiles:
       - test
 
