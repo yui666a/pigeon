@@ -1,14 +1,18 @@
-use rusqlite::{params, Connection};
-use uuid::Uuid;
 use crate::error::AppError;
 use crate::models::account::{Account, AccountProvider, AuthType, CreateAccountRequest};
+use rusqlite::{params, Connection};
+use uuid::Uuid;
 
 pub fn insert_account(conn: &Connection, req: &CreateAccountRequest) -> Result<Account, AppError> {
     let id = Uuid::new_v4().to_string();
     insert_account_with_id(conn, &id, req)
 }
 
-pub fn insert_account_with_id(conn: &Connection, id: &str, req: &CreateAccountRequest) -> Result<Account, AppError> {
+pub fn insert_account_with_id(
+    conn: &Connection,
+    id: &str,
+    req: &CreateAccountRequest,
+) -> Result<Account, AppError> {
     conn.execute(
         "INSERT INTO accounts (id, name, email, imap_host, imap_port, smtp_host, smtp_port, auth_type, provider)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -62,7 +66,8 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>, AppError> {
                 smtp_host: row.get(5)?,
                 smtp_port: row.get::<_, u32>(6)? as u16,
                 auth_type: AuthType::try_from(auth_str.as_str()).unwrap_or(AuthType::Plain),
-                provider: AccountProvider::try_from(provider_str.as_str()).unwrap_or(AccountProvider::Other),
+                provider: AccountProvider::try_from(provider_str.as_str())
+                    .unwrap_or(AccountProvider::Other),
                 created_at: row.get(9)?,
             })
         })?
@@ -79,7 +84,10 @@ pub fn delete_account(conn: &Connection, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn account_exists_by_email(conn: &Connection, email: &str) -> Result<Option<Account>, AppError> {
+pub fn account_exists_by_email(
+    conn: &Connection,
+    email: &str,
+) -> Result<Option<Account>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, auth_type, provider, created_at
          FROM accounts WHERE email = ?1",
@@ -96,7 +104,8 @@ pub fn account_exists_by_email(conn: &Connection, email: &str) -> Result<Option<
             smtp_host: row.get(5)?,
             smtp_port: row.get::<_, u32>(6)? as u16,
             auth_type: AuthType::try_from(auth_str.as_str()).unwrap_or(AuthType::Plain),
-            provider: AccountProvider::try_from(provider_str.as_str()).unwrap_or(AccountProvider::Other),
+            provider: AccountProvider::try_from(provider_str.as_str())
+                .unwrap_or(AccountProvider::Other),
             created_at: row.get(9)?,
         })
     })?;

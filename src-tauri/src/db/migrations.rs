@@ -1,19 +1,15 @@
-use rusqlite::{params, Connection};
 use crate::error::AppError;
+use rusqlite::{params, Connection};
 
 fn get_schema_version(conn: &Connection) -> Result<i32, AppError> {
     // Create schema_version table if not exists
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER NOT NULL
-        );"
+        );",
     )?;
 
-    let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM schema_version",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i32 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
 
     if count == 0 {
         // Check if accounts table already exists (pre-versioning DB)
@@ -23,14 +19,14 @@ fn get_schema_version(conn: &Connection) -> Result<i32, AppError> {
             |row| row.get(0),
         )?;
         let initial_version = if table_exists { 1 } else { 0 };
-        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", params![initial_version])?;
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![initial_version],
+        )?;
         Ok(initial_version)
     } else {
-        let version: i32 = conn.query_row(
-            "SELECT version FROM schema_version",
-            [],
-            |row| row.get(0),
-        )?;
+        let version: i32 =
+            conn.query_row("SELECT version FROM schema_version", [], |row| row.get(0))?;
         Ok(version)
     }
 }
@@ -155,11 +151,13 @@ mod tests {
             [],
         ).unwrap();
 
-        let provider: String = conn.query_row(
-            "SELECT provider FROM accounts WHERE id = 'test1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let provider: String = conn
+            .query_row(
+                "SELECT provider FROM accounts WHERE id = 'test1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         assert_eq!(provider, "other");
     }
@@ -228,7 +226,8 @@ mod tests {
                 value TEXT NOT NULL
             );
             ",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert a V1 account
         conn.execute(
@@ -241,19 +240,19 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         // Existing account should have provider = 'other'
-        let provider: String = conn.query_row(
-            "SELECT provider FROM accounts WHERE id = 'old1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let provider: String = conn
+            .query_row(
+                "SELECT provider FROM accounts WHERE id = 'old1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(provider, "other");
 
         // Schema version should be 2
-        let version: i32 = conn.query_row(
-            "SELECT version FROM schema_version",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(version, 2);
     }
 }
