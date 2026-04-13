@@ -9,13 +9,7 @@ interface MailState {
   syncing: boolean;
   error: string | null;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
-  syncAccount: (
-    accountId: string,
-    imapHost: string,
-    imapPort: number,
-    username: string,
-    password: string,
-  ) => Promise<number>;
+  syncAccount: (accountId: string) => Promise<number>;
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
 }
@@ -39,16 +33,10 @@ export const useMailStore = create<MailState>((set) => ({
     }
   },
 
-  syncAccount: async (accountId, imapHost, imapPort, username, password) => {
+  syncAccount: async (accountId) => {
     set({ syncing: true, error: null });
     try {
-      const count = await invoke<number>("sync_account", {
-        accountId,
-        imapHost,
-        imapPort,
-        username,
-        password,
-      });
+      const count = await invoke<number>("sync_account", { accountId });
       set({ syncing: false });
       return count;
     } catch (e) {

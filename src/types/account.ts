@@ -1,3 +1,7 @@
+export type AccountProvider = "google" | "other";
+
+export type OAuthStatus = "idle" | "waiting" | "exchanging" | "error";
+
 export interface Account {
   id: string;
   name: string;
@@ -7,6 +11,8 @@ export interface Account {
   smtp_host: string;
   smtp_port: number;
   auth_type: "plain" | "oauth2";
+  provider: AccountProvider;
+  needs_reauth: boolean;
   created_at: string;
 }
 

@@ -16,6 +16,27 @@ pub enum AppError {
 
     #[error("Mail not found: {0}")]
     MailNotFound(String),
+
+    #[error("OAuth error: {0}")]
+    OAuth(String),
+
+    #[error("Token refresh failed: {0}")]
+    TokenRefreshFailed(String),
+
+    #[error("Invalid OAuth state")]
+    InvalidOAuthState,
+
+    #[error("OAuth timeout: authorization code not received within time limit")]
+    OAuthTimeout,
+
+    #[error("Duplicate account: {0}")]
+    DuplicateAccount(String),
+
+    #[error("Stronghold error: {0}")]
+    Stronghold(String),
+
+    #[error("HTTP request error: {0}")]
+    HttpRequest(String),
 }
 
 impl From<AppError> for String {

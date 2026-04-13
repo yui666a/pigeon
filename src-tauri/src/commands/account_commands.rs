@@ -2,18 +2,30 @@ use rusqlite::Connection;
 use std::sync::Mutex;
 use tauri::State;
 
+use crate::commands::auth_commands::SecureStoreState;
 use crate::db::accounts;
-use crate::models::account::{Account, CreateAccountRequest};
+use crate::models::account::{Account, AuthType, CreateAccountRequest};
 
 pub struct DbState(pub Mutex<Connection>);
 
 #[tauri::command]
 pub fn create_account(
     state: State<DbState>,
+    secure_store: State<SecureStoreState>,
     request: CreateAccountRequest,
 ) -> Result<Account, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    accounts::insert_account(&conn, &request).map_err(|e| e.to_string())
+    let account = accounts::insert_account(&conn, &request).map_err(|e| e.to_string())?;
+
+    // For PLAIN auth, save password to SecureStore
+    if matches!(request.auth_type, AuthType::Plain) {
+        if let Some(ref password) = request.password {
+            crate::commands::auth_commands::save_password(&secure_store.0, &account.id, password)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(account)
 }
 
 #[tauri::command]

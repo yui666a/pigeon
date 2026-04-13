@@ -11,12 +11,23 @@ export function Sidebar() {
     fetchAccounts,
     createAccount,
     selectAccount,
+    initDeepLinkListener,
   } = useAccountStore();
   const [showForm, setShowForm] = useState(false);
 
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    initDeepLinkListener().then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [initDeepLinkListener]);
 
   const handleSubmit = async (req: CreateAccountRequest) => {
     await createAccount(req);
