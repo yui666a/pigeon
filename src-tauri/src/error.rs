@@ -40,6 +40,15 @@ pub enum AppError {
 
     #[error("HTTP request error: {0}")]
     HttpRequest(String),
+
+    #[error("Classifier error: {0}")]
+    Classifier(String),
+
+    #[error("Ollama connection failed: {0}")]
+    OllamaConnection(String),
+
+    #[error("Invalid LLM response: {0}")]
+    InvalidLlmResponse(String),
 }
 
 impl From<AppError> for String {

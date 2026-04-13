@@ -1,3 +1,4 @@
+pub mod classifier;
 pub mod commands;
 pub mod db;
 pub mod error;
