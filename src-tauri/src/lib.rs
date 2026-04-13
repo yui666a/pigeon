@@ -25,6 +25,8 @@ pub fn run() {
 
     let db_path = data_dir.join("pigeon.db");
     let conn = Connection::open(&db_path).expect("Failed to open database");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("Failed to enable foreign keys");
     migrations::run_migrations(&conn).expect("Failed to run migrations");
 
     // Derive a key for SecureStore from a fixed app-specific salt
