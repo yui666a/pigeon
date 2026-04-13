@@ -66,7 +66,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   classifyAll: async (accountId) => {
     set({ classifying: true, progress: null, results: [], error: null });
     try {
-      const summary = await invoke<ClassifySummary>("classify_all", {
+      const summary = await invoke<ClassifySummary>("classify_unassigned", {
         accountId,
       });
       set({ summary, classifying: false, progress: null });
