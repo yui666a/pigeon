@@ -77,6 +77,9 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>, AppError> {
 }
 
 pub fn delete_account(conn: &Connection, id: &str) -> Result<(), AppError> {
+    // V1のmailsテーブルにはON DELETE CASCADEがないため、先に関連データを削除
+    conn.execute("DELETE FROM mails WHERE account_id = ?1", params![id])?;
+    conn.execute("DELETE FROM projects WHERE account_id = ?1", params![id])?;
     let affected = conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
     if affected == 0 {
         return Err(AppError::AccountNotFound(id.to_string()));
