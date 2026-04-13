@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("OAuth timeout: authorization code not received within time limit")]
     OAuthTimeout,
 
+    #[error("Project not found: {0}")]
+    ProjectNotFound(String),
+
     #[error("Duplicate account: {0}")]
     DuplicateAccount(String),
 
@@ -37,6 +40,15 @@ pub enum AppError {
 
     #[error("HTTP request error: {0}")]
     HttpRequest(String),
+
+    #[error("Classifier error: {0}")]
+    Classifier(String),
+
+    #[error("Ollama connection failed: {0}")]
+    OllamaConnection(String),
+
+    #[error("Invalid LLM response: {0}")]
+    InvalidLlmResponse(String),
 }
 
 impl From<AppError> for String {

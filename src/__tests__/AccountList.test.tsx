@@ -31,7 +31,7 @@ describe("AccountList", () => {
       <AccountList
         accounts={[googleAccount]}
         selectedId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onRemove={() => {}}
       />,
     );
     expect(screen.getByTitle("Google")).toBeInTheDocument();
@@ -43,7 +43,7 @@ describe("AccountList", () => {
       <AccountList
         accounts={[baseAccount]}
         selectedId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onRemove={() => {}}
       />,
     );
     expect(screen.queryByTitle("Google")).not.toBeInTheDocument();
@@ -61,7 +61,7 @@ describe("AccountList", () => {
       <AccountList
         accounts={[reauthAccount]}
         selectedId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onRemove={() => {}}
       />,
     );
     expect(screen.getByTitle("再認証が必要です")).toBeInTheDocument();
@@ -72,7 +72,7 @@ describe("AccountList", () => {
       <AccountList
         accounts={[baseAccount]}
         selectedId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onRemove={() => {}}
       />,
     );
     expect(screen.queryByTitle("再認証が必要です")).not.toBeInTheDocument();
@@ -80,7 +80,7 @@ describe("AccountList", () => {
 
   it("shows empty message when no accounts", () => {
     render(
-      <AccountList accounts={[]} selectedId={null} onSelect={() => {}} />,
+      <AccountList accounts={[]} selectedId={null} onSelect={() => {}} onRemove={() => {}} />,
     );
     expect(screen.getByText("アカウントなし")).toBeInTheDocument();
   });

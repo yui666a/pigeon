@@ -74,6 +74,11 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   },
 
   handleOAuthCallback: async (url) => {
+    // Prevent double-processing of the same callback
+    if (get().oauthStatus === "exchanging") {
+      console.log("[OAuth] already exchanging, skipping duplicate callback");
+      return;
+    }
     set({ oauthStatus: "exchanging" });
     try {
       await invoke("handle_oauth_callback", { url });

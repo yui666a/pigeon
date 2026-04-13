@@ -1,3 +1,4 @@
+pub mod classifier;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -25,6 +26,8 @@ pub fn run() {
 
     let db_path = data_dir.join("pigeon.db");
     let conn = Connection::open(&db_path).expect("Failed to open database");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("Failed to enable foreign keys");
     migrations::run_migrations(&conn).expect("Failed to run migrations");
 
     // Derive a key for SecureStore from a fixed app-specific salt
@@ -40,6 +43,8 @@ pub fn run() {
         .manage(DbState(Mutex::new(conn)))
         .manage(SecureStoreState(secure_store))
         .manage(OAuthStateStore::new())
+        .manage(commands::classify_commands::PendingClassifications::new())
+        .manage(commands::classify_commands::ClassifyCancelFlag::new())
         .setup(|app| {
             // Register deep link handler for OAuth callback
             #[cfg(not(target_os = "android"))]
@@ -71,6 +76,19 @@ pub fn run() {
             commands::auth_commands::handle_oauth_callback,
             commands::mail_commands::sync_account,
             commands::mail_commands::get_threads,
+            commands::project_commands::create_project,
+            commands::project_commands::get_projects,
+            commands::project_commands::update_project,
+            commands::project_commands::archive_project,
+            commands::project_commands::delete_project,
+            commands::classify_commands::classify_mail,
+            commands::classify_commands::classify_unassigned,
+            commands::classify_commands::cancel_classification,
+            commands::classify_commands::approve_classification,
+            commands::classify_commands::approve_new_project,
+            commands::classify_commands::reject_classification,
+            commands::classify_commands::get_unclassified_mails,
+            commands::classify_commands::get_mails_by_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

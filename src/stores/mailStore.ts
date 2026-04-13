@@ -36,10 +36,13 @@ export const useMailStore = create<MailState>((set) => ({
   syncAccount: async (accountId) => {
     set({ syncing: true, error: null });
     try {
+      console.log("[mailStore] starting sync for", accountId);
       const count = await invoke<number>("sync_account", { accountId });
+      console.log("[mailStore] sync success, count:", count);
       set({ syncing: false });
       return count;
     } catch (e) {
+      console.error("[mailStore] sync error:", e);
       set({ error: String(e), syncing: false });
       return 0;
     }
