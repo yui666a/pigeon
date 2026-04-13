@@ -1,5 +1,6 @@
 pub mod db;
 pub mod error;
+pub mod mail_sync;
 pub mod models;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
