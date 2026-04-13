@@ -45,11 +45,13 @@ Google Cloud Console (https://console.cloud.google.com/) で設定:
 - アプリの種類: **デスクトップアプリ**
 - リダイレクト URI: `com.haiso666.pigeon://oauth/callback`
 
-クライアント ID / シークレットはビルド時に環境変数から読み込む:
+クライアント ID / シークレットはプラットフォーム別の環境変数から読み込む:
 
 ```
-PIGEON_GOOGLE_CLIENT_ID=xxx
-PIGEON_GOOGLE_CLIENT_SECRET=xxx
+PIGEON_GOOGLE_CLIENT_ID_DESKTOP=xxx
+PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP=xxx
+PIGEON_GOOGLE_CLIENT_ID_IOS=xxx
+PIGEON_GOOGLE_CLIENT_SECRET_IOS=xxx
 ```
 
 ### クライアントシークレットについて

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, CreateAccountRequest, OAuthStatus } from "../types/account";
 
 interface AccountState {
@@ -65,7 +66,8 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   startOAuth: async (provider) => {
     set({ oauthStatus: "waiting", oauthError: null });
     try {
-      await invoke("start_oauth", { provider });
+      const authUrl = await invoke<string>("start_oauth", { provider });
+      await openUrl(authUrl);
     } catch (e) {
       set({ oauthStatus: "error", oauthError: String(e) });
     }

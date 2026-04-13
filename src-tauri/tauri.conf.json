@@ -9,6 +9,13 @@
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["com.haiso666.pigeon"]
+      }
+    }
+  },
   "app": {
     "windows": [
       {
