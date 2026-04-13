@@ -13,7 +13,7 @@ interface ThreadListProps {
 export function ThreadList({ viewMode }: ThreadListProps) {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
-  const { threads, selectedThread, fetchThreads, selectThread } =
+  const { threads, syncing, selectedThread, fetchThreads, syncAccount, selectThread } =
     useMailStore();
 
   useEffect(() => {
@@ -34,14 +34,28 @@ export function ThreadList({ viewMode }: ThreadListProps) {
           useMailStore.setState({ threads: [] });
         });
     } else if (viewMode === "threads" && selectedAccountId) {
-      fetchThreads(selectedAccountId, "INBOX");
+      // 同期してからスレッドを取得
+      console.log("[ThreadList] syncing account:", selectedAccountId);
+      syncAccount(selectedAccountId).then((count) => {
+        console.log("[ThreadList] sync done, fetched:", count);
+        fetchThreads(selectedAccountId, "INBOX");
+      }).catch((e) => {
+        console.error("[ThreadList] sync error:", e);
+      });
     }
-  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads]);
+  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount]);
 
   if (!selectedAccountId) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-gray-400">
         アカウントを選択してください
+      </div>
+    );
+  }
+  if (syncing) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-gray-400">
+        メールを同期中...
       </div>
     );
   }

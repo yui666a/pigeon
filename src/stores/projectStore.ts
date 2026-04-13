@@ -34,7 +34,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   fetchProjects: async (accountId) => {
     set({ loading: true, error: null });
     try {
-      const projects = await invoke<Project[]>("list_projects", { accountId });
+      const projects = await invoke<Project[]>("get_projects", { accountId });
       set({ projects, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });

@@ -51,9 +51,7 @@ export function AccountList({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (confirm(`「${account.name}」を削除しますか？`)) {
-                  onRemove(account.id);
-                }
+                onRemove(account.id);
               }}
               className="ml-1 shrink-0 rounded p-1 text-gray-300 hover:bg-red-50 hover:text-red-500"
               title="アカウントを削除"
