@@ -4,9 +4,11 @@ AIによってメールを案件ごとに自動グルーピングするデスク
 
 ## 必要要件
 
-- [Rust](https://www.rust-lang.org/tools/install) (1.75+)
-- [Node.js](https://nodejs.org/) (20+)
-- [Ollama](https://ollama.ai/) (ローカルLLM)
+- [mise](https://mise.jdx.dev/) (推奨) — Rust / Node.js / pnpm を一括管理
+- [Rust](https://www.rust-lang.org/tools/install) (1.94+)
+- [Node.js](https://nodejs.org/) (22+)
+- [pnpm](https://pnpm.io/) (10+)
+- [Ollama](https://ollama.ai/) (ローカルLLM、Phase 2 以降で使用)
 - Tauri 2 の[システム依存関係](https://v2.tauri.app/start/prerequisites/)
 
 ## セットアップ
@@ -16,15 +18,52 @@ AIによってメールを案件ごとに自動グルーピングするデスク
 git clone https://github.com/yui666a/pigeon.git
 cd pigeon
 
+# mise でツールチェーンをインストール（Rust, Node.js, pnpm）
+mise install
+
 # フロントエンドの依存関係をインストール
-npm install
+pnpm install
 
 # 開発サーバーを起動
-npm run tauri dev
+pnpm tauri dev
+```
+
+## テスト
+
+```bash
+# Rust テスト
+cd src-tauri && cargo test
+
+# フロントエンド テスト
+pnpm test
+```
+
+## リント
+
+```bash
+cd src-tauri && cargo clippy -- -D warnings
+cd src-tauri && cargo fmt -- --check
 ```
 
 ## ビルド
 
 ```bash
-npm run tauri build
+pnpm tauri build
+```
+
+## プロジェクト構成
+
+```
+pigeon/
+├── src/                    # React フロントエンド
+│   ├── components/         # UI コンポーネント（3ペイン構成）
+│   ├── stores/             # Zustand ストア
+│   └── types/              # TypeScript 型定義
+├── src-tauri/              # Rust バックエンド
+│   └── src/
+│       ├── commands/       # Tauri commands（フロントエンドAPI）
+│       ├── db/             # SQLite スキーマ・CRUD
+│       ├── mail_sync/      # IMAP クライアント・MIME パーサー
+│       └── models/         # 共有データ型
+└── docs/                   # 設計書・実装計画
 ```

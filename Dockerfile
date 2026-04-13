@@ -10,12 +10,12 @@ FROM node:24-bookworm-slim AS frontend-builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
 
 COPY src/ src/
 COPY index.html vite.config.ts tsconfig*.json tailwind.config.* postcss.config.* ./
-RUN npm run build
+RUN pnpm run build
 
 # --- Stage 2: Rust build ---
 FROM rust:1.82-bookworm AS rust-builder
@@ -69,15 +69,16 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust ツール
-RUN rustup component add clippy rustfmt \
+# pnpm + Rust ツール
+RUN corepack enable \
+    && rustup component add clippy rustfmt \
     && cargo install cargo-watch
 
 WORKDIR /app
 
-# cargo と npm の依存を先にインストール（キャッシュ活用）
-COPY package.json package-lock.json* ./
-RUN npm ci
+# cargo と pnpm の依存を先にインストール（キャッシュ活用）
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock* src-tauri/
 RUN cd src-tauri && mkdir src && echo "fn main() {}" > src/main.rs \
