@@ -24,28 +24,75 @@ const PKCE_TTL_SECS: u64 = 600; // 10 minutes
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Option<String>,
     pub redirect_uri: String,
 }
 
 impl OAuthConfig {
     pub fn google() -> Result<Self, AppError> {
-        let client_id = std::env::var("PIGEON_GOOGLE_CLIENT_ID")
-            .map_err(|_| AppError::OAuth("PIGEON_GOOGLE_CLIENT_ID not set".into()))?;
-        let client_secret = std::env::var("PIGEON_GOOGLE_CLIENT_SECRET")
-            .map_err(|_| AppError::OAuth("PIGEON_GOOGLE_CLIENT_SECRET not set".into()))?;
+        Self::google_with_redirect("com.haiso666.pigeon://oauth/callback".into())
+    }
+
+    pub fn google_with_redirect(redirect_uri: String) -> Result<Self, AppError> {
+        let (platform_name, client_id_keys, client_secret_keys, require_secret) =
+            if cfg!(target_os = "ios") {
+                (
+                    "ios",
+                    ["PIGEON_GOOGLE_CLIENT_ID_IOS"],
+                    ["PIGEON_GOOGLE_CLIENT_SECRET_IOS"],
+                    false,
+                )
+            } else {
+                (
+                    "desktop",
+                    ["PIGEON_GOOGLE_CLIENT_ID_DESKTOP"],
+                    ["PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP"],
+                    true,
+                )
+            };
+
+        let client_id = find_first_nonempty_env(&client_id_keys).ok_or_else(|| {
+            AppError::OAuth(format!(
+                "Google OAuth client id not set for platform {}. Set one of: {}",
+                platform_name,
+                client_id_keys.join(", ")
+            ))
+        })?;
+        let client_secret = find_first_nonempty_env(&client_secret_keys);
+
+        if require_secret && client_secret.is_none() {
+            return Err(AppError::OAuth(format!(
+                "Google OAuth client secret not set for platform {}. Set one of: {}",
+                platform_name,
+                client_secret_keys.join(", ")
+            )));
+        }
+
         Ok(Self {
             client_id,
             client_secret,
-            redirect_uri: "com.haiso666.pigeon://oauth/callback".into(),
+            redirect_uri,
         })
     }
+}
+
+fn find_first_nonempty_env(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone)]
 pub struct PendingOAuth {
     pub account_id: String,
     pub code_verifier: String,
+    pub redirect_uri: String,
     pub created_at: u64,
 }
 
@@ -152,14 +199,16 @@ pub async fn exchange_code(
     code_verifier: &str,
 ) -> Result<TokenResponse, AppError> {
     let client = reqwest::Client::new();
-    let params = [
+    let mut params = vec![
         ("code", code),
-        ("client_id", &config.client_id),
-        ("client_secret", &config.client_secret),
-        ("redirect_uri", &config.redirect_uri),
+        ("client_id", config.client_id.as_str()),
+        ("redirect_uri", config.redirect_uri.as_str()),
         ("grant_type", "authorization_code"),
         ("code_verifier", code_verifier),
     ];
+    if let Some(secret) = config.client_secret.as_deref() {
+        params.push(("client_secret", secret));
+    }
 
     let response = client
         .post(GOOGLE_TOKEN_URL)
@@ -188,12 +237,14 @@ pub async fn refresh_token(
     refresh_token_value: &str,
 ) -> Result<TokenResponse, AppError> {
     let client = reqwest::Client::new();
-    let params = [
+    let mut params = vec![
         ("client_id", config.client_id.as_str()),
-        ("client_secret", config.client_secret.as_str()),
         ("refresh_token", refresh_token_value),
         ("grant_type", "refresh_token"),
     ];
+    if let Some(secret) = config.client_secret.as_deref() {
+        params.push(("client_secret", secret));
+    }
 
     let response = client
         .post(GOOGLE_TOKEN_URL)
@@ -286,10 +337,10 @@ fn current_timestamp() -> u64 {
 }
 
 pub fn parse_callback_url(url: &str) -> Result<(String, String), AppError> {
-    // Parse com.haiso666.pigeon://oauth/callback?code=xxx&state=yyy
-    let query_start = url.find('?').ok_or_else(|| {
-        AppError::OAuth("No query parameters in callback URL".into())
-    })?;
+    // Parse callback URL query (supports custom-scheme and loopback URLs).
+    let query_start = url
+        .find('?')
+        .ok_or_else(|| AppError::OAuth("No query parameters in callback URL".into()))?;
     let query = &url[query_start + 1..];
 
     let mut code = None;
@@ -297,9 +348,11 @@ pub fn parse_callback_url(url: &str) -> Result<(String, String), AppError> {
 
     for pair in query.split('&') {
         let mut kv = pair.splitn(2, '=');
-        match (kv.next(), kv.next()) {
-            (Some("code"), Some(v)) => code = Some(v.to_string()),
-            (Some("state"), Some(v)) => state = Some(v.to_string()),
+        let key = kv.next();
+        let value = kv.next();
+        match (key, value) {
+            (Some("code"), Some(v)) => code = Some(percent_decode(v)?),
+            (Some("state"), Some(v)) => state = Some(percent_decode(v)?),
             (Some("error"), Some(v)) => {
                 return Err(AppError::OAuth(format!("OAuth error from provider: {}", v)));
             }
@@ -312,6 +365,45 @@ pub fn parse_callback_url(url: &str) -> Result<(String, String), AppError> {
     Ok((code, state))
 }
 
+fn percent_decode(input: &str) -> Result<String, AppError> {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let high = hex_to_u8(bytes[i + 1])?;
+                let low = hex_to_u8(bytes[i + 2])?;
+                output.push((high << 4) | low);
+                i += 3;
+            }
+            b'+' => {
+                output.push(b' ');
+                i += 1;
+            }
+            b => {
+                output.push(b);
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8(output)
+        .map_err(|e| AppError::OAuth(format!("Invalid UTF-8 in callback parameter: {}", e)))
+}
+
+fn hex_to_u8(c: u8) -> Result<u8, AppError> {
+    match c {
+        b'0'..=b'9' => Ok(c - b'0'),
+        b'a'..=b'f' => Ok(c - b'a' + 10),
+        b'A'..=b'F' => Ok(c - b'A' + 10),
+        _ => Err(AppError::OAuth(
+            "Invalid percent-encoding in callback URL".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,7 +411,7 @@ mod tests {
     fn test_config() -> OAuthConfig {
         OAuthConfig {
             client_id: "test-client-id.apps.googleusercontent.com".into(),
-            client_secret: "test-client-secret".into(),
+            client_secret: Some("test-client-secret".into()),
             redirect_uri: "com.haiso666.pigeon://oauth/callback".into(),
         }
     }
@@ -526,6 +618,14 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_callback_url_success_percent_encoded() {
+        let url = "http://127.0.0.1:34567/oauth/callback?code=4%2F0abc123&state=xyz%2B789";
+        let (code, state) = parse_callback_url(url).unwrap();
+        assert_eq!(code, "4/0abc123");
+        assert_eq!(state, "xyz+789");
+    }
+
+    #[test]
     fn test_parse_callback_url_error_response() {
         let url = "com.haiso666.pigeon://oauth/callback?error=access_denied&state=xyz";
         let result = parse_callback_url(url);
@@ -551,6 +651,7 @@ mod tests {
         let pending = PendingOAuth {
             account_id: "acc-123".into(),
             code_verifier: "verifier".into(),
+            redirect_uri: "http://127.0.0.1:34567/oauth/callback".into(),
             created_at: current_timestamp(),
         };
 
@@ -574,6 +675,7 @@ mod tests {
         let expired = PendingOAuth {
             account_id: "expired".into(),
             code_verifier: "v1".into(),
+            redirect_uri: "http://127.0.0.1:34567/oauth/callback".into(),
             created_at: current_timestamp() - PKCE_TTL_SECS - 60,
         };
         store.store("old-state".into(), expired);
@@ -582,6 +684,7 @@ mod tests {
         let fresh = PendingOAuth {
             account_id: "fresh".into(),
             code_verifier: "v2".into(),
+            redirect_uri: "http://127.0.0.1:34568/oauth/callback".into(),
             created_at: current_timestamp(),
         };
         store.store("new-state".into(), fresh);
