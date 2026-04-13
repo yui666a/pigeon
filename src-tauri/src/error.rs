@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("OAuth timeout: authorization code not received within time limit")]
     OAuthTimeout,
 
+    #[error("Project not found: {0}")]
+    ProjectNotFound(String),
+
     #[error("Duplicate account: {0}")]
     DuplicateAccount(String),
 
