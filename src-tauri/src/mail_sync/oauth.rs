@@ -287,9 +287,9 @@ fn current_timestamp() -> u64 {
 
 pub fn parse_callback_url(url: &str) -> Result<(String, String), AppError> {
     // Parse com.haiso666.pigeon://oauth/callback?code=xxx&state=yyy
-    let query_start = url.find('?').ok_or_else(|| {
-        AppError::OAuth("No query parameters in callback URL".into())
-    })?;
+    let query_start = url
+        .find('?')
+        .ok_or_else(|| AppError::OAuth("No query parameters in callback URL".into()))?;
     let query = &url[query_start + 1..];
 
     let mut code = None;

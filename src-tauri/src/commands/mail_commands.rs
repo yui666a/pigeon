@@ -44,8 +44,7 @@ async fn sync_account_inner(
             // Refresh token if needed
             if oauth::token_needs_refresh(&token_data) {
                 let config = oauth::OAuthConfig::google()?;
-                let response =
-                    oauth::refresh_token(&config, &token_data.refresh_token).await?;
+                let response = oauth::refresh_token(&config, &token_data.refresh_token).await?;
                 token_data = oauth::build_token_data(
                     &response,
                     &token_data.email,
@@ -71,8 +70,7 @@ async fn sync_account_inner(
             .await?
         }
         AccountProvider::Other => {
-            let password =
-                crate::commands::auth_commands::load_password(secure_store, account_id)?;
+            let password = crate::commands::auth_commands::load_password(secure_store, account_id)?;
             imap_client::connect(
                 &account.imap_host,
                 account.imap_port,

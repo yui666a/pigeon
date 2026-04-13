@@ -4,12 +4,8 @@ use uuid::Uuid;
 use crate::commands::account_commands::DbState;
 use crate::db::accounts;
 use crate::error::AppError;
-use crate::mail_sync::oauth::{
-    self, OAuthConfig, OAuthStateStore, PendingOAuth,
-};
-use crate::models::account::{
-    AccountProvider, AuthType, CreateAccountRequest, OAuthTokenData,
-};
+use crate::mail_sync::oauth::{self, OAuthConfig, OAuthStateStore, PendingOAuth};
+use crate::models::account::{AccountProvider, AuthType, CreateAccountRequest, OAuthTokenData};
 use crate::secure_store::SecureStore;
 
 pub struct SecureStoreState(pub SecureStore);
@@ -22,10 +18,7 @@ pub async fn start_oauth(
     start_oauth_inner(&oauth_store, &provider).map_err(|e| e.to_string())
 }
 
-fn start_oauth_inner(
-    oauth_store: &OAuthStateStore,
-    provider: &str,
-) -> Result<String, AppError> {
+fn start_oauth_inner(oauth_store: &OAuthStateStore, provider: &str) -> Result<String, AppError> {
     match provider {
         "google" => {
             let config = OAuthConfig::google()?;
@@ -53,7 +46,10 @@ fn start_oauth_inner(
             let auth_url = oauth::build_auth_url(&config, &state, &code_challenge);
             Ok(auth_url)
         }
-        _ => Err(AppError::OAuth(format!("Unsupported OAuth provider: {}", provider))),
+        _ => Err(AppError::OAuth(format!(
+            "Unsupported OAuth provider: {}",
+            provider
+        ))),
     }
 }
 
@@ -106,7 +102,10 @@ async fn handle_oauth_callback_inner(
 
     // Check for duplicate email
     {
-        let conn = db_state.0.lock().map_err(|e| AppError::OAuth(e.to_string()))?;
+        let conn = db_state
+            .0
+            .lock()
+            .map_err(|e| AppError::OAuth(e.to_string()))?;
         if let Some(existing) = accounts::account_exists_by_email(&conn, &email)? {
             return Err(AppError::DuplicateAccount(format!(
                 "Account with email {} already exists (id: {})",
@@ -120,7 +119,10 @@ async fn handle_oauth_callback_inner(
 
     // Save account to DB
     let account_result = {
-        let conn = db_state.0.lock().map_err(|e| AppError::OAuth(e.to_string()))?;
+        let conn = db_state
+            .0
+            .lock()
+            .map_err(|e| AppError::OAuth(e.to_string()))?;
         let req = CreateAccountRequest {
             name: email.clone(),
             email: email.clone(),
@@ -169,9 +171,9 @@ pub fn load_oauth_token(
     account_id: &str,
 ) -> Result<OAuthTokenData, AppError> {
     let key = format!("oauth_{}", account_id);
-    let value = secure_store
-        .get(&key)?
-        .ok_or_else(|| AppError::Stronghold(format!("No OAuth token found for account {}", account_id)))?;
+    let value = secure_store.get(&key)?.ok_or_else(|| {
+        AppError::Stronghold(format!("No OAuth token found for account {}", account_id))
+    })?;
     let token_data: OAuthTokenData = serde_json::from_slice(&value)
         .map_err(|e| AppError::Stronghold(format!("Failed to deserialize token data: {}", e)))?;
     Ok(token_data)
@@ -187,14 +189,11 @@ pub fn save_password(
     secure_store.insert(&key, value.as_bytes())
 }
 
-pub fn load_password(
-    secure_store: &SecureStore,
-    account_id: &str,
-) -> Result<String, AppError> {
+pub fn load_password(secure_store: &SecureStore, account_id: &str) -> Result<String, AppError> {
     let key = format!("password_{}", account_id);
-    let value = secure_store
-        .get(&key)?
-        .ok_or_else(|| AppError::Stronghold(format!("No password found for account {}", account_id)))?;
+    let value = secure_store.get(&key)?.ok_or_else(|| {
+        AppError::Stronghold(format!("No password found for account {}", account_id))
+    })?;
 
     #[derive(serde::Deserialize)]
     struct PasswordData {

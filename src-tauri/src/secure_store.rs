@@ -25,9 +25,9 @@ impl SecureStore {
     pub fn new(path: PathBuf, password: &[u8]) -> Result<Self, AppError> {
         let snapshot_path = iota_stronghold::SnapshotPath::from_path(&path);
         let stronghold = iota_stronghold::Stronghold::default();
-        let keyprovider = iota_stronghold::KeyProvider::try_from(
-            zeroize::Zeroizing::new(password.to_vec())
-        ).map_err(|e| AppError::Stronghold(format!("Key derivation failed: {}", e)))?;
+        let keyprovider =
+            iota_stronghold::KeyProvider::try_from(zeroize::Zeroizing::new(password.to_vec()))
+                .map_err(|e| AppError::Stronghold(format!("Key derivation failed: {}", e)))?;
 
         // Load existing snapshot if it exists
         if path.exists() {
@@ -55,23 +55,32 @@ impl SecureStore {
     }
 
     pub fn insert(&self, key: &str, value: &[u8]) -> Result<(), AppError> {
-        let inner = self.inner.lock().map_err(|e| AppError::Stronghold(e.to_string()))?;
-        let client = inner.stronghold
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AppError::Stronghold(e.to_string()))?;
+        let client = inner
+            .stronghold
             .get_client(&inner.client_path)
             .map_err(|e| AppError::Stronghold(format!("Failed to get client: {}", e)))?;
         let store = client.store();
         store
             .insert(key.as_bytes().to_vec(), value.to_vec(), None)
             .map_err(|e| AppError::Stronghold(format!("Failed to insert: {}", e)))?;
-        inner.stronghold
+        inner
+            .stronghold
             .commit_with_keyprovider(&inner.snapshot_path, &inner.keyprovider)
             .map_err(|e| AppError::Stronghold(format!("Failed to save: {}", e)))?;
         Ok(())
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, AppError> {
-        let inner = self.inner.lock().map_err(|e| AppError::Stronghold(e.to_string()))?;
-        let client = inner.stronghold
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AppError::Stronghold(e.to_string()))?;
+        let client = inner
+            .stronghold
             .get_client(&inner.client_path)
             .map_err(|e| AppError::Stronghold(format!("Failed to get client: {}", e)))?;
         let store = client.store();
@@ -81,13 +90,18 @@ impl SecureStore {
     }
 
     pub fn delete(&self, key: &str) -> Result<(), AppError> {
-        let inner = self.inner.lock().map_err(|e| AppError::Stronghold(e.to_string()))?;
-        let client = inner.stronghold
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AppError::Stronghold(e.to_string()))?;
+        let client = inner
+            .stronghold
             .get_client(&inner.client_path)
             .map_err(|e| AppError::Stronghold(format!("Failed to get client: {}", e)))?;
         let store = client.store();
         let _ = store.delete(key.as_bytes());
-        inner.stronghold
+        inner
+            .stronghold
             .commit_with_keyprovider(&inner.snapshot_path, &inner.keyprovider)
             .map_err(|e| AppError::Stronghold(format!("Failed to save: {}", e)))?;
         Ok(())
