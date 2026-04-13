@@ -15,6 +15,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-deep-link = "2"
+iota_stronghold = "2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -28,3 +30,8 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["compat"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+zeroize = "1"

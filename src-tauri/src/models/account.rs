@@ -1,5 +1,36 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountProvider {
+    Google,
+    Other,
+}
+
+impl AccountProvider {
+    pub fn supports_oauth(&self) -> bool {
+        matches!(self, Self::Google)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AccountProvider::Google => "google",
+            AccountProvider::Other => "other",
+        }
+    }
+}
+
+impl TryFrom<&str> for AccountProvider {
+    type Error = String;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "google" => Ok(AccountProvider::Google),
+            "other" => Ok(AccountProvider::Other),
+            other => Err(format!("Unknown provider: {}", other)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
@@ -10,6 +41,7 @@ pub struct Account {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub auth_type: AuthType,
+    pub provider: AccountProvider,
     pub created_at: String,
 }
 
@@ -49,5 +81,14 @@ pub struct CreateAccountRequest {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub auth_type: AuthType,
-    pub password: String,
+    pub provider: AccountProvider,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthTokenData {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+    pub email: String,
 }

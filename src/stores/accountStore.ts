@@ -1,23 +1,32 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, CreateAccountRequest } from "../types/account";
+import { listen } from "@tauri-apps/api/event";
+import type { Account, CreateAccountRequest, OAuthStatus } from "../types/account";
 
 interface AccountState {
   accounts: Account[];
   selectedAccountId: string | null;
   loading: boolean;
   error: string | null;
+  oauthStatus: OAuthStatus;
+  oauthError: string | null;
   fetchAccounts: () => Promise<void>;
   createAccount: (req: CreateAccountRequest) => Promise<void>;
   removeAccount: (id: string) => Promise<void>;
   selectAccount: (id: string | null) => void;
+  startOAuth: (provider: string) => Promise<void>;
+  handleOAuthCallback: (url: string) => Promise<void>;
+  resetOAuth: () => void;
+  initDeepLinkListener: () => Promise<() => void>;
 }
 
-export const useAccountStore = create<AccountState>((set) => ({
+export const useAccountStore = create<AccountState>((set, get) => ({
   accounts: [],
   selectedAccountId: null,
   loading: false,
   error: null,
+  oauthStatus: "idle",
+  oauthError: null,
 
   fetchAccounts: async () => {
     set({ loading: true, error: null });
@@ -52,4 +61,41 @@ export const useAccountStore = create<AccountState>((set) => ({
   },
 
   selectAccount: (id) => set({ selectedAccountId: id }),
+
+  startOAuth: async (provider) => {
+    set({ oauthStatus: "waiting", oauthError: null });
+    try {
+      await invoke("start_oauth", { provider });
+    } catch (e) {
+      set({ oauthStatus: "error", oauthError: String(e) });
+    }
+  },
+
+  handleOAuthCallback: async (url) => {
+    set({ oauthStatus: "exchanging" });
+    try {
+      await invoke("handle_oauth_callback", { url });
+      const accounts = await invoke<Account[]>("get_accounts");
+      set({ accounts, oauthStatus: "idle", oauthError: null });
+    } catch (e) {
+      set({ oauthStatus: "error", oauthError: String(e) });
+    }
+  },
+
+  resetOAuth: () => {
+    set({ oauthStatus: "idle", oauthError: null });
+  },
+
+  initDeepLinkListener: async () => {
+    const unlisten = await listen<string[]>("deep-link://new-url", (event) => {
+      const urls = event.payload;
+      if (urls.length > 0) {
+        const url = urls[0];
+        if (url.includes("oauth/callback")) {
+          get().handleOAuthCallback(url);
+        }
+      }
+    });
+    return unlisten;
+  },
 }));
