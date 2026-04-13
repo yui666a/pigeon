@@ -10,6 +10,7 @@ import type {
 
 interface ClassifyState {
   classifying: boolean;
+  classifyingAccountId: string | null;
   progress: { current: number; total: number } | null;
   results: ClassifyResponse[];
   summary: ClassifySummary | null;
@@ -31,6 +32,7 @@ interface ClassifyState {
 
 export const useClassifyStore = create<ClassifyState>((set, get) => ({
   classifying: false,
+  classifyingAccountId: null,
   progress: null,
   results: [],
   summary: null,
@@ -64,12 +66,12 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   },
 
   classifyAll: async (accountId) => {
-    set({ classifying: true, progress: null, results: [], summary: null, error: null });
+    set({ classifying: true, classifyingAccountId: accountId, progress: null, results: [], summary: null, error: null });
     try {
       // classify_unassigned は void を返す。進捗と完了は Tauri events で通知される
       await invoke("classify_unassigned", { accountId });
     } catch (e) {
-      set({ error: String(e), classifying: false, progress: null });
+      set({ error: String(e), classifying: false, classifyingAccountId: null, progress: null });
     }
   },
 
@@ -146,11 +148,16 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
     const unlistenComplete = await listen<ClassifySummary>(
       "classify-complete",
       (event) => {
+        const accountId = get().classifyingAccountId;
         set({
           summary: event.payload,
           classifying: false,
+          classifyingAccountId: null,
           progress: null,
         });
+        if (accountId) {
+          get().fetchUnclassified(accountId);
+        }
       },
     );
 
