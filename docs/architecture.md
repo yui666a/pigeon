@@ -36,10 +36,11 @@
 
 | モジュール | 責務 | 状態 |
 |-----------|------|------|
-| `models` | Account / Mail / Thread 構造体、AppError | Phase 1 実装済 |
-| `db` | SQLiteスキーマ管理・accounts/mails CRUD・スレッド構築 | Phase 1 実装済 |
-| `mail_sync` | IMAP接続・差分同期・MIMEパース | Phase 1 実装済 |
-| `commands` | Tauri commandsとしてReactに公開するAPI群 | Phase 1 実装済 |
+| `models` | Account / Mail / Thread 構造体、AccountProvider、AppError | Phase 1 実装済 + OAuth 拡張済 |
+| `db` | SQLiteスキーマ管理・accounts/mails CRUD・スレッド構築 | Phase 1 実装済 + V2 マイグレーション済 |
+| `mail_sync` | IMAP接続・差分同期・MIMEパース・OAuth 2.0フロー | Phase 1 実装済 + OAuth 実装済 |
+| `commands` | Tauri commandsとしてReactに公開するAPI群 | Phase 1 実装済 + OAuth コマンド追加済 |
+| `secure_store` | Stronghold によるトークン/パスワードの暗号化保存 | OAuth で追加 |
 | `classifier` | LLM抽象レイヤー（Ollama / Claude API） | Phase 2 |
 | `search` | SQLite FTS5を使った全文検索・案件横断検索 | Phase 4 |
 
@@ -50,16 +51,21 @@
 | `create_account` | CreateAccountRequest | Account | アカウント作成 |
 | `get_accounts` | — | Account[] | アカウント一覧 |
 | `remove_account` | id | — | アカウント削除 |
-| `sync_account` | account_id, imap_host, imap_port, username, password | u32 (取得数) | IMAP同期 |
+| `sync_account` | account_id | u32 (取得数) | IMAP同期（認証情報はバックエンドで解決） |
 | `get_threads` | account_id, folder | Thread[] | スレッド一覧取得 |
+| `start_oauth` | provider | — | OAuth 認可フロー開始（ブラウザを開く） |
+| `handle_oauth_callback` | url | Account | OAuth コールバック処理・アカウント保存 |
 
 ## データフロー
 
 ### メール受信（Phase 1 実装済）
 
 ```
-sync_account コマンド呼び出し
-  → IMAP接続 (TLS)
+sync_account コマンド呼び出し (account_id のみ)
+  → accounts テーブルからアカウント情報取得
+  → provider で分岐:
+    Google: Stronghold から OAuth トークン取得 → 必要ならリフレッシュ → XOAUTH2 で IMAP接続
+    Other:  Stronghold からパスワード取得 → PLAIN で IMAP接続
   → UID差分フェッチ (since_uid 以降)
   → MIMEパース (mail-parser)
   → SQLite保存 (INSERT OR REPLACE)
@@ -99,8 +105,11 @@ IMAP IDLE (新着検知)
 | エラー | `thiserror` | 使用中 |
 | ID生成 | `uuid` | 使用中 |
 | 日時 | `chrono` | 使用中 |
+| HTTP | `reqwest` | 使用中（OAuth トークン交換） |
+| セキュアストレージ | `iota-stronghold` | 使用中（トークン/パスワード暗号化保存） |
+| Deep Link | `tauri-plugin-deep-link` | 使用中（OAuth コールバック受信） |
+| PKCE/暗号 | `sha2` + `rand` + `base64` | 使用中（OAuth PKCE フロー） |
 | SMTP | `lettre` | Phase 4 で追加予定 |
-| HTTP | `reqwest` | Phase 2 で追加予定 |
 
 ## 主要フロントエンドライブラリ
 

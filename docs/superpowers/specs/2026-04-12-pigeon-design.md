@@ -428,7 +428,7 @@ Tauriの `tauri-plugin-stronghold` またはOSネイティブAPIで保護。SQLi
 - Claude API対応（オプション）
 - 添付ファイルの一覧表示・ダウンロード
 - キーボードショートカット
-- OAuth 2.0認証対応
+- ~~OAuth 2.0認証対応~~ → **実装済（Phase 5 から前倒し）**。詳細は `2026-04-13-oauth-support-design.md` を参照
 
 ### Phase 6: 将来（スコープ外）
 
