@@ -10,6 +10,7 @@ import type {
 
 interface ClassifyState {
   classifying: boolean;
+  classifyingAccountId: string | null;
   progress: { current: number; total: number } | null;
   results: ClassifyResponse[];
   summary: ClassifySummary | null;
@@ -31,6 +32,7 @@ interface ClassifyState {
 
 export const useClassifyStore = create<ClassifyState>((set, get) => ({
   classifying: false,
+  classifyingAccountId: null,
   progress: null,
   results: [],
   summary: null,
@@ -64,14 +66,11 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   },
 
   classifyAll: async (accountId) => {
-    set({ classifying: true, progress: null, results: [], error: null });
+    set({ classifying: true, classifyingAccountId: accountId, progress: null, results: [], summary: null, error: null });
     try {
-      const summary = await invoke<ClassifySummary>("classify_all", {
-        accountId,
-      });
-      set({ summary, classifying: false, progress: null });
+      await invoke("classify_unassigned", { accountId });
     } catch (e) {
-      set({ error: String(e), classifying: false, progress: null });
+      set({ error: String(e), classifying: false, classifyingAccountId: null, progress: null });
     }
   },
 
@@ -142,11 +141,17 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
     const unlistenComplete = await listen<ClassifySummary>(
       "classify-complete",
       (event) => {
+        const accountId = get().classifyingAccountId;
         set({
           summary: event.payload,
           classifying: false,
+          classifyingAccountId: null,
           progress: null,
         });
+        // 分類完了後に未分類メール一覧を再取得
+        if (accountId) {
+          get().fetchUnclassified(accountId);
+        }
       },
     );
 

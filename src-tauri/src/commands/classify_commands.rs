@@ -175,8 +175,6 @@ pub async fn classify_unassigned(
     handle: AppHandle,
     account_id: String,
 ) -> Result<(), String> {
-    eprintln!("[classify] classify_unassigned called for account {}", account_id);
-
     // Reset cancel flag
     cancel_flag.0.store(false, Ordering::SeqCst);
 
@@ -190,20 +188,12 @@ pub async fn classify_unassigned(
         (mails, endpoint, model)
     };
 
-    eprintln!("[classify] found {} unclassified mails, using model {} at {}", mails.len(), model, endpoint);
-
     let classifier = OllamaClassifier::new(&endpoint, &model);
 
-    // Health check before starting the loop
-    eprintln!("[classify] running health check...");
     classifier
         .health_check()
         .await
-        .map_err(|e| {
-            eprintln!("[classify] health check failed: {}", e);
-            e.to_string()
-        })?;
-    eprintln!("[classify] health check passed");
+        .map_err(|e| e.to_string())?;
 
     let total = mails.len();
 
@@ -239,18 +229,13 @@ pub async fn classify_unassigned(
         };
 
         let mail_summary = MailSummary::from_mail(mail);
-        eprintln!("[classify] classifying mail {}/{}: {}", idx + 1, total, mail_summary.subject);
 
         let result = match classifier
             .classify(&mail_summary, &project_summaries, &[])
             .await
         {
-            Ok(r) => {
-                eprintln!("[classify] result: confidence={}", r.confidence);
-                r
-            }
-            Err(e) => {
-                eprintln!("[classify] error: {}", e);
+            Ok(r) => r,
+            Err(_) => {
                 ClassifyResult {
                     action: ClassifyAction::Unclassified,
                     confidence: 0.0,
