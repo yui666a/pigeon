@@ -37,7 +37,7 @@ impl OAuthConfig {
         Ok(Self {
             client_id,
             client_secret,
-            redirect_uri: "com.haiso.pigeon://oauth/callback".into(),
+            redirect_uri: "com.haiso666.pigeon://oauth/callback".into(),
         })
     }
 }
@@ -286,7 +286,7 @@ fn current_timestamp() -> u64 {
 }
 
 pub fn parse_callback_url(url: &str) -> Result<(String, String), AppError> {
-    // Parse com.haiso.pigeon://oauth/callback?code=xxx&state=yyy
+    // Parse com.haiso666.pigeon://oauth/callback?code=xxx&state=yyy
     let query_start = url.find('?').ok_or_else(|| {
         AppError::OAuth("No query parameters in callback URL".into())
     })?;
@@ -320,7 +320,7 @@ mod tests {
         OAuthConfig {
             client_id: "test-client-id.apps.googleusercontent.com".into(),
             client_secret: "test-client-secret".into(),
-            redirect_uri: "com.haiso.pigeon://oauth/callback".into(),
+            redirect_uri: "com.haiso666.pigeon://oauth/callback".into(),
         }
     }
 
@@ -387,7 +387,7 @@ mod tests {
 
         assert!(url.starts_with(GOOGLE_AUTH_URL));
         assert!(url.contains("client_id=test-client-id.apps.googleusercontent.com"));
-        assert!(url.contains("redirect_uri=com.haiso.pigeon%3A%2F%2Foauth%2Fcallback"));
+        assert!(url.contains("redirect_uri=com.haiso666.pigeon%3A%2F%2Foauth%2Fcallback"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("state=test-state-123"));
         assert!(url.contains("code_challenge=test-challenge-456"));
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_parse_callback_url_success() {
-        let url = "com.haiso.pigeon://oauth/callback?code=4/0abc123&state=xyz789";
+        let url = "com.haiso666.pigeon://oauth/callback?code=4/0abc123&state=xyz789";
         let (code, state) = parse_callback_url(url).unwrap();
         assert_eq!(code, "4/0abc123");
         assert_eq!(state, "xyz789");
@@ -527,20 +527,20 @@ mod tests {
 
     #[test]
     fn test_parse_callback_url_error_response() {
-        let url = "com.haiso.pigeon://oauth/callback?error=access_denied&state=xyz";
+        let url = "com.haiso666.pigeon://oauth/callback?error=access_denied&state=xyz";
         let result = parse_callback_url(url);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_callback_url_no_query() {
-        let result = parse_callback_url("com.haiso.pigeon://oauth/callback");
+        let result = parse_callback_url("com.haiso666.pigeon://oauth/callback");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_callback_url_missing_code() {
-        let url = "com.haiso.pigeon://oauth/callback?state=xyz";
+        let url = "com.haiso666.pigeon://oauth/callback?state=xyz";
         let result = parse_callback_url(url);
         assert!(result.is_err());
     }

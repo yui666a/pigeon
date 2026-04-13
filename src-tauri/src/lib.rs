@@ -27,7 +27,7 @@ pub fn run() {
 
     // Derive a key for SecureStore from a fixed app-specific salt
     // In production, this would use OS keychain. For now, derive from app identifier.
-    let key = Sha256::digest(b"com.haiso.pigeon-secure-store-key");
+    let key = Sha256::digest(b"com.haiso666.pigeon-secure-store-key");
     let stronghold_path = data_dir.join("pigeon.stronghold");
     let secure_store = secure_store::SecureStore::new(stronghold_path, &key)
         .expect("Failed to initialize SecureStore");
@@ -48,7 +48,7 @@ pub fn run() {
                     let urls: Vec<String> =
                         serde_json::from_str(event.payload()).unwrap_or_default();
                     if let Some(url) = urls.first() {
-                        if url.starts_with("com.haiso.pigeon://oauth/callback") {
+                        if url.starts_with("com.haiso666.pigeon://oauth/callback") {
                             let handle = handle.clone();
                             let url = url.clone();
                             tauri::async_runtime::spawn(async move {
