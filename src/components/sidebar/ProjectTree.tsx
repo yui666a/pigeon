@@ -5,9 +5,10 @@ import { useClassifyStore } from "../../stores/classifyStore";
 
 interface ProjectTreeProps {
   onSelectUnclassified: () => void;
+  onSelectProject: () => void;
 }
 
-export function ProjectTree({ onSelectUnclassified }: ProjectTreeProps) {
+export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTreeProps) {
   const { selectedAccountId } = useAccountStore();
   const { projects, selectedProjectId, fetchProjects, selectProject } =
     useProjectStore();
@@ -35,7 +36,10 @@ export function ProjectTree({ onSelectUnclassified }: ProjectTreeProps) {
         {projects.map((project) => (
           <li key={project.id}>
             <button
-              onClick={() => selectProject(project.id)}
+              onClick={() => {
+                selectProject(project.id);
+                onSelectProject();
+              }}
               className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 ${
                 selectedProjectId === project.id
                   ? "bg-blue-50 font-semibold text-blue-700"

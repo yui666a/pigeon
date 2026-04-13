@@ -83,6 +83,7 @@ export function Sidebar({ onViewChange }: SidebarProps) {
         />
         <ProjectTree
           onSelectUnclassified={() => onViewChange?.("unclassified")}
+          onSelectProject={() => onViewChange?.("project")}
         />
       </div>
       {selectedAccountId && (

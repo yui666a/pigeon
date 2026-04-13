@@ -1,18 +1,42 @@
 import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useAccountStore } from "../../stores/accountStore";
 import { useMailStore } from "../../stores/mailStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { ThreadItem } from "./ThreadItem";
+import type { Mail, Thread } from "../../types/mail";
 
-export function ThreadList() {
+interface ThreadListProps {
+  viewMode: "threads" | "project";
+}
+
+export function ThreadList({ viewMode }: ThreadListProps) {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
+  const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
   const { threads, selectedThread, fetchThreads, selectThread } =
     useMailStore();
 
   useEffect(() => {
-    if (selectedAccountId) {
+    if (viewMode === "project" && selectedProjectId) {
+      invoke<Mail[]>("get_mails_by_project", { projectId: selectedProjectId })
+        .then((mails) => {
+          const projectThreads: Thread[] = mails.map((mail) => ({
+            thread_id: mail.message_id || mail.id,
+            subject: mail.subject,
+            last_date: mail.date,
+            mail_count: 1,
+            from_addrs: [mail.from_addr],
+            mails: [mail],
+          }));
+          useMailStore.setState({ threads: projectThreads });
+        })
+        .catch(() => {
+          useMailStore.setState({ threads: [] });
+        });
+    } else if (viewMode === "threads" && selectedAccountId) {
       fetchThreads(selectedAccountId, "INBOX");
     }
-  }, [selectedAccountId, fetchThreads]);
+  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads]);
 
   if (!selectedAccountId) {
     return (
