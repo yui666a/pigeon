@@ -17,6 +17,7 @@ export function Sidebar({ onViewChange }: SidebarProps) {
     selectedAccountId,
     fetchAccounts,
     createAccount,
+    removeAccount,
     selectAccount,
     initDeepLinkListener,
   } = useAccountStore();
@@ -80,6 +81,7 @@ export function Sidebar({ onViewChange }: SidebarProps) {
           accounts={accounts}
           selectedId={selectedAccountId}
           onSelect={handleSelectAccount}
+          onRemove={removeAccount}
         />
         <ProjectTree
           onSelectUnclassified={() => onViewChange?.("unclassified")}

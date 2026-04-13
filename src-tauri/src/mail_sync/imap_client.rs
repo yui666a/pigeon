@@ -74,29 +74,55 @@ impl async_imap::Authenticator for XOAuth2Authenticator {
     }
 }
 
+/// 初回同期時に取得するメールの最大件数
+const INITIAL_SYNC_LIMIT: u32 = 100;
+
 pub async fn fetch_mails_since_uid(
     session: &mut ImapSession,
     folder: &str,
     since_uid: u32,
 ) -> Result<Vec<(u32, Vec<u8>)>, AppError> {
-    session
+    let mailbox = session
         .select(folder)
         .await
         .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
 
     let query = if since_uid == 0 {
-        "1:*".to_string()
+        // 初回同期: 直近 INITIAL_SYNC_LIMIT 件のみ取得
+        // メールボックスのメッセージ数から開始位置を計算
+        let total = mailbox.exists;
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+        let start = if total > INITIAL_SYNC_LIMIT {
+            total - INITIAL_SYNC_LIMIT + 1
+        } else {
+            1
+        };
+        // シーケンス番号ベースでUIDを取得してからフェッチ
+        format!("{}:*", start)
     } else {
         format!("{}:*", since_uid + 1)
     };
 
-    let messages: Vec<_> = session
-        .uid_fetch(&query, "(UID RFC822)")
-        .await
-        .map_err(|e| AppError::Imap(format!("Fetch failed: {}", e)))?
-        .try_collect()
-        .await
-        .map_err(|e| AppError::Imap(format!("Fetch stream failed: {}", e)))?;
+    // 初回はシーケンス番号ベース、差分はUIDベース
+    let messages: Vec<_> = if since_uid == 0 {
+        session
+            .fetch(&query, "(UID RFC822)")
+            .await
+            .map_err(|e| AppError::Imap(format!("Fetch failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("Fetch stream failed: {}", e)))?
+    } else {
+        session
+            .uid_fetch(&query, "(UID RFC822)")
+            .await
+            .map_err(|e| AppError::Imap(format!("Fetch failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("Fetch stream failed: {}", e)))?
+    };
 
     let mut results = Vec::new();
     for msg in &messages {
