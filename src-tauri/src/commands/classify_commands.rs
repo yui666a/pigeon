@@ -119,7 +119,7 @@ pub async fn classify_mail(
         let mail = load_mail(&conn, &mail_id)?;
         let project_summaries = build_project_summaries(&conn, &mail.account_id)?;
         let endpoint = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        let model = get_settings_or_default(&conn, "ollama_model", "llama3");
+        let model = get_settings_or_default(&conn, "ollama_model", "llama3.1:8b");
         (mail, project_summaries, endpoint, model)
     };
 
@@ -175,6 +175,8 @@ pub async fn classify_unassigned(
     handle: AppHandle,
     account_id: String,
 ) -> Result<(), String> {
+    eprintln!("[classify] classify_unassigned called for account {}", account_id);
+
     // Reset cancel flag
     cancel_flag.0.store(false, Ordering::SeqCst);
 
@@ -184,19 +186,29 @@ pub async fn classify_unassigned(
         let mails = assignments::get_unclassified_mails(&conn, &account_id)
             .map_err(|e| e.to_string())?;
         let endpoint = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        let model = get_settings_or_default(&conn, "ollama_model", "llama3");
+        let model = get_settings_or_default(&conn, "ollama_model", "llama3.1:8b");
         (mails, endpoint, model)
     };
+
+    eprintln!("[classify] found {} unclassified mails, using model {} at {}", mails.len(), model, endpoint);
 
     let classifier = OllamaClassifier::new(&endpoint, &model);
 
     // Health check before starting the loop
+    eprintln!("[classify] running health check...");
     classifier
         .health_check()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            eprintln!("[classify] health check failed: {}", e);
+            e.to_string()
+        })?;
+    eprintln!("[classify] health check passed");
 
     let total = mails.len();
+    let mut assigned = 0u32;
+    let mut needs_review = 0u32;
+    let mut unclassified_count = 0u32;
 
     for (idx, mail) in mails.iter().enumerate() {
         // Check cancellation
@@ -212,17 +224,6 @@ pub async fn classify_unassigned(
             return Ok(());
         }
 
-        // Emit progress
-        let _ = handle.emit(
-            "classify-progress",
-            serde_json::json!({
-                "current": idx,
-                "total": total,
-                "mail_id": mail.id,
-                "cancelled": false,
-            }),
-        );
-
         // Load project summaries fresh for each mail (projects may have been created)
         let project_summaries = {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -230,17 +231,29 @@ pub async fn classify_unassigned(
         };
 
         let mail_summary = MailSummary::from_mail(mail);
+        eprintln!("[classify] classifying mail {}/{}: {}", idx + 1, total, mail_summary.subject);
 
         let result = match classifier
             .classify(&mail_summary, &project_summaries, &[])
             .await
         {
-            Ok(r) => r,
-            Err(_) => ClassifyResult {
-                action: ClassifyAction::Unclassified,
-                confidence: 0.0,
-                reason: "分類中にエラーが発生しました".to_string(),
-            },
+            Ok(r) => {
+                eprintln!("[classify] result: confidence={}", r.confidence);
+                r
+            }
+            Err(e) => {
+                eprintln!("[classify] error: {}", e);
+                ClassifyResult {
+                    action: ClassifyAction::Unclassified,
+                    confidence: 0.0,
+                    reason: "分類中にエラーが発生しました".to_string(),
+                }
+            }
+        };
+
+        let response = ClassifyResponse {
+            mail_id: mail.id.clone(),
+            result: result.clone(),
         };
 
         // Persist result
@@ -257,14 +270,28 @@ pub async fn classify_unassigned(
                         "ai",
                         Some(result.confidence),
                     );
+                    assigned += 1;
                 }
                 ClassifyAction::Create { .. } => {
                     let mut map = pending.0.lock().map_err(|e| e.to_string())?;
                     map.insert(mail.id.clone(), result);
+                    needs_review += 1;
                 }
-                _ => {}
+                _ => {
+                    unclassified_count += 1;
+                }
             }
         }
+
+        // Emit progress with result
+        let _ = handle.emit(
+            "classify-progress",
+            serde_json::json!({
+                "current": idx,
+                "total": total,
+                "result": response,
+            }),
+        );
     }
 
     // Emit completion event
@@ -272,7 +299,9 @@ pub async fn classify_unassigned(
         "classify-complete",
         serde_json::json!({
             "total": total,
-            "cancelled": false,
+            "assigned": assigned,
+            "needs_review": needs_review,
+            "unclassified": unclassified_count,
         }),
     );
 
