@@ -197,6 +197,9 @@ pub async fn classify_unassigned(
         .map_err(|e| e.to_string())?;
 
     let total = mails.len();
+    let mut assigned = 0u32;
+    let mut needs_review = 0u32;
+    let mut unclassified_count = 0u32;
 
     for (idx, mail) in mails.iter().enumerate() {
         // Check cancellation
@@ -211,17 +214,6 @@ pub async fn classify_unassigned(
             );
             return Ok(());
         }
-
-        // Emit progress
-        let _ = handle.emit(
-            "classify-progress",
-            serde_json::json!({
-                "current": idx,
-                "total": total,
-                "mail_id": mail.id,
-                "cancelled": false,
-            }),
-        );
 
         // Load project summaries fresh for each mail (projects may have been created)
         let project_summaries = {
@@ -243,6 +235,11 @@ pub async fn classify_unassigned(
             },
         };
 
+        let response = ClassifyResponse {
+            mail_id: mail.id.clone(),
+            result: result.clone(),
+        };
+
         // Persist result
         {
             let conn = db.0.lock().map_err(|e| e.to_string())?;
@@ -257,14 +254,28 @@ pub async fn classify_unassigned(
                         "ai",
                         Some(result.confidence),
                     );
+                    assigned += 1;
                 }
                 ClassifyAction::Create { .. } => {
                     let mut map = pending.0.lock().map_err(|e| e.to_string())?;
                     map.insert(mail.id.clone(), result);
+                    needs_review += 1;
                 }
-                _ => {}
+                _ => {
+                    unclassified_count += 1;
+                }
             }
         }
+
+        // Emit progress with result
+        let _ = handle.emit(
+            "classify-progress",
+            serde_json::json!({
+                "current": idx,
+                "total": total,
+                "result": response,
+            }),
+        );
     }
 
     // Emit completion event
@@ -272,7 +283,9 @@ pub async fn classify_unassigned(
         "classify-complete",
         serde_json::json!({
             "total": total,
-            "cancelled": false,
+            "assigned": assigned,
+            "needs_review": needs_review,
+            "unclassified": unclassified_count,
         }),
     );
 

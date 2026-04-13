@@ -64,12 +64,10 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   },
 
   classifyAll: async (accountId) => {
-    set({ classifying: true, progress: null, results: [], error: null });
+    set({ classifying: true, progress: null, results: [], summary: null, error: null });
     try {
-      const summary = await invoke<ClassifySummary>("classify_all", {
-        accountId,
-      });
-      set({ summary, classifying: false, progress: null });
+      // classify_unassigned は void を返す。進捗と完了は Tauri events で通知される
+      await invoke("classify_unassigned", { accountId });
     } catch (e) {
       set({ error: String(e), classifying: false, progress: null });
     }
@@ -132,10 +130,16 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       "classify-progress",
       (event) => {
         const payload = event.payload;
-        set({
-          progress: { current: payload.current, total: payload.total },
-          results: [...get().results, payload.result],
-        });
+        if (payload.result) {
+          set({
+            progress: { current: payload.current, total: payload.total },
+            results: [...get().results, payload.result],
+          });
+        } else {
+          set({
+            progress: { current: payload.current, total: payload.total },
+          });
+        }
       },
     );
 
