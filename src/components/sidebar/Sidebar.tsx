@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
 import { useAccountStore } from "../../stores/accountStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { AccountList } from "./AccountList";
 import { AccountForm } from "./AccountForm";
+import { ProjectTree } from "./ProjectTree";
+import { ProjectForm } from "./ProjectForm";
 import type { CreateAccountRequest } from "../../types/account";
 
-export function Sidebar() {
+interface SidebarProps {
+  onViewChange?: (view: "threads" | "unclassified" | "project") => void;
+}
+
+export function Sidebar({ onViewChange }: SidebarProps) {
   const {
     accounts,
     selectedAccountId,
@@ -13,7 +20,9 @@ export function Sidebar() {
     selectAccount,
     initDeepLinkListener,
   } = useAccountStore();
+  const { createProject } = useProjectStore();
   const [showForm, setShowForm] = useState(false);
+  const [showProjectForm, setShowProjectForm] = useState(false);
 
   useEffect(() => {
     fetchAccounts();
@@ -32,6 +41,21 @@ export function Sidebar() {
   const handleSubmit = async (req: CreateAccountRequest) => {
     await createAccount(req);
     setShowForm(false);
+  };
+
+  const handleSelectAccount = (id: string) => {
+    selectAccount(id);
+    onViewChange?.("threads");
+  };
+
+  const handleProjectSubmit = async (
+    name: string,
+    description?: string,
+    color?: string,
+  ) => {
+    if (!selectedAccountId) return;
+    await createProject(selectedAccountId, name, description, color);
+    setShowProjectForm(false);
   };
 
   return (
@@ -55,9 +79,29 @@ export function Sidebar() {
         <AccountList
           accounts={accounts}
           selectedId={selectedAccountId}
-          onSelect={selectAccount}
+          onSelect={handleSelectAccount}
+        />
+        <ProjectTree
+          onSelectUnclassified={() => onViewChange?.("unclassified")}
         />
       </div>
+      {selectedAccountId && (
+        <div className="border-t">
+          {showProjectForm ? (
+            <ProjectForm
+              onSubmit={handleProjectSubmit}
+              onCancel={() => setShowProjectForm(false)}
+            />
+          ) : (
+            <button
+              onClick={() => setShowProjectForm(true)}
+              className="w-full px-4 py-3 text-left text-sm text-blue-600 hover:bg-gray-100 hover:underline"
+            >
+              + 案件を作成
+            </button>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
