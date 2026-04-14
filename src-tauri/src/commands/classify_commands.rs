@@ -114,13 +114,15 @@ pub async fn classify_mail(
     mail_id: String,
 ) -> Result<ClassifyResponse, String> {
     // Load mail and settings while holding the lock briefly.
-    let (mail, project_summaries, endpoint, model) = {
+    let (mail, project_summaries, corrections, endpoint, model) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mail = load_mail(&conn, &mail_id)?;
         let project_summaries = build_project_summaries(&conn, &mail.account_id)?;
+        let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)
+            .unwrap_or_default();
         let endpoint = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
         let model = get_settings_or_default(&conn, "ollama_model", "llama3.1:8b");
-        (mail, project_summaries, endpoint, model)
+        (mail, project_summaries, corrections, endpoint, model)
     };
 
     let mail_summary = MailSummary::from_mail(&mail);
@@ -134,7 +136,7 @@ pub async fn classify_mail(
 
     // Classify
     let result = classifier
-        .classify(&mail_summary, &project_summaries, &[])
+        .classify(&mail_summary, &project_summaries, &corrections)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -179,13 +181,15 @@ pub async fn classify_unassigned(
     cancel_flag.0.store(false, Ordering::SeqCst);
 
     // Load unclassified mails and settings
-    let (mails, endpoint, model) = {
+    let (mails, corrections, endpoint, model) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mails = assignments::get_unclassified_mails(&conn, &account_id)
             .map_err(|e| e.to_string())?;
+        let corrections = assignments::get_recent_corrections(&conn, &account_id, 20)
+            .unwrap_or_default();
         let endpoint = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
         let model = get_settings_or_default(&conn, "ollama_model", "llama3.1:8b");
-        (mails, endpoint, model)
+        (mails, corrections, endpoint, model)
     };
 
     let classifier = OllamaClassifier::new(&endpoint, &model);
@@ -224,7 +228,7 @@ pub async fn classify_unassigned(
         let mail_summary = MailSummary::from_mail(mail);
 
         let result = match classifier
-            .classify(&mail_summary, &project_summaries, &[])
+            .classify(&mail_summary, &project_summaries, &corrections)
             .await
         {
             Ok(r) => r,
@@ -390,6 +394,18 @@ pub fn get_unclassified_mails(
 ) -> Result<Vec<Mail>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     assignments::get_unclassified_mails(&conn, &account_id).map_err(|e| e.to_string())
+}
+
+/// Move a mail to a different project (used by D&D and context menu).
+#[tauri::command]
+pub fn move_mail(
+    db: State<DbState>,
+    mail_id: String,
+    project_id: String,
+) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    assignments::move_mail_to_project(&conn, &mail_id, &project_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Get all mails assigned to a specific project.

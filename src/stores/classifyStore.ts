@@ -27,6 +27,7 @@ interface ClassifyState {
     description?: string,
   ) => Promise<void>;
   rejectClassification: (mailId: string) => Promise<void>;
+  moveMail: (mailId: string, projectId: string, accountId: string) => Promise<void>;
   initClassifyListeners: () => Promise<() => void>;
 }
 
@@ -122,6 +123,20 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       set({
         results: get().results.filter((r) => r.mail_id !== mailId),
       });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  moveMail: async (mailId, projectId, accountId) => {
+    try {
+      await invoke("move_mail", { mailId, projectId });
+      set({
+        unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
+        results: get().results.filter((r) => r.mail_id !== mailId),
+      });
+      // Refresh to show updated counts
+      get().fetchUnclassified(accountId);
     } catch (e) {
       set({ error: String(e) });
     }

@@ -4,6 +4,7 @@ import { Sidebar } from "./components/sidebar/Sidebar";
 import { ThreadList } from "./components/thread-list/ThreadList";
 import { UnclassifiedList } from "./components/thread-list/UnclassifiedList";
 import { MailView } from "./components/mail-view/MailView";
+import { DragOverlay } from "./components/common/DragOverlay";
 
 type ViewMode = "threads" | "unclassified" | "project";
 
@@ -23,6 +24,7 @@ function App() {
       <div className="flex-1">
         <MailView />
       </div>
+      <DragOverlay />
     </div>
   );
 }
