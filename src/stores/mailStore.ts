@@ -7,19 +7,24 @@ interface MailState {
   selectedThread: Thread | null;
   selectedMail: Mail | null;
   syncing: boolean;
+  unclassifiedMails: Mail[];
   error: string | null;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
   syncAccount: (accountId: string) => Promise<number>;
   setThreads: (threads: Thread[]) => void;
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
+  fetchUnclassified: (accountId: string) => Promise<void>;
+  moveMail: (mailId: string, projectId: string, accountId: string) => Promise<void>;
+  removeUnclassifiedMail: (mailId: string) => void;
 }
 
-export const useMailStore = create<MailState>((set) => ({
+export const useMailStore = create<MailState>((set, get) => ({
   threads: [],
   selectedThread: null,
   selectedMail: null,
   syncing: false,
+  unclassifiedMails: [],
   error: null,
 
   fetchThreads: async (accountId, folder) => {
@@ -49,4 +54,33 @@ export const useMailStore = create<MailState>((set) => ({
   setThreads: (threads) => set({ threads }),
   selectThread: (thread) => set({ selectedThread: thread, selectedMail: null }),
   selectMail: (mail) => set({ selectedMail: mail }),
+
+  fetchUnclassified: async (accountId) => {
+    try {
+      const mails = await invoke<Mail[]>("get_unclassified_mails", {
+        accountId,
+      });
+      set({ unclassifiedMails: mails });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  moveMail: async (mailId, projectId, accountId) => {
+    try {
+      await invoke("move_mail", { mailId, projectId });
+      set({
+        unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
+      });
+      get().fetchUnclassified(accountId);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  removeUnclassifiedMail: (mailId) => {
+    set({
+      unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
+    });
+  },
 }));

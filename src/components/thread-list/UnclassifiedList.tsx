@@ -10,11 +10,9 @@ import type { Mail } from "../../types/mail";
 
 export function UnclassifiedList() {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
-  const unclassifiedMails = useClassifyStore((s) => s.unclassifiedMails);
   const results = useClassifyStore((s) => s.results);
   const summary = useClassifyStore((s) => s.summary);
   const classifying = useClassifyStore((s) => s.classifying);
-  const fetchUnclassified = useClassifyStore((s) => s.fetchUnclassified);
   const approveNewProject = useClassifyStore((s) => s.approveNewProject);
   const rejectClassification = useClassifyStore(
     (s) => s.rejectClassification,
@@ -23,6 +21,8 @@ export function UnclassifiedList() {
     (s) => s.initClassifyListeners,
   );
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const unclassifiedMails = useMailStore((s) => s.unclassifiedMails);
+  const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
   const { selectThread, selectMail } = useMailStore();
 
   useEffect(() => {
