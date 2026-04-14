@@ -1,4 +1,5 @@
 import type { Mail } from "../../types/mail";
+import { formatFullDate } from "../../utils/date";
 
 interface MailHeaderProps {
   mail: Mail;
@@ -22,7 +23,7 @@ export function MailHeader({ mail }: MailHeaderProps) {
         )}
         <div>
           <span className="font-medium">Date:</span>{" "}
-          {new Date(mail.date).toLocaleString("ja-JP")}
+          {formatFullDate(mail.date)}
         </div>
       </div>
     </div>
