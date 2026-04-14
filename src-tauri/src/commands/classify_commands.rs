@@ -126,7 +126,7 @@ pub async fn classify_mail(
     };
 
     let mail_summary = MailSummary::from_mail(&mail);
-    let classifier = OllamaClassifier::new(&endpoint, &model);
+    let classifier = OllamaClassifier::new(&endpoint, &model).map_err(|e| e.to_string())?;
 
     // Health check
     classifier
@@ -192,7 +192,7 @@ pub async fn classify_unassigned(
         (mails, corrections, endpoint, model)
     };
 
-    let classifier = OllamaClassifier::new(&endpoint, &model);
+    let classifier = OllamaClassifier::new(&endpoint, &model).map_err(|e| e.to_string())?;
 
     // Health check before starting the loop
     classifier
