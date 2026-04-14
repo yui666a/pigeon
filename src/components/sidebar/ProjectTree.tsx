@@ -51,6 +51,7 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
   if (!selectedAccountId) {
     return null;
   }
+  const accountId = selectedAccountId;
 
   const handleProjectContextMenu = (e: React.MouseEvent, projectId: string) => {
     e.preventDefault();
@@ -67,7 +68,6 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
   const submitRename = async () => {
     if (renamingProjectId && renameValue.trim()) {
       await updateProject(renamingProjectId, renameValue.trim());
-      await fetchProjects(selectedAccountId!);
     }
     setRenamingProjectId(null);
     setRenameValue("");
@@ -90,7 +90,6 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
         label: "アーカイブ",
         onClick: async () => {
           await archiveProject(projectId);
-          await fetchProjects(selectedAccountId!);
         },
       },
       {
@@ -98,20 +97,18 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
         danger: true,
         onClick: async () => {
           await deleteProject(projectId);
-          await fetchProjects(selectedAccountId!);
         },
       },
     ];
   };
 
   const handleDropOnProject = async (projectId: string) => {
-    if (!draggingMailIds || !selectedAccountId) return;
+    if (!draggingMailIds) return;
     const mailIds = [...draggingMailIds];
     endDrag();
     for (const mailId of mailIds) {
-      await moveMail(mailId, projectId, selectedAccountId);
+      await moveMail(mailId, projectId, accountId);
     }
-    await fetchProjects(selectedAccountId);
   };
 
   return (
