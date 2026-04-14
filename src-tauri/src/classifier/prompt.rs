@@ -159,4 +159,63 @@ mod tests {
         assert!(prompt.contains("(unclassified)"));
         assert!(prompt.contains("Kickoff meeting"));
     }
+
+    #[test]
+    fn test_build_user_prompt_project_without_description() {
+        let mail = make_mail();
+        let projects = vec![ProjectSummary {
+            id: "p1".to_string(),
+            name: "No Desc Project".to_string(),
+            description: None,
+            recent_subjects: vec![],
+        }];
+        let prompt = build_user_prompt(&mail, &projects, &[]);
+        assert!(prompt.contains("p1"));
+        assert!(prompt.contains("No Desc Project"));
+        assert!(!prompt.contains("description:"));
+    }
+
+    #[test]
+    fn test_build_user_prompt_project_without_recent_subjects() {
+        let mail = make_mail();
+        let projects = vec![ProjectSummary {
+            id: "p1".to_string(),
+            name: "Empty Project".to_string(),
+            description: Some("desc".to_string()),
+            recent_subjects: vec![],
+        }];
+        let prompt = build_user_prompt(&mail, &projects, &[]);
+        assert!(!prompt.contains("Recent subjects"));
+    }
+
+    #[test]
+    fn test_build_user_prompt_many_corrections() {
+        let mail = make_mail();
+        let corrections: Vec<CorrectionEntry> = (0..5)
+            .map(|i| CorrectionEntry {
+                mail_subject: format!("Mail {}", i),
+                from_project: Some(format!("proj-{}", i)),
+                to_project: format!("proj-{}", i + 1),
+            })
+            .collect();
+        let prompt = build_user_prompt(&mail, &[], &corrections);
+        assert!(prompt.contains("Past corrections"));
+        for i in 0..5 {
+            assert!(prompt.contains(&format!("Mail {}", i)));
+        }
+    }
+
+    #[test]
+    fn test_build_user_prompt_contains_all_mail_fields() {
+        let mail = MailSummary {
+            subject: "特殊文字テスト <>&\"'".to_string(),
+            from_addr: "日本語名前 <test@example.com>".to_string(),
+            date: "2026-04-13".to_string(),
+            body_preview: "本文プレビュー".to_string(),
+        };
+        let prompt = build_user_prompt(&mail, &[], &[]);
+        assert!(prompt.contains("特殊文字テスト <>&\"'"));
+        assert!(prompt.contains("日本語名前 <test@example.com>"));
+        assert!(prompt.contains("本文プレビュー"));
+    }
 }
