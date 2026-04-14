@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::classifier::ollama::OllamaClassifier;
 use crate::classifier::LlmClassifier;
 use crate::commands::account_commands::DbState;
-use crate::db::{assignments, projects};
+use crate::db::{assignments, mails, projects};
 use crate::models::classifier::{
     ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary, ProjectSummary,
     CONFIDENCE_UNCERTAIN,
@@ -68,40 +68,6 @@ fn build_project_summaries(
     Ok(summaries)
 }
 
-/// Load a single mail by ID from the database.
-fn load_mail(conn: &rusqlite::Connection, mail_id: &str) -> Result<Mail, String> {
-    conn.query_row(
-        "SELECT id, account_id, folder, message_id, in_reply_to, \"references\",
-                from_addr, to_addr, cc_addr, subject, body_text, body_html,
-                date, has_attachments, raw_size, uid, flags, fetched_at
-         FROM mails WHERE id = ?1",
-        rusqlite::params![mail_id],
-        |row| {
-            Ok(Mail {
-                id: row.get(0)?,
-                account_id: row.get(1)?,
-                folder: row.get(2)?,
-                message_id: row.get(3)?,
-                in_reply_to: row.get(4)?,
-                references: row.get(5)?,
-                from_addr: row.get(6)?,
-                to_addr: row.get(7)?,
-                cc_addr: row.get(8)?,
-                subject: row.get(9)?,
-                body_text: row.get(10)?,
-                body_html: row.get(11)?,
-                date: row.get(12)?,
-                has_attachments: row.get(13)?,
-                raw_size: row.get(14)?,
-                uid: row.get(15)?,
-                flags: row.get(16)?,
-                fetched_at: row.get(17)?,
-            })
-        },
-    )
-    .map_err(|_| format!("Mail not found: {}", mail_id))
-}
-
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -116,7 +82,7 @@ pub async fn classify_mail(
     // Load mail and settings while holding the lock briefly.
     let (mail, project_summaries, corrections, endpoint, model) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let mail = load_mail(&conn, &mail_id)?;
+        let mail = mails::get_mail_by_id(&conn, &mail_id).map_err(|e| e.to_string())?;
         let project_summaries = build_project_summaries(&conn, &mail.account_id)?;
         let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)
             .unwrap_or_default();
@@ -329,7 +295,7 @@ pub fn approve_new_project(
     let mut conn = db.0.lock().map_err(|e| e.to_string())?;
 
     // Load mail to get account_id
-    let mail = load_mail(&conn, &mail_id)?;
+    let mail = mails::get_mail_by_id(&conn, &mail_id).map_err(|e| e.to_string())?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -470,23 +436,22 @@ mod tests {
         assert_eq!(val, "http://custom:1234");
     }
 
-    // --- load_mail ---
+    // --- get_mail_by_id (now in db::mails) ---
 
     #[test]
-    fn test_load_mail_success() {
+    fn test_get_mail_by_id_success() {
         let conn = setup_db();
         insert_test_mail(&conn, "m1", "Test Subject");
-        let mail = load_mail(&conn, "m1").unwrap();
+        let mail = mails::get_mail_by_id(&conn, "m1").unwrap();
         assert_eq!(mail.id, "m1");
         assert_eq!(mail.subject, "Test Subject");
     }
 
     #[test]
-    fn test_load_mail_not_found() {
+    fn test_get_mail_by_id_not_found() {
         let conn = setup_db();
-        let result = load_mail(&conn, "nonexistent");
+        let result = mails::get_mail_by_id(&conn, "nonexistent");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Mail not found"));
     }
 
     // --- build_project_summaries ---
@@ -521,7 +486,7 @@ mod tests {
         insert_test_mail(&conn, "m1", "New Deal");
 
         // Simulate what approve_new_project does
-        let mail = load_mail(&conn, "m1").unwrap();
+        let mail = mails::get_mail_by_id(&conn, "m1").unwrap();
         let tx = conn.transaction().unwrap();
         let req = CreateProjectRequest {
             account_id: mail.account_id.clone(),
