@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Mail } from "../types/mail";
+import { useMailStore } from "./mailStore";
 import type {
   ClassifyResponse,
   ClassifyProgress,
@@ -14,9 +14,7 @@ interface ClassifyState {
   progress: { current: number; total: number } | null;
   results: ClassifyResponse[];
   summary: ClassifySummary | null;
-  unclassifiedMails: Mail[];
   error: string | null;
-  fetchUnclassified: (accountId: string) => Promise<void>;
   classifyMail: (mailId: string) => Promise<void>;
   classifyAll: (accountId: string) => Promise<void>;
   cancelClassification: () => Promise<void>;
@@ -27,7 +25,6 @@ interface ClassifyState {
     description?: string,
   ) => Promise<void>;
   rejectClassification: (mailId: string) => Promise<void>;
-  moveMail: (mailId: string, projectId: string, accountId: string) => Promise<void>;
   initClassifyListeners: () => Promise<() => void>;
 }
 
@@ -37,19 +34,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   progress: null,
   results: [],
   summary: null,
-  unclassifiedMails: [],
   error: null,
-
-  fetchUnclassified: async (accountId) => {
-    try {
-      const mails = await invoke<Mail[]>("get_unclassified_mails", {
-        accountId,
-      });
-      set({ unclassifiedMails: mails });
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
 
   classifyMail: async (mailId) => {
     set({ classifying: true, error: null });
@@ -69,7 +54,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   classifyAll: async (accountId) => {
     set({ classifying: true, classifyingAccountId: accountId, progress: null, results: [], summary: null, error: null });
     try {
-      // classify_unassigned は void を返す。進捗と完了は Tauri events で通知される
       await invoke("classify_unassigned", { accountId });
     } catch (e) {
       set({ error: String(e), classifying: false, classifyingAccountId: null, progress: null });
@@ -88,10 +72,8 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   approveClassification: async (mailId, projectId) => {
     try {
       await invoke("approve_classification", { mailId, projectId });
+      useMailStore.getState().removeUnclassifiedMail(mailId);
       set({
-        unclassifiedMails: get().unclassifiedMails.filter(
-          (m) => m.id !== mailId,
-        ),
         results: get().results.filter((r) => r.mail_id !== mailId),
       });
     } catch (e) {
@@ -106,10 +88,8 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
         projectName,
         description: description ?? null,
       });
+      useMailStore.getState().removeUnclassifiedMail(mailId);
       set({
-        unclassifiedMails: get().unclassifiedMails.filter(
-          (m) => m.id !== mailId,
-        ),
         results: get().results.filter((r) => r.mail_id !== mailId),
       });
     } catch (e) {
@@ -123,20 +103,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       set({
         results: get().results.filter((r) => r.mail_id !== mailId),
       });
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
-  moveMail: async (mailId, projectId, accountId) => {
-    try {
-      await invoke("move_mail", { mailId, projectId });
-      set({
-        unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
-        results: get().results.filter((r) => r.mail_id !== mailId),
-      });
-      // Refresh to show updated counts
-      get().fetchUnclassified(accountId);
     } catch (e) {
       set({ error: String(e) });
     }
@@ -171,7 +137,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
           progress: null,
         });
         if (accountId) {
-          get().fetchUnclassified(accountId);
+          useMailStore.getState().fetchUnclassified(accountId);
         }
       },
     );

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useClassifyStore } from "../../stores/classifyStore";
+import { useMailStore } from "../../stores/mailStore";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -18,28 +19,11 @@ describe("classifyStore", () => {
       progress: null,
       results: [],
       summary: null,
-      unclassifiedMails: [],
       error: null,
     });
-  });
-
-  describe("fetchUnclassified", () => {
-    it("sets unclassifiedMails on success", async () => {
-      const mails = [{ id: "m1", subject: "Test" }];
-      mockInvoke.mockResolvedValue(mails);
-
-      await useClassifyStore.getState().fetchUnclassified("acc1");
-
-      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", { accountId: "acc1" });
-      expect(useClassifyStore.getState().unclassifiedMails).toEqual(mails);
-    });
-
-    it("sets error on failure", async () => {
-      mockInvoke.mockRejectedValue("fetch error");
-
-      await useClassifyStore.getState().fetchUnclassified("acc1");
-
-      expect(useClassifyStore.getState().error).toBe("fetch error");
+    useMailStore.setState({
+      unclassifiedMails: [],
+      error: null,
     });
   });
 
@@ -66,12 +50,14 @@ describe("classifyStore", () => {
   });
 
   describe("approveClassification", () => {
-    it("removes mail from unclassified and results", async () => {
-      useClassifyStore.setState({
+    it("removes mail from mailStore.unclassifiedMails and classifyStore.results", async () => {
+      useMailStore.setState({
         unclassifiedMails: [
           { id: "m1" } as never,
           { id: "m2" } as never,
         ],
+      });
+      useClassifyStore.setState({
         results: [
           { mail_id: "m1", action: "assign", confidence: 0.9, reason: "test" },
           { mail_id: "m2", action: "assign", confidence: 0.8, reason: "test" },
@@ -81,8 +67,8 @@ describe("classifyStore", () => {
 
       await useClassifyStore.getState().approveClassification("m1", "proj1");
 
-      expect(useClassifyStore.getState().unclassifiedMails).toHaveLength(1);
-      expect(useClassifyStore.getState().unclassifiedMails[0].id).toBe("m2");
+      expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
+      expect(useMailStore.getState().unclassifiedMails[0].id).toBe("m2");
       expect(useClassifyStore.getState().results).toHaveLength(1);
       expect(useClassifyStore.getState().results[0].mail_id).toBe("m2");
     });
@@ -90,8 +76,10 @@ describe("classifyStore", () => {
 
   describe("rejectClassification", () => {
     it("removes result but keeps mail in unclassified", async () => {
-      useClassifyStore.setState({
+      useMailStore.setState({
         unclassifiedMails: [{ id: "m1" } as never],
+      });
+      useClassifyStore.setState({
         results: [{ mail_id: "m1", action: "assign", confidence: 0.5, reason: "test" }],
       });
       mockInvoke.mockResolvedValue(undefined);
@@ -99,7 +87,7 @@ describe("classifyStore", () => {
       await useClassifyStore.getState().rejectClassification("m1");
 
       expect(useClassifyStore.getState().results).toHaveLength(0);
-      expect(useClassifyStore.getState().unclassifiedMails).toHaveLength(1);
+      expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
     });
   });
 
@@ -122,38 +110,6 @@ describe("classifyStore", () => {
       expect(useClassifyStore.getState().error).toBe("ollama down");
       expect(useClassifyStore.getState().classifying).toBe(false);
       expect(useClassifyStore.getState().classifyingAccountId).toBeNull();
-    });
-  });
-
-  describe("moveMail", () => {
-    it("calls move_mail and removes mail from unclassified and results", async () => {
-      useClassifyStore.setState({
-        unclassifiedMails: [
-          { id: "m1" } as never,
-          { id: "m2" } as never,
-        ],
-        results: [
-          { mail_id: "m1", action: "assign", confidence: 0.9, reason: "test" },
-        ],
-      });
-      mockInvoke
-        .mockResolvedValueOnce(undefined)                // move_mail
-        .mockResolvedValueOnce([{ id: "m2" } as never]); // fetchUnclassified refresh
-
-      await useClassifyStore.getState().moveMail("m1", "proj1", "acc1");
-
-      expect(mockInvoke).toHaveBeenCalledWith("move_mail", { mailId: "m1", projectId: "proj1" });
-      expect(useClassifyStore.getState().unclassifiedMails).toHaveLength(1);
-      expect(useClassifyStore.getState().unclassifiedMails[0].id).toBe("m2");
-      expect(useClassifyStore.getState().results).toHaveLength(0);
-    });
-
-    it("sets error on failure", async () => {
-      mockInvoke.mockRejectedValue("move error");
-
-      await useClassifyStore.getState().moveMail("m1", "proj1", "acc1");
-
-      expect(useClassifyStore.getState().error).toBe("move error");
     });
   });
 });

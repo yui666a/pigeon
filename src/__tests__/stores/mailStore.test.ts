@@ -14,6 +14,7 @@ describe("mailStore", () => {
       selectedThread: null,
       selectedMail: null,
       syncing: false,
+      unclassifiedMails: [],
       error: null,
     });
   });
@@ -83,6 +84,70 @@ describe("mailStore", () => {
       const mail = { id: "m1", subject: "Test" } as never;
       useMailStore.getState().selectMail(mail);
       expect(useMailStore.getState().selectedMail).toEqual(mail);
+    });
+  });
+
+  describe("fetchUnclassified", () => {
+    it("sets unclassifiedMails on success", async () => {
+      const mails = [{ id: "m1", subject: "Test" }];
+      mockInvoke.mockResolvedValue(mails);
+
+      await useMailStore.getState().fetchUnclassified("acc1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", { accountId: "acc1" });
+      expect(useMailStore.getState().unclassifiedMails).toEqual(mails);
+    });
+
+    it("sets error on failure", async () => {
+      mockInvoke.mockRejectedValue("fetch error");
+
+      await useMailStore.getState().fetchUnclassified("acc1");
+
+      expect(useMailStore.getState().error).toBe("fetch error");
+    });
+  });
+
+  describe("moveMail", () => {
+    it("calls move_mail and removes mail from unclassified", async () => {
+      useMailStore.setState({
+        unclassifiedMails: [
+          { id: "m1" } as never,
+          { id: "m2" } as never,
+        ],
+      });
+      mockInvoke
+        .mockResolvedValueOnce(undefined)                // move_mail
+        .mockResolvedValueOnce([{ id: "m2" } as never]); // fetchUnclassified refresh
+
+      await useMailStore.getState().moveMail("m1", "proj1", "acc1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("move_mail", { mailId: "m1", projectId: "proj1" });
+      expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
+      expect(useMailStore.getState().unclassifiedMails[0].id).toBe("m2");
+    });
+
+    it("sets error on failure", async () => {
+      mockInvoke.mockRejectedValue("move error");
+
+      await useMailStore.getState().moveMail("m1", "proj1", "acc1");
+
+      expect(useMailStore.getState().error).toBe("move error");
+    });
+  });
+
+  describe("removeUnclassifiedMail", () => {
+    it("removes a specific mail from unclassifiedMails", () => {
+      useMailStore.setState({
+        unclassifiedMails: [
+          { id: "m1" } as never,
+          { id: "m2" } as never,
+        ],
+      });
+
+      useMailStore.getState().removeUnclassifiedMail("m1");
+
+      expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
+      expect(useMailStore.getState().unclassifiedMails[0].id).toBe("m2");
     });
   });
 });

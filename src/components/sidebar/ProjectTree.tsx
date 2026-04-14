@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
-import { useClassifyStore } from "../../stores/classifyStore";
+import { useMailStore } from "../../stores/mailStore";
 import { useDragStore } from "../../stores/dragStore";
 import { ContextMenu } from "../common/ContextMenu";
 
@@ -14,7 +14,7 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
   const { selectedAccountId } = useAccountStore();
   const { projects, selectedProjectId, fetchProjects, selectProject, updateProject, archiveProject, deleteProject } =
     useProjectStore();
-  const { unclassifiedMails, fetchUnclassified, moveMail } = useClassifyStore();
+  const { unclassifiedMails, fetchUnclassified, moveMail } = useMailStore();
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
   const endDrag = useDragStore((s) => s.endDrag);
   const [hoverProjectId, setHoverProjectId] = useState<string | null>(null);
