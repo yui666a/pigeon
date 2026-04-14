@@ -4,6 +4,7 @@ import { useAccountStore } from "../../stores/accountStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ThreadItem } from "./ThreadItem";
+import { EmptyState } from "../common/EmptyState";
 import type { Thread } from "../../types/mail";
 
 interface ThreadListProps {
@@ -33,25 +34,13 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount, setThreads]);
 
   if (!selectedAccountId) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400">
-        アカウントを選択してください
-      </div>
-    );
+    return <EmptyState message="アカウントを選択してください" />;
   }
   if (syncing) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400">
-        メールを同期中...
-      </div>
-    );
+    return <EmptyState message="メールを同期中..." />;
   }
   if (threads.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400">
-        メールがありません
-      </div>
-    );
+    return <EmptyState message="メールがありません" />;
   }
   return (
     <div className="h-full overflow-y-auto">

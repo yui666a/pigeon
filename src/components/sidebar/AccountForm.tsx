@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { ManualAccountForm } from "./ManualAccountForm";
+import { LoadingSpinner } from "../common/LoadingSpinner";
 import type { CreateAccountRequest } from "../../types/account";
 
 type FormStep = "select-provider" | "oauth" | "manual";
@@ -63,12 +64,8 @@ export function AccountForm({ onSubmit, onCancel }: AccountFormProps) {
         <h2 className="text-sm font-semibold">Google アカウント</h2>
 
         {oauthStatus === "waiting" && (
-          <div className="flex flex-col items-center gap-2 py-4">
-            <div
-              className="h-6 w-6 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
-              role="status"
-            />
-            <p className="text-sm text-gray-600">ブラウザで認証中です...</p>
+          <div className="flex flex-col items-center">
+            <LoadingSpinner message="ブラウザで認証中です..." />
             <button
               type="button"
               onClick={handleOAuthCancel}
@@ -80,13 +77,7 @@ export function AccountForm({ onSubmit, onCancel }: AccountFormProps) {
         )}
 
         {oauthStatus === "exchanging" && (
-          <div className="flex flex-col items-center gap-2 py-4">
-            <div
-              className="h-6 w-6 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
-              role="status"
-            />
-            <p className="text-sm text-gray-600">アカウントを設定中...</p>
-          </div>
+          <LoadingSpinner message="アカウントを設定中..." />
         )}
 
         {oauthStatus === "error" && (

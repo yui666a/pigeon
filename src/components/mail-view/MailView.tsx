@@ -1,16 +1,13 @@
 import DOMPurify from "dompurify";
 import { useMailStore } from "../../stores/mailStore";
 import { MailHeader } from "./MailHeader";
+import { EmptyState } from "../common/EmptyState";
 
 export function MailView() {
   const { selectedThread, selectedMail, selectMail } = useMailStore();
 
   if (!selectedThread) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400">
-        スレッドを選択してください
-      </div>
-    );
+    return <EmptyState message="スレッドを選択してください" />;
   }
 
   const mail =
