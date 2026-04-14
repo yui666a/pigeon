@@ -316,4 +316,97 @@ mod tests {
         assert_eq!(normalize_subject("FW: Hello"), "hello");
         assert_eq!(normalize_subject("Hello"), "hello");
     }
+
+    #[test]
+    fn test_build_threads_empty() {
+        let threads = build_threads(&[]);
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn test_build_threads_single_mail() {
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Solo", "2026-04-13T10:00:00");
+        let threads = build_threads(&[m1]);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 1);
+        assert_eq!(threads[0].subject, "Solo");
+    }
+
+    #[test]
+    fn test_build_threads_sorted_by_last_date_desc() {
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Old Topic", "2026-04-10T10:00:00");
+        let m2 = make_mail("m2", "<msg2@ex.com>", "New Topic", "2026-04-13T10:00:00");
+        let threads = build_threads(&[m1, m2]);
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].subject, "New Topic");
+        assert_eq!(threads[1].subject, "Old Topic");
+    }
+
+    #[test]
+    fn test_build_threads_fw_prefix_groups() {
+        let m1 = make_mail("m1", "<msg1@ex.com>", "案件の件", "2026-04-13T10:00:00");
+        let m2 = make_mail("m2", "<msg2@ex.com>", "Fw: 案件の件", "2026-04-13T11:00:00");
+        let threads = build_threads(&[m1, m2]);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 2);
+    }
+
+    #[test]
+    fn test_build_threads_fwd_prefix_groups() {
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Report", "2026-04-13T10:00:00");
+        let m2 = make_mail("m2", "<msg2@ex.com>", "Fwd: Report", "2026-04-13T11:00:00");
+        let threads = build_threads(&[m1, m2]);
+        assert_eq!(threads.len(), 1);
+    }
+
+    #[test]
+    fn test_build_threads_deep_chain() {
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<msg1@ex.com>".into());
+        let mut m3 = make_mail("m3", "<msg3@ex.com>", "Re: Re: Topic", "2026-04-13T12:00:00");
+        m3.in_reply_to = Some("<msg2@ex.com>".into());
+        let mut m4 = make_mail("m4", "<msg4@ex.com>", "Re: Re: Re: Topic", "2026-04-13T13:00:00");
+        m4.in_reply_to = Some("<msg3@ex.com>".into());
+        let threads = build_threads(&[m1, m2, m3, m4]);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 4);
+    }
+
+    #[test]
+    fn test_build_threads_from_addrs_deduplication() {
+        let mut m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
+        m1.from_addr = "alice@example.com".into();
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
+        m2.from_addr = "alice@example.com".into();
+        m2.in_reply_to = Some("<msg1@ex.com>".into());
+        let threads = build_threads(&[m1, m2]);
+        assert_eq!(threads[0].from_addrs.len(), 1);
+    }
+
+    #[test]
+    fn test_build_threads_subject_grouping_skipped_when_has_references() {
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Same Subject", "2026-04-13T10:00:00");
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Same Subject", "2026-04-13T11:00:00");
+        m2.references = Some("<nonexistent@ex.com>".into());
+        let threads = build_threads(&[m1, m2]);
+        assert_eq!(threads.len(), 2);
+    }
+
+    #[test]
+    fn test_normalize_subject_nested_prefixes() {
+        assert_eq!(normalize_subject("Re: Fw: Re: Hello"), "hello");
+        assert_eq!(normalize_subject("FW: FWD: RE: Hello"), "hello");
+    }
+
+    #[test]
+    fn test_normalize_subject_case_insensitive() {
+        assert_eq!(normalize_subject("RE: HELLO"), "hello");
+        assert_eq!(normalize_subject("re: hello"), "hello");
+    }
+
+    #[test]
+    fn test_normalize_subject_whitespace() {
+        assert_eq!(normalize_subject("  Re:   Hello  "), "hello");
+    }
 }

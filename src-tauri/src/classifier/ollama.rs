@@ -238,4 +238,72 @@ Please let me know if you need anything else."#;
         let result = OllamaClassifier::parse_response(content);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_extract_json_empty_string() {
+        assert!(OllamaClassifier::extract_json("").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_only_open_brace() {
+        assert!(OllamaClassifier::extract_json("{").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_only_close_brace() {
+        assert!(OllamaClassifier::extract_json("}").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_nested_braces() {
+        let input = r#"{"outer": {"inner": "value"}}"#;
+        let result = OllamaClassifier::extract_json(input).unwrap();
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_parse_response_missing_confidence() {
+        let content = r#"{"action": "unclassified", "reason": "test"}"#;
+        let result = OllamaClassifier::parse_response(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_response_missing_reason() {
+        let content = r#"{"action": "unclassified", "confidence": 0.5}"#;
+        let result = OllamaClassifier::parse_response(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_response_unknown_action() {
+        let content = r#"{"action": "delete", "confidence": 0.5, "reason": "test"}"#;
+        let result = OllamaClassifier::parse_response(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_response_assign_missing_project_id() {
+        let content = r#"{"action": "assign", "confidence": 0.9, "reason": "test"}"#;
+        let result = OllamaClassifier::parse_response(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_response_create_missing_fields() {
+        let content = r#"{"action": "create", "confidence": 0.7, "reason": "test"}"#;
+        let result = OllamaClassifier::parse_response(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_response_confidence_boundary_values() {
+        let content = r#"{"action": "unclassified", "confidence": 0.0, "reason": "test"}"#;
+        let result = OllamaClassifier::parse_response(content).unwrap();
+        assert!((result.confidence - 0.0).abs() < f64::EPSILON);
+
+        let content = r#"{"action": "unclassified", "confidence": 1.0, "reason": "test"}"#;
+        let result = OllamaClassifier::parse_response(content).unwrap();
+        assert!((result.confidence - 1.0).abs() < f64::EPSILON);
+    }
 }

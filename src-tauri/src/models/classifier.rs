@@ -72,3 +72,65 @@ pub struct ClassifyResponse {
     #[serde(flatten)]
     pub result: ClassifyResult,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::mail::Mail;
+
+    fn make_mail(body_text: Option<&str>) -> Mail {
+        Mail {
+            id: "m1".into(),
+            account_id: "acc1".into(),
+            folder: "INBOX".into(),
+            message_id: "<msg1@example.com>".into(),
+            in_reply_to: None,
+            references: None,
+            from_addr: "sender@example.com".into(),
+            to_addr: "me@example.com".into(),
+            cc_addr: None,
+            subject: "Test Subject".into(),
+            body_text: body_text.map(|s| s.to_string()),
+            body_html: None,
+            date: "2026-04-13T10:00:00".into(),
+            has_attachments: false,
+            raw_size: None,
+            uid: 1,
+            flags: None,
+            fetched_at: "2026-04-13T00:00:00".into(),
+        }
+    }
+
+    #[test]
+    fn test_from_mail_basic() {
+        let mail = make_mail(Some("Hello, this is a short body."));
+        let summary = MailSummary::from_mail(&mail);
+        assert_eq!(summary.subject, "Test Subject");
+        assert_eq!(summary.from_addr, "sender@example.com");
+        assert_eq!(summary.date, "2026-04-13T10:00:00");
+        assert_eq!(summary.body_preview, "Hello, this is a short body.");
+    }
+
+    #[test]
+    fn test_from_mail_truncates_body_at_300_chars() {
+        let long_body = "a".repeat(500);
+        let mail = make_mail(Some(&long_body));
+        let summary = MailSummary::from_mail(&mail);
+        assert_eq!(summary.body_preview.len(), 300);
+    }
+
+    #[test]
+    fn test_from_mail_empty_body() {
+        let mail = make_mail(None);
+        let summary = MailSummary::from_mail(&mail);
+        assert_eq!(summary.body_preview, "");
+    }
+
+    #[test]
+    fn test_from_mail_multibyte_truncation() {
+        let japanese_body = "あ".repeat(500);
+        let mail = make_mail(Some(&japanese_body));
+        let summary = MailSummary::from_mail(&mail);
+        assert_eq!(summary.body_preview.chars().count(), 300);
+    }
+}
