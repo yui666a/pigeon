@@ -1,3 +1,4 @@
+import DOMPurify from "dompurify";
 import { useMailStore } from "../../stores/mailStore";
 import { MailHeader } from "./MailHeader";
 
@@ -35,7 +36,7 @@ export function MailView() {
         {mail.body_html ? (
           <div
             className="prose max-w-none text-sm"
-            dangerouslySetInnerHTML={{ __html: mail.body_html }}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(mail.body_html) }}
           />
         ) : (
           <pre className="whitespace-pre-wrap text-sm">{mail.body_text}</pre>
