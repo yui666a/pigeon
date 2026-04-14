@@ -1,3 +1,4 @@
+use crate::db::mails::{row_to_mail, MAIL_COLUMNS_PREFIXED};
 use crate::error::AppError;
 use crate::models::mail::Mail;
 use rusqlite::{params, Connection};
@@ -78,13 +79,13 @@ pub fn get_unclassified_mails(
     account_id: &str,
 ) -> Result<Vec<Mail>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
-                m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
-                m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.fetched_at
-         FROM mails m
-         LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
-         WHERE mpa.mail_id IS NULL AND m.account_id = ?1
-         ORDER BY m.date DESC",
+        &format!(
+            "SELECT {} FROM mails m
+             LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
+             WHERE mpa.mail_id IS NULL AND m.account_id = ?1
+             ORDER BY m.date DESC",
+            MAIL_COLUMNS_PREFIXED
+        ),
     )?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?
@@ -99,13 +100,13 @@ pub fn get_mails_by_project(
     project_id: &str,
 ) -> Result<Vec<Mail>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
-                m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
-                m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.fetched_at
-         FROM mails m
-         JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
-         WHERE mpa.project_id = ?1
-         ORDER BY m.date DESC",
+        &format!(
+            "SELECT {} FROM mails m
+             JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
+             WHERE mpa.project_id = ?1
+             ORDER BY m.date DESC",
+            MAIL_COLUMNS_PREFIXED
+        ),
     )?;
     let mails = stmt
         .query_map(params![project_id], row_to_mail)?
@@ -225,29 +226,6 @@ pub fn move_mail_to_project(
         }
     }
     Ok(())
-}
-
-fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
-    Ok(Mail {
-        id: row.get(0)?,
-        account_id: row.get(1)?,
-        folder: row.get(2)?,
-        message_id: row.get(3)?,
-        in_reply_to: row.get(4)?,
-        references: row.get(5)?,
-        from_addr: row.get(6)?,
-        to_addr: row.get(7)?,
-        cc_addr: row.get(8)?,
-        subject: row.get(9)?,
-        body_text: row.get(10)?,
-        body_html: row.get(11)?,
-        date: row.get(12)?,
-        has_attachments: row.get(13)?,
-        raw_size: row.get(14)?,
-        uid: row.get(15)?,
-        flags: row.get(16)?,
-        fetched_at: row.get(17)?,
-    })
 }
 
 #[cfg(test)]

@@ -4,6 +4,53 @@ use crate::models::mail::{Mail, Thread};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
+/// Column list for SELECT queries on the mails table (no table prefix).
+/// Must match the field order expected by `row_to_mail`.
+pub const MAIL_COLUMNS: &str =
+    "id, account_id, folder, message_id, in_reply_to, \"references\",
+     from_addr, to_addr, cc_addr, subject, body_text, body_html,
+     date, has_attachments, raw_size, uid, flags, fetched_at";
+
+/// Column list with `m.` table prefix for JOIN queries.
+pub const MAIL_COLUMNS_PREFIXED: &str =
+    "m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
+     m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
+     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.fetched_at";
+
+/// Map a rusqlite Row to a Mail struct. Column order must match `MAIL_COLUMNS`.
+pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
+    Ok(Mail {
+        id: row.get(0)?,
+        account_id: row.get(1)?,
+        folder: row.get(2)?,
+        message_id: row.get(3)?,
+        in_reply_to: row.get(4)?,
+        references: row.get(5)?,
+        from_addr: row.get(6)?,
+        to_addr: row.get(7)?,
+        cc_addr: row.get(8)?,
+        subject: row.get(9)?,
+        body_text: row.get(10)?,
+        body_html: row.get(11)?,
+        date: row.get(12)?,
+        has_attachments: row.get(13)?,
+        raw_size: row.get(14)?,
+        uid: row.get(15)?,
+        flags: row.get(16)?,
+        fetched_at: row.get(17)?,
+    })
+}
+
+/// Load a single mail by ID.
+pub fn get_mail_by_id(conn: &Connection, mail_id: &str) -> Result<Mail, AppError> {
+    conn.query_row(
+        &format!("SELECT {} FROM mails WHERE id = ?1", MAIL_COLUMNS),
+        params![mail_id],
+        row_to_mail,
+    )
+    .map_err(|_| AppError::MailNotFound(mail_id.to_string()))
+}
+
 pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<(), AppError> {
     conn.execute(
         "INSERT OR REPLACE INTO mails
@@ -41,34 +88,13 @@ pub fn get_mails_by_account(
     folder: &str,
 ) -> Result<Vec<Mail>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, account_id, folder, message_id, in_reply_to, \"references\",
-                from_addr, to_addr, cc_addr, subject, body_text, body_html,
-                date, has_attachments, raw_size, uid, flags, fetched_at
-         FROM mails WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC",
+        &format!(
+            "SELECT {} FROM mails WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC",
+            MAIL_COLUMNS
+        ),
     )?;
     let mails = stmt
-        .query_map(params![account_id, folder], |row| {
-            Ok(Mail {
-                id: row.get(0)?,
-                account_id: row.get(1)?,
-                folder: row.get(2)?,
-                message_id: row.get(3)?,
-                in_reply_to: row.get(4)?,
-                references: row.get(5)?,
-                from_addr: row.get(6)?,
-                to_addr: row.get(7)?,
-                cc_addr: row.get(8)?,
-                subject: row.get(9)?,
-                body_text: row.get(10)?,
-                body_html: row.get(11)?,
-                date: row.get(12)?,
-                has_attachments: row.get(13)?,
-                raw_size: row.get(14)?,
-                uid: row.get(15)?,
-                flags: row.get(16)?,
-                fetched_at: row.get(17)?,
-            })
-        })?
+        .query_map(params![account_id, folder], row_to_mail)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(mails)
