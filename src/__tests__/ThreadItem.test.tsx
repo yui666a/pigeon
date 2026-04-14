@@ -38,15 +38,18 @@ describe("ThreadItem", () => {
   });
 
   it("applies selected style", () => {
-    render(<ThreadItem thread={makeThread()} selected={true} onClick={vi.fn()} />);
-    const button = screen.getByRole("button");
-    expect(button.className).toContain("bg-blue-50");
+    const { container } = render(<ThreadItem thread={makeThread()} selected={true} onClick={vi.fn()} />);
+    const item = container.firstElementChild!;
+    expect(item.className).toContain("bg-blue-50");
   });
 
   it("calls onClick when clicked", () => {
     const onClick = vi.fn();
     render(<ThreadItem thread={makeThread()} selected={false} onClick={onClick} />);
-    fireEvent.click(screen.getByRole("button"));
+    // mousedown + mouseup without move triggers onClick
+    const item = screen.getByText("テストスレッド").closest("div[class]")!;
+    fireEvent.mouseDown(item);
+    fireEvent.mouseUp(window);
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 });

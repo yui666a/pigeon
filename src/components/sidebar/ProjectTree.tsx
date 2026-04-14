@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useClassifyStore } from "../../stores/classifyStore";
+import { useDragStore } from "../../stores/dragStore";
 import { ContextMenu } from "../common/ContextMenu";
 
 interface ProjectTreeProps {
@@ -14,12 +15,17 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
   const { projects, selectedProjectId, fetchProjects, selectProject, updateProject, archiveProject, deleteProject } =
     useProjectStore();
   const { unclassifiedMails, fetchUnclassified, moveMail } = useClassifyStore();
-  const [dragOverProjectId, setDragOverProjectId] = useState<string | null>(null);
+  const draggingMailIds = useDragStore((s) => s.draggingMailIds);
+  const endDrag = useDragStore((s) => s.endDrag);
+  const [hoverProjectId, setHoverProjectId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
     projectId: string;
   } | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -27,6 +33,20 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
       fetchUnclassified(selectedAccountId);
     }
   }, [selectedAccountId, fetchProjects, fetchUnclassified]);
+
+  useEffect(() => {
+    if (renamingProjectId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingProjectId]);
+
+  // Clear hover highlight when drag ends
+  useEffect(() => {
+    if (!draggingMailIds) {
+      setHoverProjectId(null);
+    }
+  }, [draggingMailIds]);
 
   if (!selectedAccountId) {
     return null;
@@ -37,19 +57,34 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
     setContextMenu({ x: e.clientX, y: e.clientY, projectId });
   };
 
+  const startRename = (projectId: string) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    setRenamingProjectId(projectId);
+    setRenameValue(project.name);
+  };
+
+  const submitRename = async () => {
+    if (renamingProjectId && renameValue.trim()) {
+      await updateProject(renamingProjectId, renameValue.trim());
+      await fetchProjects(selectedAccountId!);
+    }
+    setRenamingProjectId(null);
+    setRenameValue("");
+  };
+
+  const cancelRename = () => {
+    setRenamingProjectId(null);
+    setRenameValue("");
+  };
+
   const getProjectMenuItems = (projectId: string) => {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return [];
     return [
       {
         label: "名前変更",
-        onClick: async () => {
-          const newName = window.prompt("案件名を入力", project.name);
-          if (newName && newName.trim()) {
-            await updateProject(projectId, newName.trim());
-            await fetchProjects(selectedAccountId!);
-          }
-        },
+        onClick: () => startRename(projectId),
       },
       {
         label: "アーカイブ",
@@ -62,31 +97,17 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
         label: "削除",
         danger: true,
         onClick: async () => {
-          if (window.confirm(`「${project.name}」を削除しますか？この操作は取り消せません。`)) {
-            await deleteProject(projectId);
-            await fetchProjects(selectedAccountId!);
-          }
+          await deleteProject(projectId);
+          await fetchProjects(selectedAccountId!);
         },
       },
     ];
   };
 
-  const handleDragOver = (e: React.DragEvent, projectId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDragOverProjectId(projectId);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverProjectId(null);
-  };
-
-  const handleDrop = async (e: React.DragEvent, projectId: string) => {
-    e.preventDefault();
-    setDragOverProjectId(null);
-    const data = e.dataTransfer.getData("application/pigeon-mail-ids");
-    if (!data || !selectedAccountId) return;
-    const mailIds: string[] = JSON.parse(data);
+  const handleDropOnProject = async (projectId: string) => {
+    if (!draggingMailIds || !selectedAccountId) return;
+    const mailIds = [...draggingMailIds];
+    endDrag();
     for (const mailId of mailIds) {
       await moveMail(mailId, projectId, selectedAccountId);
     }
@@ -103,29 +124,55 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
       <ul className="flex flex-col">
         {projects.map((project) => (
           <li key={project.id}>
-            <button
-              onClick={() => {
-                selectProject(project.id);
-                onSelectProject();
-              }}
-              onContextMenu={(e) => handleProjectContextMenu(e, project.id)}
-              onDragOver={(e) => handleDragOver(e, project.id)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, project.id)}
-              className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 ${
-                selectedProjectId === project.id
-                  ? "bg-blue-50 font-semibold text-blue-700"
-                  : ""
-              } ${dragOverProjectId === project.id ? "bg-blue-100 ring-2 ring-blue-400 ring-inset" : ""}`}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                  style={{ backgroundColor: project.color ?? "#6b7280" }}
+            {renamingProjectId === project.id ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); submitRename(); }}
+                className="px-4 py-1.5"
+              >
+                <input
+                  ref={renameInputRef}
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={submitRename}
+                  onKeyDown={(e) => { if (e.key === "Escape") cancelRename(); }}
+                  className="w-full rounded border border-blue-400 px-2 py-1 text-sm focus:outline-none"
                 />
-                <span className="truncate">{project.name}</span>
-              </div>
-            </button>
+              </form>
+            ) : (
+              <button
+                onClick={() => {
+                  if (draggingMailIds) return;
+                  selectProject(project.id);
+                  onSelectProject();
+                }}
+                onMouseEnter={() => {
+                  if (draggingMailIds) setHoverProjectId(project.id);
+                }}
+                onMouseLeave={() => {
+                  if (draggingMailIds) setHoverProjectId(null);
+                }}
+                onMouseUp={() => {
+                  if (draggingMailIds) {
+                    handleDropOnProject(project.id);
+                  }
+                }}
+                onContextMenu={(e) => handleProjectContextMenu(e, project.id)}
+                className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 ${
+                  selectedProjectId === project.id
+                    ? "bg-blue-50 font-semibold text-blue-700"
+                    : ""
+                } ${hoverProjectId === project.id ? "bg-blue-100 ring-2 ring-blue-400 ring-inset" : ""}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                    style={{ backgroundColor: project.color ?? "#6b7280" }}
+                  />
+                  <span className="truncate">{project.name}</span>
+                </div>
+              </button>
+            )}
           </li>
         ))}
       </ul>

@@ -1,9 +1,60 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useClassifyStore } from "../../stores/classifyStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useMailStore } from "../../stores/mailStore";
+import { useDragStore } from "../../stores/dragStore";
 import { ClassifyButton } from "./ClassifyButton";
 import { NewProjectProposal } from "../common/NewProjectProposal";
+import type { Mail } from "../../types/mail";
+
+function MailDragItem({ mail, onClick }: { mail: Mail; onClick: () => void }) {
+  const startDrag = useDragStore((s) => s.startDrag);
+  const updatePosition = useDragStore((s) => s.updatePosition);
+  const isDragging = useRef(false);
+  const startPos = useRef({ x: 0, y: 0 });
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    startPos.current = { x: e.clientX, y: e.clientY };
+    isDragging.current = false;
+
+    const handleMouseMove = (me: MouseEvent) => {
+      const dx = me.clientX - startPos.current.x;
+      const dy = me.clientY - startPos.current.y;
+      if (!isDragging.current && Math.abs(dx) + Math.abs(dy) > 5) {
+        isDragging.current = true;
+        startDrag([mail.id], mail.subject);
+        updatePosition(me.clientX, me.clientY);
+      }
+      if (isDragging.current) {
+        updatePosition(me.clientX, me.clientY);
+      }
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      if (!isDragging.current) {
+        onClick();
+      }
+      isDragging.current = false;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+      className="w-full cursor-pointer border-t px-4 py-2 text-left hover:bg-gray-50"
+    >
+      <div className="truncate text-sm">{mail.subject}</div>
+      <div className="truncate text-xs text-gray-500">{mail.from_addr}</div>
+    </div>
+  );
+}
 
 export function UnclassifiedList() {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
@@ -20,6 +71,9 @@ export function UnclassifiedList() {
     (s) => s.initClassifyListeners,
   );
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const { selectThread, selectMail } = useMailStore();
+  const startDrag = useDragStore((s) => s.startDrag);
+  const endDrag = useDragStore((s) => s.endDrag);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -43,6 +97,18 @@ export function UnclassifiedList() {
   if (!selectedAccountId) return null;
 
   const createResults = results.filter((r) => r.action === "create");
+
+  const handleMailClick = (mail: Mail) => {
+    selectThread({
+      thread_id: mail.message_id || mail.id,
+      subject: mail.subject,
+      last_date: mail.date,
+      mail_count: 1,
+      from_addrs: [mail.from_addr],
+      mails: [mail],
+    });
+    selectMail(mail);
+  };
 
   return (
     <div className="border-b">
@@ -82,23 +148,11 @@ export function UnclassifiedList() {
       {unclassifiedMails.length > 0 && (
         <div className="max-h-48 overflow-y-auto">
           {unclassifiedMails.map((mail) => (
-            <div
+            <MailDragItem
               key={mail.id}
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(
-                  "application/pigeon-mail-ids",
-                  JSON.stringify([mail.id]),
-                );
-                e.dataTransfer.effectAllowed = "move";
-              }}
-              className="cursor-grab border-t px-4 py-2 active:cursor-grabbing"
-            >
-              <div className="truncate text-sm">{mail.subject}</div>
-              <div className="truncate text-xs text-gray-500">
-                {mail.from_addr}
-              </div>
-            </div>
+              mail={mail}
+              onClick={() => handleMailClick(mail)}
+            />
           ))}
         </div>
       )}

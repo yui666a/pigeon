@@ -1,4 +1,6 @@
+import { useRef } from "react";
 import type { Thread } from "../../types/mail";
+import { useDragStore } from "../../stores/dragStore";
 
 interface ThreadItemProps {
   thread: Thread;
@@ -9,20 +11,47 @@ interface ThreadItemProps {
 export function ThreadItem({ thread, selected, onClick }: ThreadItemProps) {
   const date = new Date(thread.last_date);
   const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+  const startDrag = useDragStore((s) => s.startDrag);
+  const updatePosition = useDragStore((s) => s.updatePosition);
+  const isDragging = useRef(false);
+  const startPos = useRef({ x: 0, y: 0 });
 
-  const handleDragStart = (e: React.DragEvent) => {
-    // Set all mail IDs in this thread as drag data
-    const mailIds = thread.mails.map((m) => m.id);
-    e.dataTransfer.setData("application/pigeon-mail-ids", JSON.stringify(mailIds));
-    e.dataTransfer.effectAllowed = "move";
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    startPos.current = { x: e.clientX, y: e.clientY };
+    isDragging.current = false;
+
+    const handleMouseMove = (me: MouseEvent) => {
+      const dx = me.clientX - startPos.current.x;
+      const dy = me.clientY - startPos.current.y;
+      if (!isDragging.current && Math.abs(dx) + Math.abs(dy) > 5) {
+        isDragging.current = true;
+        const mailIds = thread.mails.map((m) => m.id);
+        startDrag(mailIds, thread.subject);
+        updatePosition(me.clientX, me.clientY);
+      }
+      if (isDragging.current) {
+        updatePosition(me.clientX, me.clientY);
+      }
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      if (!isDragging.current) {
+        onClick();
+      }
+      isDragging.current = false;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
   };
 
   return (
-    <button
-      draggable
-      onDragStart={handleDragStart}
-      onClick={onClick}
-      className={`w-full border-b px-4 py-3 text-left hover:bg-gray-50 ${selected ? "bg-blue-50" : ""}`}
+    <div
+      onMouseDown={handleMouseDown}
+      className={`w-full cursor-pointer border-b px-4 py-3 text-left hover:bg-gray-50 ${selected ? "bg-blue-50" : ""}`}
     >
       <div className="flex items-center justify-between">
         <span className="truncate text-sm font-medium">{thread.subject}</span>
@@ -38,6 +67,6 @@ export function ThreadItem({ thread, selected, onClick }: ThreadItemProps) {
           </span>
         )}
       </div>
-    </button>
+    </div>
   );
 }
