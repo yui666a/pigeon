@@ -1,17 +1,14 @@
 import { useEffect, useState } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useUiStore } from "../../stores/uiStore";
 import { AccountList } from "./AccountList";
 import { AccountForm } from "./AccountForm";
 import { ProjectTree } from "./ProjectTree";
 import { ProjectForm } from "./ProjectForm";
 import type { CreateAccountRequest } from "../../types/account";
 
-interface SidebarProps {
-  onViewChange?: (view: "threads" | "unclassified" | "project") => void;
-}
-
-export function Sidebar({ onViewChange }: SidebarProps) {
+export function Sidebar() {
   const {
     accounts,
     selectedAccountId,
@@ -22,6 +19,7 @@ export function Sidebar({ onViewChange }: SidebarProps) {
     initDeepLinkListener,
   } = useAccountStore();
   const { createProject } = useProjectStore();
+  const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
   const [showProjectForm, setShowProjectForm] = useState(false);
 
@@ -46,7 +44,7 @@ export function Sidebar({ onViewChange }: SidebarProps) {
 
   const handleSelectAccount = (id: string) => {
     selectAccount(id);
-    onViewChange?.("threads");
+    setViewMode("threads");
   };
 
   const handleProjectSubmit = async (
@@ -84,8 +82,8 @@ export function Sidebar({ onViewChange }: SidebarProps) {
           onRemove={removeAccount}
         />
         <ProjectTree
-          onSelectUnclassified={() => onViewChange?.("unclassified")}
-          onSelectProject={() => onViewChange?.("project")}
+          onSelectUnclassified={() => setViewMode("unclassified")}
+          onSelectProject={() => setViewMode("project")}
         />
       </div>
       {selectedAccountId && (
