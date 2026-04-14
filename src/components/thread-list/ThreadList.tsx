@@ -35,12 +35,8 @@ export function ThreadList({ viewMode }: ThreadListProps) {
         });
     } else if (viewMode === "threads" && selectedAccountId) {
       // 同期してからスレッドを取得
-      console.log("[ThreadList] syncing account:", selectedAccountId);
-      syncAccount(selectedAccountId).then((count) => {
-        console.log("[ThreadList] sync done, fetched:", count);
+      syncAccount(selectedAccountId).then(() => {
         fetchThreads(selectedAccountId, "INBOX");
-      }).catch((e) => {
-        console.error("[ThreadList] sync error:", e);
       });
     }
   }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount]);

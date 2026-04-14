@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useClassifyStore } from "../../stores/classifyStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { ClassifyButton } from "./ClassifyButton";
 import { NewProjectProposal } from "../common/NewProjectProposal";
 
@@ -9,6 +10,7 @@ export function UnclassifiedList() {
   const unclassifiedMails = useClassifyStore((s) => s.unclassifiedMails);
   const results = useClassifyStore((s) => s.results);
   const summary = useClassifyStore((s) => s.summary);
+  const classifying = useClassifyStore((s) => s.classifying);
   const fetchUnclassified = useClassifyStore((s) => s.fetchUnclassified);
   const approveNewProject = useClassifyStore((s) => s.approveNewProject);
   const rejectClassification = useClassifyStore(
@@ -17,6 +19,7 @@ export function UnclassifiedList() {
   const initClassifyListeners = useClassifyStore(
     (s) => s.initClassifyListeners,
   );
+  const fetchProjects = useProjectStore((s) => s.fetchProjects);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -30,6 +33,12 @@ export function UnclassifiedList() {
       promise.then((unlisten) => unlisten());
     };
   }, [initClassifyListeners]);
+
+  useEffect(() => {
+    if (!classifying && summary && selectedAccountId) {
+      fetchProjects(selectedAccountId);
+    }
+  }, [classifying, summary, selectedAccountId, fetchProjects]);
 
   if (!selectedAccountId) return null;
 
