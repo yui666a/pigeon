@@ -82,7 +82,18 @@ export function UnclassifiedList() {
       {unclassifiedMails.length > 0 && (
         <div className="max-h-48 overflow-y-auto">
           {unclassifiedMails.map((mail) => (
-            <div key={mail.id} className="border-t px-4 py-2">
+            <div
+              key={mail.id}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(
+                  "application/pigeon-mail-ids",
+                  JSON.stringify([mail.id]),
+                );
+                e.dataTransfer.effectAllowed = "move";
+              }}
+              className="cursor-grab border-t px-4 py-2 active:cursor-grabbing"
+            >
               <div className="truncate text-sm">{mail.subject}</div>
               <div className="truncate text-xs text-gray-500">
                 {mail.from_addr}

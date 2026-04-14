@@ -9,8 +9,18 @@ interface ThreadItemProps {
 export function ThreadItem({ thread, selected, onClick }: ThreadItemProps) {
   const date = new Date(thread.last_date);
   const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+
+  const handleDragStart = (e: React.DragEvent) => {
+    // Set all mail IDs in this thread as drag data
+    const mailIds = thread.mails.map((m) => m.id);
+    e.dataTransfer.setData("application/pigeon-mail-ids", JSON.stringify(mailIds));
+    e.dataTransfer.effectAllowed = "move";
+  };
+
   return (
     <button
+      draggable
+      onDragStart={handleDragStart}
       onClick={onClick}
       className={`w-full border-b px-4 py-3 text-left hover:bg-gray-50 ${selected ? "bg-blue-50" : ""}`}
     >

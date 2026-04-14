@@ -53,6 +53,8 @@ pub fn approve_classification(
              WHERE mail_id = ?3",
             params![project_id, current_project, mail_id],
         )?;
+        // Record in correction_log for LLM feedback
+        insert_correction(conn, mail_id, Some(&current_project), project_id)?;
     }
     Ok(())
 }
@@ -151,6 +153,78 @@ pub fn get_assignment_info(
         Some(Err(e)) => Err(AppError::Database(e)),
         None => Ok(None),
     }
+}
+
+/// Record a user correction in the correction_log table.
+pub fn insert_correction(
+    conn: &Connection,
+    mail_id: &str,
+    from_project: Option<&str>,
+    to_project: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO correction_log (mail_id, from_project, to_project)
+         VALUES (?1, ?2, ?3)",
+        params![mail_id, from_project, to_project],
+    )?;
+    Ok(())
+}
+
+/// Get recent corrections for an account (used as few-shot examples in LLM prompts).
+/// Returns the last `limit` corrections with mail subjects and project names.
+pub fn get_recent_corrections(
+    conn: &Connection,
+    account_id: &str,
+    limit: u32,
+) -> Result<Vec<crate::models::classifier::CorrectionEntry>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT m.subject,
+                pf.name AS from_project_name,
+                pt.name AS to_project_name
+         FROM correction_log cl
+         JOIN mails m ON cl.mail_id = m.id
+         JOIN projects pt ON cl.to_project = pt.id
+         LEFT JOIN projects pf ON cl.from_project = pf.id
+         WHERE m.account_id = ?1
+         ORDER BY cl.corrected_at DESC, cl.id DESC
+         LIMIT ?2",
+    )?;
+    let corrections = stmt
+        .query_map(params![account_id, limit], |row| {
+            Ok(crate::models::classifier::CorrectionEntry {
+                mail_subject: row.get(0)?,
+                from_project: row.get(1)?,
+                to_project: row.get(2)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(corrections)
+}
+
+/// Move a mail to a project. Handles both classified and unclassified mails.
+/// If the mail was already assigned, updates the assignment and logs the correction.
+/// If unclassified, creates a new assignment and logs the correction.
+pub fn move_mail_to_project(
+    conn: &Connection,
+    mail_id: &str,
+    project_id: &str,
+) -> Result<(), AppError> {
+    let current = get_assignment_info(conn, mail_id)?;
+    match current {
+        Some((current_project_id, _, _)) => {
+            // Already assigned — use approve_classification which handles correction_log
+            if current_project_id != project_id {
+                approve_classification(conn, mail_id, project_id)?;
+            }
+        }
+        None => {
+            // Unclassified — create new assignment and log
+            assign_mail(conn, mail_id, project_id, "user", Some(1.0))?;
+            insert_correction(conn, mail_id, None, project_id)?;
+        }
+    }
+    Ok(())
 }
 
 fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
@@ -422,5 +496,151 @@ mod tests {
         let info = get_assignment_info(&conn, "m1").unwrap().unwrap();
         assert_eq!(info.0, "proj2");
         assert_eq!(info.1, "user");
+    }
+
+    #[test]
+    fn test_insert_and_get_corrections() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        create_project(&conn, "proj2", "acc1", "Project Beta");
+
+        let m1 = make_mail("m1", "acc1", "Mail Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+
+        insert_correction(&conn, "m1", Some("proj1"), "proj2").unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].mail_subject, "Mail Subject");
+        assert_eq!(corrections[0].from_project, Some("Project Alpha".to_string()));
+        assert_eq!(corrections[0].to_project, "Project Beta");
+    }
+
+    #[test]
+    fn test_correction_from_unclassified() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+
+        insert_correction(&conn, "m1", None, "proj1").unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert_eq!(corrections.len(), 1);
+        assert!(corrections[0].from_project.is_none());
+        assert_eq!(corrections[0].to_project, "Project Alpha");
+    }
+
+    #[test]
+    fn test_corrections_limited_and_ordered() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        create_project(&conn, "proj2", "acc1", "Project Beta");
+
+        for i in 0..5 {
+            let m = make_mail(&format!("m{}", i), "acc1", &format!("Subject {}", i), &format!("2026-04-13T1{}:00:00", i));
+            insert_mail(&conn, &m);
+            insert_correction(&conn, &format!("m{}", i), Some("proj1"), "proj2").unwrap();
+        }
+
+        let corrections = get_recent_corrections(&conn, "acc1", 3).unwrap();
+        assert_eq!(corrections.len(), 3);
+        // Most recent first
+        assert_eq!(corrections[0].mail_subject, "Subject 4");
+    }
+
+    #[test]
+    fn test_approve_classification_writes_correction_log() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        create_project(&conn, "proj2", "acc1", "Project Beta");
+
+        let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+        assign_mail(&conn, "m1", "proj1", "ai", Some(0.8)).unwrap();
+
+        approve_classification(&conn, "m1", "proj2").unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].from_project, Some("Project Alpha".to_string()));
+        assert_eq!(corrections[0].to_project, "Project Beta");
+    }
+
+    #[test]
+    fn test_approve_same_project_no_correction_log() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+        assign_mail(&conn, "m1", "proj1", "ai", Some(0.8)).unwrap();
+
+        approve_classification(&conn, "m1", "proj1").unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert!(corrections.is_empty());
+    }
+
+    #[test]
+    fn test_move_mail_from_unclassified() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+
+        move_mail_to_project(&conn, "m1", "proj1").unwrap();
+
+        let info = get_assignment_info(&conn, "m1").unwrap().unwrap();
+        assert_eq!(info.0, "proj1");
+        assert_eq!(info.1, "user");
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert_eq!(corrections.len(), 1);
+        assert!(corrections[0].from_project.is_none());
+    }
+
+    #[test]
+    fn test_move_mail_between_projects() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        create_project(&conn, "proj2", "acc1", "Project Beta");
+
+        let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+        assign_mail(&conn, "m1", "proj1", "ai", Some(0.9)).unwrap();
+
+        move_mail_to_project(&conn, "m1", "proj2").unwrap();
+
+        let info = get_assignment_info(&conn, "m1").unwrap().unwrap();
+        assert_eq!(info.0, "proj2");
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert_eq!(corrections.len(), 1);
+    }
+
+    #[test]
+    fn test_move_mail_to_same_project_noop() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+        assign_mail(&conn, "m1", "proj1", "ai", Some(0.9)).unwrap();
+
+        move_mail_to_project(&conn, "m1", "proj1").unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert!(corrections.is_empty());
     }
 }
