@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useDragStore } from "../../stores/dragStore";
+import { useProjectRename } from "../../hooks/useProjectRename";
+import { ProjectListItem } from "./ProjectListItem";
 import { ContextMenu } from "../common/ContextMenu";
 
 interface ProjectTreeProps {
@@ -12,7 +14,7 @@ interface ProjectTreeProps {
 
 export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTreeProps) {
   const { selectedAccountId } = useAccountStore();
-  const { projects, selectedProjectId, fetchProjects, selectProject, updateProject, archiveProject, deleteProject } =
+  const { projects, selectedProjectId, fetchProjects, selectProject, archiveProject, deleteProject } =
     useProjectStore();
   const { unclassifiedMails, fetchUnclassified, moveMail } = useMailStore();
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
@@ -23,9 +25,16 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
     y: number;
     projectId: string;
   } | null>(null);
-  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const {
+    renamingProjectId,
+    renameValue,
+    setRenameValue,
+    renameInputRef,
+    startRename,
+    submitRename,
+    cancelRename,
+  } = useProjectRename(projects);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -34,14 +43,6 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
     }
   }, [selectedAccountId, fetchProjects, fetchUnclassified]);
 
-  useEffect(() => {
-    if (renamingProjectId && renameInputRef.current) {
-      renameInputRef.current.focus();
-      renameInputRef.current.select();
-    }
-  }, [renamingProjectId]);
-
-  // Clear hover highlight when drag ends
   useEffect(() => {
     if (!draggingMailIds) {
       setHoverProjectId(null);
@@ -53,54 +54,25 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
   }
   const accountId = selectedAccountId;
 
-  const handleProjectContextMenu = (e: React.MouseEvent, projectId: string) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, projectId });
-  };
-
-  const startRename = (projectId: string) => {
-    const project = projects.find((p) => p.id === projectId);
-    if (!project) return;
-    setRenamingProjectId(projectId);
-    setRenameValue(project.name);
-  };
-
-  const submitRename = async () => {
-    if (renamingProjectId && renameValue.trim()) {
-      await updateProject(renamingProjectId, renameValue.trim());
-    }
-    setRenamingProjectId(null);
-    setRenameValue("");
-  };
-
-  const cancelRename = () => {
-    setRenamingProjectId(null);
-    setRenameValue("");
-  };
-
-  const getProjectMenuItems = (projectId: string) => {
-    const project = projects.find((p) => p.id === projectId);
-    if (!project) return [];
-    return [
-      {
-        label: "名前変更",
-        onClick: () => startRename(projectId),
+  const getProjectMenuItems = (projectId: string) => [
+    {
+      label: "名前変更",
+      onClick: () => startRename(projectId),
+    },
+    {
+      label: "アーカイブ",
+      onClick: async () => {
+        await archiveProject(projectId);
       },
-      {
-        label: "アーカイブ",
-        onClick: async () => {
-          await archiveProject(projectId);
-        },
+    },
+    {
+      label: "削除",
+      danger: true,
+      onClick: async () => {
+        await deleteProject(projectId);
       },
-      {
-        label: "削除",
-        danger: true,
-        onClick: async () => {
-          await deleteProject(projectId);
-        },
-      },
-    ];
-  };
+    },
+  ];
 
   const handleDropOnProject = async (projectId: string) => {
     if (!draggingMailIds) return;
@@ -120,57 +92,30 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
       </div>
       <ul className="flex flex-col">
         {projects.map((project) => (
-          <li key={project.id}>
-            {renamingProjectId === project.id ? (
-              <form
-                onSubmit={(e) => { e.preventDefault(); submitRename(); }}
-                className="px-4 py-1.5"
-              >
-                <input
-                  ref={renameInputRef}
-                  type="text"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onBlur={submitRename}
-                  onKeyDown={(e) => { if (e.key === "Escape") cancelRename(); }}
-                  className="w-full rounded border border-blue-400 px-2 py-1 text-sm focus:outline-none"
-                />
-              </form>
-            ) : (
-              <button
-                onClick={() => {
-                  if (draggingMailIds) return;
-                  selectProject(project.id);
-                  onSelectProject();
-                }}
-                onMouseEnter={() => {
-                  if (draggingMailIds) setHoverProjectId(project.id);
-                }}
-                onMouseLeave={() => {
-                  if (draggingMailIds) setHoverProjectId(null);
-                }}
-                onMouseUp={() => {
-                  if (draggingMailIds) {
-                    handleDropOnProject(project.id);
-                  }
-                }}
-                onContextMenu={(e) => handleProjectContextMenu(e, project.id)}
-                className={`w-full px-4 py-2 text-left text-sm hover:bg-gray-100 ${
-                  selectedProjectId === project.id
-                    ? "bg-blue-50 font-semibold text-blue-700"
-                    : ""
-                } ${hoverProjectId === project.id ? "bg-blue-100 ring-2 ring-blue-400 ring-inset" : ""}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span
-                    className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                    style={{ backgroundColor: project.color ?? "#6b7280" }}
-                  />
-                  <span className="truncate">{project.name}</span>
-                </div>
-              </button>
-            )}
-          </li>
+          <ProjectListItem
+            key={project.id}
+            project={project}
+            selected={selectedProjectId === project.id}
+            isRenaming={renamingProjectId === project.id}
+            renameValue={renameValue}
+            renameInputRef={renameInputRef}
+            isDragHover={hoverProjectId === project.id}
+            isDragging={!!draggingMailIds}
+            onSelect={() => {
+              selectProject(project.id);
+              onSelectProject();
+            }}
+            onRenameValueChange={setRenameValue}
+            onRenameSubmit={submitRename}
+            onRenameCancel={cancelRename}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu({ x: e.clientX, y: e.clientY, projectId: project.id });
+            }}
+            onDragEnter={() => setHoverProjectId(project.id)}
+            onDragLeave={() => setHoverProjectId(null)}
+            onDrop={() => handleDropOnProject(project.id)}
+          />
         ))}
       </ul>
       {projects.length > 0 && <hr className="mx-4 my-1 border-gray-200" />}
