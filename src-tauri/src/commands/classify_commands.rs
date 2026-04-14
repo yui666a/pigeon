@@ -205,6 +205,14 @@ pub async fn classify_unassigned(
     let mut needs_review = 0u32;
     let mut unclassified_count = 0u32;
 
+    // Load project summaries once before the loop.
+    // New projects are only inserted when the user approves (approve_new_project),
+    // not during classification, so per-iteration reload is unnecessary.
+    let project_summaries = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        build_project_summaries(&conn, &account_id)?
+    };
+
     for (idx, mail) in mails.iter().enumerate() {
         // Check cancellation
         if cancel_flag.0.load(Ordering::SeqCst) {
@@ -218,12 +226,6 @@ pub async fn classify_unassigned(
             );
             return Ok(());
         }
-
-        // Load project summaries fresh for each mail (projects may have been created)
-        let project_summaries = {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
-            build_project_summaries(&conn, &account_id)?
-        };
 
         let mail_summary = MailSummary::from_mail(mail);
 
