@@ -324,42 +324,30 @@ pub fn approve_new_project(
     project_name: String,
     description: Option<String>,
 ) -> Result<Project, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
 
     // Load mail to get account_id
     let mail = load_mail(&conn, &mail_id)?;
 
-    // Wrap in transaction
-    conn.execute("BEGIN", []).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    let result: Result<Project, String> = (|| {
-        let req = CreateProjectRequest {
-            account_id: mail.account_id.clone(),
-            name: project_name,
-            description,
-            color: None,
-        };
-        let project = projects::insert_project(&conn, &req).map_err(|e| e.to_string())?;
+    let req = CreateProjectRequest {
+        account_id: mail.account_id.clone(),
+        name: project_name,
+        description,
+        color: None,
+    };
+    let project = projects::insert_project(&tx, &req).map_err(|e| e.to_string())?;
 
-        assignments::assign_mail(&conn, &mail_id, &project.id, "user", Some(1.0))
-            .map_err(|e| e.to_string())?;
+    assignments::assign_mail(&tx, &mail_id, &project.id, "user", Some(1.0))
+        .map_err(|e| e.to_string())?;
 
-        Ok(project)
-    })();
+    tx.commit().map_err(|e| e.to_string())?;
 
-    match result {
-        Ok(project) => {
-            conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
-            // Remove from pending map
-            let mut map = pending.0.lock().map_err(|e| e.to_string())?;
-            map.remove(&mail_id);
-            Ok(project)
-        }
-        Err(e) => {
-            let _ = conn.execute("ROLLBACK", []);
-            Err(e)
-        }
-    }
+    // Remove from pending map
+    let mut map = pending.0.lock().map_err(|e| e.to_string())?;
+    map.remove(&mail_id);
+    Ok(project)
 }
 
 /// Reject an AI classification (remove from pending or delete assignment).
