@@ -1,4 +1,6 @@
+use crate::db::assignments;
 use crate::error::AppError;
+use crate::models::classifier::ProjectSummary;
 use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
@@ -96,6 +98,26 @@ pub fn archive_project(conn: &Connection, id: &str) -> Result<(), AppError> {
         return Err(AppError::ProjectNotFound(id.to_string()));
     }
     Ok(())
+}
+
+/// Build ProjectSummary list for LLM classification context.
+pub fn build_project_summaries(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<ProjectSummary>, AppError> {
+    let projs = list_projects(conn, account_id)?;
+    let mut summaries = Vec::with_capacity(projs.len());
+    for p in projs {
+        let recent_subjects =
+            assignments::get_recent_subjects(conn, &p.id, 5).unwrap_or_default();
+        summaries.push(ProjectSummary {
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            recent_subjects,
+        });
+    }
+    Ok(summaries)
 }
 
 pub fn delete_project(conn: &Connection, id: &str) -> Result<(), AppError> {

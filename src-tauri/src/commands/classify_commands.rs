@@ -6,9 +6,9 @@ use tauri::{AppHandle, Emitter, State};
 use crate::classifier::ollama::OllamaClassifier;
 use crate::classifier::LlmClassifier;
 use crate::commands::account_commands::DbState;
-use crate::db::{assignments, mails, projects};
+use crate::db::{assignments, mails, projects, settings};
 use crate::models::classifier::{
-    ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary, ProjectSummary,
+    ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary,
     CONFIDENCE_UNCERTAIN,
 };
 use crate::models::mail::Mail;
@@ -35,40 +35,6 @@ impl ClassifyCancelFlag {
 }
 
 // ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-/// Query the settings table for `key`, returning `default` if the row doesn't exist.
-fn get_settings_or_default(conn: &rusqlite::Connection, key: &str, default: &str) -> String {
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        rusqlite::params![key],
-        |row| row.get::<_, String>(0),
-    )
-    .unwrap_or_else(|_| default.to_string())
-}
-
-/// Load all non-archived projects for `account_id` and attach their recent subjects.
-fn build_project_summaries(
-    conn: &rusqlite::Connection,
-    account_id: &str,
-) -> Result<Vec<ProjectSummary>, String> {
-    let projs = projects::list_projects(conn, account_id).map_err(|e| e.to_string())?;
-    let mut summaries = Vec::with_capacity(projs.len());
-    for p in projs {
-        let recent_subjects =
-            assignments::get_recent_subjects(conn, &p.id, 5).unwrap_or_default();
-        summaries.push(ProjectSummary {
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            recent_subjects,
-        });
-    }
-    Ok(summaries)
-}
-
-// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -83,11 +49,12 @@ pub async fn classify_mail(
     let (mail, project_summaries, corrections, endpoint, model) = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         let mail = mails::get_mail_by_id(&conn, &mail_id).map_err(|e| e.to_string())?;
-        let project_summaries = build_project_summaries(&conn, &mail.account_id)?;
+        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id)
+            .map_err(|e| e.to_string())?;
         let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)
             .unwrap_or_default();
-        let endpoint = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        let model = get_settings_or_default(&conn, "ollama_model", "llama3.1:8b");
+        let endpoint = settings::get_or_default(&conn,"ollama_endpoint", "http://localhost:11434");
+        let model = settings::get_or_default(&conn,"ollama_model", "llama3.1:8b");
         (mail, project_summaries, corrections, endpoint, model)
     };
 
@@ -153,8 +120,8 @@ pub async fn classify_unassigned(
             .map_err(|e| e.to_string())?;
         let corrections = assignments::get_recent_corrections(&conn, &account_id, 20)
             .unwrap_or_default();
-        let endpoint = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        let model = get_settings_or_default(&conn, "ollama_model", "llama3.1:8b");
+        let endpoint = settings::get_or_default(&conn,"ollama_endpoint", "http://localhost:11434");
+        let model = settings::get_or_default(&conn,"ollama_model", "llama3.1:8b");
         (mails, corrections, endpoint, model)
     };
 
@@ -176,7 +143,8 @@ pub async fn classify_unassigned(
     // not during classification, so per-iteration reload is unnecessary.
     let project_summaries = {
         let conn = db.0.lock().map_err(|e| e.to_string())?;
-        build_project_summaries(&conn, &account_id)?
+        projects::build_project_summaries(&conn, &account_id)
+            .map_err(|e| e.to_string())?
     };
 
     for (idx, mail) in mails.iter().enumerate() {
@@ -416,26 +384,6 @@ mod tests {
         mails::insert_mail(conn, &mail).unwrap();
     }
 
-    // --- get_settings_or_default ---
-
-    #[test]
-    fn test_get_settings_or_default_returns_default_when_missing() {
-        let conn = setup_db();
-        let val = get_settings_or_default(&conn, "nonexistent_key", "fallback");
-        assert_eq!(val, "fallback");
-    }
-
-    #[test]
-    fn test_get_settings_or_default_returns_stored_value() {
-        let conn = setup_db();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('ollama_endpoint', 'http://custom:1234')",
-            [],
-        ).unwrap();
-        let val = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        assert_eq!(val, "http://custom:1234");
-    }
-
     // --- get_mail_by_id (now in db::mails) ---
 
     #[test]
@@ -459,7 +407,7 @@ mod tests {
     #[test]
     fn test_build_project_summaries_empty() {
         let conn = setup_db();
-        let summaries = build_project_summaries(&conn, "acc1").unwrap();
+        let summaries = projects::build_project_summaries(&conn, "acc1").unwrap();
         assert!(summaries.is_empty());
     }
 
@@ -473,7 +421,7 @@ mod tests {
             color: None,
         };
         projects::insert_project(&conn, &req).unwrap();
-        let summaries = build_project_summaries(&conn, "acc1").unwrap();
+        let summaries = projects::build_project_summaries(&conn, "acc1").unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].name, "Project Alpha");
     }
