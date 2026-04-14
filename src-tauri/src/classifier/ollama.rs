@@ -15,16 +15,16 @@ pub struct OllamaClassifier {
 }
 
 impl OllamaClassifier {
-    pub fn new(endpoint: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(endpoint: impl Into<String>, model: impl Into<String>) -> Result<Self, AppError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("Failed to build reqwest client");
-        Self {
+            .map_err(|e| AppError::HttpRequest(e.to_string()))?;
+        Ok(Self {
             endpoint: endpoint.into(),
             model: model.into(),
             client,
-        }
+        })
     }
 
     fn extract_json(content: &str) -> Option<&str> {
