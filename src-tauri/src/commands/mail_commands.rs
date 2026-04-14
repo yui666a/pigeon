@@ -117,3 +117,107 @@ pub fn get_threads_by_project(
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     mails::get_threads_by_project(&conn, &project_id).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{assignments, migrations, projects};
+    use crate::models::mail::Mail;
+    use crate::models::project::CreateProjectRequest;
+    use rusqlite::Connection;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        migrations::run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    fn make_mail(id: &str, message_id: &str, subject: &str, date: &str) -> Mail {
+        Mail {
+            id: id.into(),
+            account_id: "acc1".into(),
+            folder: "INBOX".into(),
+            message_id: message_id.into(),
+            in_reply_to: None,
+            references: None,
+            from_addr: "sender@example.com".into(),
+            to_addr: "me@example.com".into(),
+            cc_addr: None,
+            subject: subject.into(),
+            body_text: Some("Hello".into()),
+            body_html: None,
+            date: date.into(),
+            has_attachments: false,
+            raw_size: None,
+            uid: 1,
+            flags: None,
+            fetched_at: "2026-04-13T00:00:00".into(),
+        }
+    }
+
+    #[test]
+    fn test_get_threads_groups_by_reply() {
+        let conn = setup_db();
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-04-13T10:00:00");
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Hello", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<msg1@ex.com>".into());
+        mails::insert_mail(&conn, &m1).unwrap();
+        mails::insert_mail(&conn, &m2).unwrap();
+
+        let all = mails::get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+        let threads = mails::build_threads(&all);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 2);
+    }
+
+    #[test]
+    fn test_get_threads_empty_account() {
+        let conn = setup_db();
+        let all = mails::get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+        let threads = mails::build_threads(&all);
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn test_get_threads_by_project_builds_threads() {
+        let conn = setup_db();
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Deal", "2026-04-13T10:00:00");
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Deal", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<msg1@ex.com>".into());
+        mails::insert_mail(&conn, &m1).unwrap();
+        mails::insert_mail(&conn, &m2).unwrap();
+
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "m1", &proj.id, "ai", Some(0.9)).unwrap();
+        assignments::assign_mail(&conn, "m2", &proj.id, "ai", Some(0.85)).unwrap();
+
+        let threads = mails::get_threads_by_project(&conn, &proj.id).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 2);
+    }
+
+    #[test]
+    fn test_get_threads_by_project_empty() {
+        let conn = setup_db();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Empty".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        let threads = mails::get_threads_by_project(&conn, &proj.id).unwrap();
+        assert!(threads.is_empty());
+    }
+}

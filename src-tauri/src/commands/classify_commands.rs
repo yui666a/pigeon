@@ -407,3 +407,290 @@ pub fn get_mails_by_project(
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     assignments::get_mails_by_project(&conn, &project_id).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use crate::db::mails;
+    use rusqlite::Connection;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        ).unwrap();
+        conn
+    }
+
+    fn insert_test_mail(conn: &Connection, id: &str, subject: &str) {
+        let mail = Mail {
+            id: id.into(),
+            account_id: "acc1".into(),
+            folder: "INBOX".into(),
+            message_id: format!("<{}@test.com>", id),
+            in_reply_to: None,
+            references: None,
+            from_addr: "sender@example.com".into(),
+            to_addr: "me@example.com".into(),
+            cc_addr: None,
+            subject: subject.into(),
+            body_text: Some("Hello".into()),
+            body_html: None,
+            date: "2026-04-13T10:00:00".into(),
+            has_attachments: false,
+            raw_size: None,
+            uid: 1,
+            flags: None,
+            fetched_at: "2026-04-13T00:00:00".into(),
+        };
+        mails::insert_mail(conn, &mail).unwrap();
+    }
+
+    // --- get_settings_or_default ---
+
+    #[test]
+    fn test_get_settings_or_default_returns_default_when_missing() {
+        let conn = setup_db();
+        let val = get_settings_or_default(&conn, "nonexistent_key", "fallback");
+        assert_eq!(val, "fallback");
+    }
+
+    #[test]
+    fn test_get_settings_or_default_returns_stored_value() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('ollama_endpoint', 'http://custom:1234')",
+            [],
+        ).unwrap();
+        let val = get_settings_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
+        assert_eq!(val, "http://custom:1234");
+    }
+
+    // --- load_mail ---
+
+    #[test]
+    fn test_load_mail_success() {
+        let conn = setup_db();
+        insert_test_mail(&conn, "m1", "Test Subject");
+        let mail = load_mail(&conn, "m1").unwrap();
+        assert_eq!(mail.id, "m1");
+        assert_eq!(mail.subject, "Test Subject");
+    }
+
+    #[test]
+    fn test_load_mail_not_found() {
+        let conn = setup_db();
+        let result = load_mail(&conn, "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Mail not found"));
+    }
+
+    // --- build_project_summaries ---
+
+    #[test]
+    fn test_build_project_summaries_empty() {
+        let conn = setup_db();
+        let summaries = build_project_summaries(&conn, "acc1").unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn test_build_project_summaries_with_projects() {
+        let conn = setup_db();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Project Alpha".into(),
+            description: Some("First project".into()),
+            color: None,
+        };
+        projects::insert_project(&conn, &req).unwrap();
+        let summaries = build_project_summaries(&conn, "acc1").unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "Project Alpha");
+    }
+
+    // --- approve_new_project flow ---
+
+    #[test]
+    fn test_approve_new_project_creates_project_and_assigns_mail() {
+        let mut conn = setup_db();
+        insert_test_mail(&conn, "m1", "New Deal");
+
+        // Simulate what approve_new_project does
+        let mail = load_mail(&conn, "m1").unwrap();
+        let tx = conn.transaction().unwrap();
+        let req = CreateProjectRequest {
+            account_id: mail.account_id.clone(),
+            name: "New Project".into(),
+            description: Some("Auto-created".into()),
+            color: None,
+        };
+        let project = projects::insert_project(&tx, &req).unwrap();
+        assignments::assign_mail(&tx, "m1", &project.id, "user", Some(1.0)).unwrap();
+        tx.commit().unwrap();
+
+        // Verify project was created
+        let projs = projects::list_projects(&conn, "acc1").unwrap();
+        assert_eq!(projs.len(), 1);
+        assert_eq!(projs[0].name, "New Project");
+
+        // Verify mail was assigned
+        let assigned_mails = assignments::get_mails_by_project(&conn, &projs[0].id).unwrap();
+        assert_eq!(assigned_mails.len(), 1);
+        assert_eq!(assigned_mails[0].id, "m1");
+    }
+
+    #[test]
+    fn test_approve_new_project_transaction_rollback_on_error() {
+        let mut conn = setup_db();
+        // Don't insert mail — assign_mail will still succeed (no FK on mail_id in some schemas)
+        // but we can test that transaction rolls back if we manually drop it
+        let tx = conn.transaction().unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Will Rollback".into(),
+            description: None,
+            color: None,
+        };
+        let _project = projects::insert_project(&tx, &req).unwrap();
+        // Drop tx without committing — should rollback
+        drop(tx);
+
+        let projs = projects::list_projects(&conn, "acc1").unwrap();
+        assert!(projs.is_empty(), "Transaction should have been rolled back");
+    }
+
+    // --- reject_classification flow ---
+
+    #[test]
+    fn test_reject_removes_from_pending_map() {
+        let pending = PendingClassifications::new();
+        let result = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: "Test".into(),
+                description: "desc".into(),
+            },
+            confidence: 0.8,
+            reason: "test".into(),
+        };
+        pending.0.lock().unwrap().insert("m1".into(), result);
+
+        // Remove from pending
+        pending.0.lock().unwrap().remove("m1");
+        assert!(pending.0.lock().unwrap().get("m1").is_none());
+    }
+
+    // --- get_unclassified_mails flow ---
+
+    #[test]
+    fn test_get_unclassified_mails_returns_unassigned() {
+        let conn = setup_db();
+        insert_test_mail(&conn, "m1", "Unassigned Mail");
+        insert_test_mail(&conn, "m2", "Also Unassigned");
+
+        let unclassified = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
+        assert_eq!(unclassified.len(), 2);
+    }
+
+    #[test]
+    fn test_get_unclassified_mails_excludes_assigned() {
+        let conn = setup_db();
+        insert_test_mail(&conn, "m1", "Assigned Mail");
+        insert_test_mail(&conn, "m2", "Unassigned Mail");
+
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "m1", &proj.id, "ai", Some(0.9)).unwrap();
+
+        let unclassified = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
+        assert_eq!(unclassified.len(), 1);
+        assert_eq!(unclassified[0].id, "m2");
+    }
+
+    // --- move_mail flow ---
+
+    #[test]
+    fn test_move_mail_between_projects() {
+        let conn = setup_db();
+        insert_test_mail(&conn, "m1", "Moving Mail");
+
+        let req1 = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Project A".into(),
+            description: None,
+            color: None,
+        };
+        let req2 = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Project B".into(),
+            description: None,
+            color: None,
+        };
+        let proj_a = projects::insert_project(&conn, &req1).unwrap();
+        let proj_b = projects::insert_project(&conn, &req2).unwrap();
+
+        assignments::assign_mail(&conn, "m1", &proj_a.id, "ai", Some(0.9)).unwrap();
+        assignments::move_mail_to_project(&conn, "m1", &proj_b.id).unwrap();
+
+        let mails_a = assignments::get_mails_by_project(&conn, &proj_a.id).unwrap();
+        let mails_b = assignments::get_mails_by_project(&conn, &proj_b.id).unwrap();
+        assert!(mails_a.is_empty());
+        assert_eq!(mails_b.len(), 1);
+        assert_eq!(mails_b[0].id, "m1");
+    }
+
+    // --- cancel flag ---
+
+    #[test]
+    fn test_cancel_flag_toggle() {
+        let flag = ClassifyCancelFlag::new();
+        assert!(!flag.0.load(Ordering::SeqCst));
+        flag.0.store(true, Ordering::SeqCst);
+        assert!(flag.0.load(Ordering::SeqCst));
+        flag.0.store(false, Ordering::SeqCst);
+        assert!(!flag.0.load(Ordering::SeqCst));
+    }
+
+    // --- PendingClassifications ---
+
+    #[test]
+    fn test_pending_classifications_insert_and_remove() {
+        let pending = PendingClassifications::new();
+        let result = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: "New".into(),
+                description: "desc".into(),
+            },
+            confidence: 0.75,
+            reason: "reason".into(),
+        };
+
+        {
+            let mut map = pending.0.lock().unwrap();
+            map.insert("mail-1".into(), result.clone());
+            map.insert("mail-2".into(), result);
+        }
+
+        {
+            let map = pending.0.lock().unwrap();
+            assert_eq!(map.len(), 2);
+            assert!(map.contains_key("mail-1"));
+        }
+
+        {
+            let mut map = pending.0.lock().unwrap();
+            map.remove("mail-1");
+            assert_eq!(map.len(), 1);
+            assert!(!map.contains_key("mail-1"));
+        }
+    }
+}
