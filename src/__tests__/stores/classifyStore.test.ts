@@ -124,4 +124,36 @@ describe("classifyStore", () => {
       expect(useClassifyStore.getState().classifyingAccountId).toBeNull();
     });
   });
+
+  describe("moveMail", () => {
+    it("calls move_mail and removes mail from unclassified and results", async () => {
+      useClassifyStore.setState({
+        unclassifiedMails: [
+          { id: "m1" } as never,
+          { id: "m2" } as never,
+        ],
+        results: [
+          { mail_id: "m1", action: "assign", confidence: 0.9, reason: "test" },
+        ],
+      });
+      mockInvoke
+        .mockResolvedValueOnce(undefined)                // move_mail
+        .mockResolvedValueOnce([{ id: "m2" } as never]); // fetchUnclassified refresh
+
+      await useClassifyStore.getState().moveMail("m1", "proj1", "acc1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("move_mail", { mailId: "m1", projectId: "proj1" });
+      expect(useClassifyStore.getState().unclassifiedMails).toHaveLength(1);
+      expect(useClassifyStore.getState().unclassifiedMails[0].id).toBe("m2");
+      expect(useClassifyStore.getState().results).toHaveLength(0);
+    });
+
+    it("sets error on failure", async () => {
+      mockInvoke.mockRejectedValue("move error");
+
+      await useClassifyStore.getState().moveMail("m1", "proj1", "acc1");
+
+      expect(useClassifyStore.getState().error).toBe("move error");
+    });
+  });
 });
