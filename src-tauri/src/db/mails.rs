@@ -1,3 +1,4 @@
+use crate::db::assignments;
 use crate::error::AppError;
 use crate::models::mail::{Mail, Thread};
 use rusqlite::{params, Connection};
@@ -177,6 +178,11 @@ pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
 
     threads.sort_by(|a, b| b.last_date.cmp(&a.last_date));
     threads
+}
+
+pub fn get_threads_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Thread>, AppError> {
+    let mails = assignments::get_mails_by_project(conn, project_id)?;
+    Ok(build_threads(&mails))
 }
 
 fn find_root(roots: &[usize], mut i: usize) -> usize {
