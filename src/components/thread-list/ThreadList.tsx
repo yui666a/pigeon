@@ -4,7 +4,7 @@ import { useAccountStore } from "../../stores/accountStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ThreadItem } from "./ThreadItem";
-import type { Mail, Thread } from "../../types/mail";
+import type { Thread } from "../../types/mail";
 
 interface ThreadListProps {
   viewMode: "threads" | "project";
@@ -13,33 +13,24 @@ interface ThreadListProps {
 export function ThreadList({ viewMode }: ThreadListProps) {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
-  const { threads, syncing, selectedThread, fetchThreads, syncAccount, selectThread } =
+  const { threads, syncing, selectedThread, fetchThreads, syncAccount, selectThread, setThreads } =
     useMailStore();
 
   useEffect(() => {
     if (viewMode === "project" && selectedProjectId) {
-      invoke<Mail[]>("get_mails_by_project", { projectId: selectedProjectId })
-        .then((mails) => {
-          const projectThreads: Thread[] = mails.map((mail) => ({
-            thread_id: mail.message_id || mail.id,
-            subject: mail.subject,
-            last_date: mail.date,
-            mail_count: 1,
-            from_addrs: [mail.from_addr],
-            mails: [mail],
-          }));
-          useMailStore.setState({ threads: projectThreads });
+      invoke<Thread[]>("get_threads_by_project", { projectId: selectedProjectId })
+        .then((projectThreads) => {
+          setThreads(projectThreads);
         })
         .catch(() => {
-          useMailStore.setState({ threads: [] });
+          setThreads([]);
         });
     } else if (viewMode === "threads" && selectedAccountId) {
-      // 同期してからスレッドを取得
       syncAccount(selectedAccountId).then(() => {
         fetchThreads(selectedAccountId, "INBOX");
       });
     }
-  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount]);
+  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount, setThreads]);
 
   if (!selectedAccountId) {
     return (

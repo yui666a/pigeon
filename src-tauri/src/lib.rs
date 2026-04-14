@@ -76,6 +76,7 @@ pub fn run() {
             commands::auth_commands::handle_oauth_callback,
             commands::mail_commands::sync_account,
             commands::mail_commands::get_threads,
+            commands::mail_commands::get_threads_by_project,
             commands::project_commands::create_project,
             commands::project_commands::get_projects,
             commands::project_commands::update_project,

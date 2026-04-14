@@ -10,6 +10,7 @@ interface MailState {
   error: string | null;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
   syncAccount: (accountId: string) => Promise<number>;
+  setThreads: (threads: Thread[]) => void;
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
 }
@@ -45,6 +46,7 @@ export const useMailStore = create<MailState>((set) => ({
     }
   },
 
+  setThreads: (threads) => set({ threads }),
   selectThread: (thread) => set({ selectedThread: thread, selectedMail: null }),
   selectMail: (mail) => set({ selectedMail: mail }),
 }));

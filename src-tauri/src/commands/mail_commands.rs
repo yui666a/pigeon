@@ -106,3 +106,12 @@ pub fn get_threads(
         mails::get_mails_by_account(&conn, &account_id, &folder).map_err(|e| e.to_string())?;
     Ok(mails::build_threads(&all_mails))
 }
+
+#[tauri::command]
+pub fn get_threads_by_project(
+    state: State<DbState>,
+    project_id: String,
+) -> Result<Vec<Thread>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    mails::get_threads_by_project(&conn, &project_id).map_err(|e| e.to_string())
+}
