@@ -91,7 +91,9 @@ async fn sync_account_inner(
         }
     }
 
-    let _ = session.logout().await;
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed: {}", e);
+    }
     Ok(count)
 }
 
