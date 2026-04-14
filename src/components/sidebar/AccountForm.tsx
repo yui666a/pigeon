@@ -33,13 +33,6 @@ export function AccountForm({ onSubmit, onCancel }: AccountFormProps) {
     };
   }, [oauthStatus, resetOAuth]);
 
-  // Close form when OAuth completes successfully
-  useEffect(() => {
-    if (step === "oauth" && oauthStatus === "idle" && !oauthError) {
-      // oauth just finished successfully — idle with no error after being in oauth step
-    }
-  }, [step, oauthStatus, oauthError]);
-
   const handleGoogleClick = async () => {
     setStep("oauth");
     await startOAuth("google");
