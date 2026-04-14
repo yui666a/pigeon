@@ -1,6 +1,7 @@
 import { memo } from "react";
 import type { Thread } from "../../types/mail";
 import { useMailDrag } from "../../hooks/useMailDrag";
+import { formatShortDate } from "../../utils/date";
 
 interface ThreadItemProps {
   thread: Thread;
@@ -13,8 +14,7 @@ export const ThreadItem = memo(function ThreadItem({
   selected,
   onClick,
 }: ThreadItemProps) {
-  const date = new Date(thread.last_date);
-  const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+  const dateStr = formatShortDate(thread.last_date);
   const mailIds = thread.mails.map((m) => m.id);
   const { onMouseDown } = useMailDrag(mailIds, thread.subject, onClick);
 
