@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::classifier::ollama::OllamaClassifier;
 use crate::classifier::LlmClassifier;
-use crate::commands::account_commands::DbState;
+use crate::state::DbState;
 use crate::db::{assignments, mails, projects, settings};
 use crate::models::classifier::{
     ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary,
