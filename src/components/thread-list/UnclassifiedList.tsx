@@ -7,6 +7,7 @@ import { ClassifyButton } from "./ClassifyButton";
 import { MailDragItem } from "./MailDragItem";
 import { NewProjectProposal } from "../common/NewProjectProposal";
 import type { Mail } from "../../types/mail";
+import { threadFromMail } from "../../utils/thread";
 
 export function UnclassifiedList() {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
@@ -56,14 +57,7 @@ export function UnclassifiedList() {
   const createResults = results.filter((r) => r.action === "create");
 
   const handleMailClick = (mail: Mail) => {
-    selectThread({
-      thread_id: mail.message_id || mail.id,
-      subject: mail.subject,
-      last_date: mail.date,
-      mail_count: 1,
-      from_addrs: [mail.from_addr],
-      mails: [mail],
-    });
+    selectThread(threadFromMail(mail));
     selectMail(mail);
   };
 

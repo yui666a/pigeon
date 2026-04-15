@@ -37,7 +37,6 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
       </div>
       <ProjectRenameProvider projects={projects}>
         <ProjectListInner
-          accountId={selectedAccountId}
           onSelectProject={onSelectProject}
         />
       </ProjectRenameProvider>
@@ -61,10 +60,8 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
 }
 
 function ProjectListInner({
-  accountId,
   onSelectProject,
 }: {
-  accountId: string;
   onSelectProject: () => void;
 }) {
   const { projects, selectedProjectId, selectProject, archiveProject, deleteProject } =
@@ -84,7 +81,7 @@ function ProjectListInner({
     const mailIds = [...draggingMailIds];
     endDrag();
     for (const mailId of mailIds) {
-      await moveMail(mailId, projectId, accountId);
+      await moveMail(mailId, projectId);
     }
   };
 

@@ -115,11 +115,9 @@ describe("mailStore", () => {
           { id: "m2" } as never,
         ],
       });
-      mockInvoke
-        .mockResolvedValueOnce(undefined)                // move_mail
-        .mockResolvedValueOnce([{ id: "m2" } as never]); // fetchUnclassified refresh
+      mockInvoke.mockResolvedValueOnce(undefined); // move_mail
 
-      await useMailStore.getState().moveMail("m1", "proj1", "acc1");
+      await useMailStore.getState().moveMail("m1", "proj1");
 
       expect(mockInvoke).toHaveBeenCalledWith("move_mail", { mailId: "m1", projectId: "proj1" });
       expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
@@ -129,7 +127,7 @@ describe("mailStore", () => {
     it("sets error on failure", async () => {
       mockInvoke.mockRejectedValue("move error");
 
-      await useMailStore.getState().moveMail("m1", "proj1", "acc1");
+      await useMailStore.getState().moveMail("m1", "proj1");
 
       expect(useMailStore.getState().error).toBe("move error");
     });
