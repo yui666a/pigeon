@@ -187,13 +187,15 @@ pub async fn classify_unassigned(
                 ClassifyAction::Assign { project_id }
                     if result.confidence >= CONFIDENCE_UNCERTAIN =>
                 {
-                    let _ = assignments::assign_mail(
+                    if let Err(e) = assignments::assign_mail(
                         &conn,
                         &mail.id,
                         project_id,
                         "ai",
                         Some(result.confidence),
-                    );
+                    ) {
+                        eprintln!("[warn] Failed to assign mail {}: {}", mail.id, e);
+                    }
                     assigned += 1;
                 }
                 ClassifyAction::Create { .. } => {
