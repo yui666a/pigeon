@@ -19,6 +19,13 @@ export interface Mail {
   fetched_at: string;
 }
 
+export interface SearchResult {
+  mail: Mail;
+  project_id: string | null;
+  project_name: string | null;
+  snippet: string;
+}
+
 export interface Thread {
   thread_id: string;
   subject: string;

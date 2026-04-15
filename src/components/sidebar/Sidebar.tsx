@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useSearchStore } from "../../stores/searchStore";
 import { useUiStore } from "../../stores/uiStore";
 import { AccountList } from "./AccountList";
 import { AccountForm } from "./AccountForm";
+import { SearchBar } from "./SearchBar";
+import type { SearchBarHandle } from "./SearchBar";
 import { ProjectTree } from "./ProjectTree";
 import { ProjectForm } from "./ProjectForm";
 import type { CreateAccountRequest } from "../../types/account";
@@ -20,9 +23,39 @@ export function Sidebar() {
     initDeepLinkListener,
   } = useAccountStore();
   const { createProject } = useProjectStore();
+  const { search, clearSearch } = useSearchStore();
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
   const [showProjectForm, setShowProjectForm] = useState(false);
+  const searchBarRef = useRef<SearchBarHandle>(null);
+
+  const handleSearch = (query: string) => {
+    if (!selectedAccountId) return;
+    search(selectedAccountId, query);
+    setViewMode("search");
+  };
+
+  const handleClearSearch = () => {
+    clearSearch();
+    setViewMode("threads");
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      if (e.key === "/") {
+        e.preventDefault();
+        searchBarRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   useEffect(() => {
     fetchAccounts();
@@ -75,6 +108,7 @@ export function Sidebar() {
           onCancel={() => setShowForm(false)}
         />
       )}
+      <SearchBar ref={searchBarRef} onSearch={handleSearch} onClear={handleClearSearch} />
       <div className="flex-1 overflow-y-auto">
         <AccountList
           accounts={accounts}
