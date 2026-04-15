@@ -39,6 +39,9 @@ pub enum AppError {
     #[error("Stronghold error: {0}")]
     Stronghold(String),
 
+    #[error("Reauth required: {0}")]
+    ReauthRequired(String),
+
     #[error("HTTP request error: {0}")]
     HttpRequest(String),
 
