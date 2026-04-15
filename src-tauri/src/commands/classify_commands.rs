@@ -7,6 +7,7 @@ use crate::classifier::ollama::OllamaClassifier;
 use crate::classifier::LlmClassifier;
 use crate::state::DbState;
 use crate::db::{assignments, mails, projects, settings};
+use crate::error::AppError;
 use crate::models::classifier::{
     ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary,
     CONFIDENCE_UNCERTAIN,
@@ -44,13 +45,12 @@ pub async fn classify_mail(
     db: State<'_, DbState>,
     pending: State<'_, PendingClassifications>,
     mail_id: String,
-) -> Result<ClassifyResponse, String> {
+) -> Result<ClassifyResponse, AppError> {
     // Load mail and settings while holding the lock briefly.
     let (mail, project_summaries, corrections, endpoint, model) = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let mail = mails::get_mail_by_id(&conn, &mail_id).map_err(|e| e.to_string())?;
-        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id)
-            .map_err(|e| e.to_string())?;
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
+        let mail = mails::get_mail_by_id(&conn, &mail_id)?;
+        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id)?;
         let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)
             .unwrap_or_default();
         let endpoint = settings::get_or_default(&conn,"ollama_endpoint", "http://localhost:11434");
@@ -59,23 +59,19 @@ pub async fn classify_mail(
     };
 
     let mail_summary = MailSummary::from_mail(&mail);
-    let classifier = OllamaClassifier::new(&endpoint, &model).map_err(|e| e.to_string())?;
+    let classifier = OllamaClassifier::new(&endpoint, &model)?;
 
     // Health check
-    classifier
-        .health_check()
-        .await
-        .map_err(|e| e.to_string())?;
+    classifier.health_check().await?;
 
     // Classify
     let result = classifier
         .classify(&mail_summary, &project_summaries, &corrections)
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
     // Persist / queue pending
     {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
         match &result.action {
             ClassifyAction::Assign { project_id } if result.confidence >= CONFIDENCE_UNCERTAIN => {
                 assignments::assign_mail(
@@ -84,11 +80,10 @@ pub async fn classify_mail(
                     project_id,
                     "ai",
                     Some(result.confidence),
-                )
-                .map_err(|e| e.to_string())?;
+                )?;
             }
             ClassifyAction::Create { .. } => {
-                let mut map = pending.0.lock().map_err(|e| e.to_string())?;
+                let mut map = pending.0.lock().map_err(AppError::lock_err)?;
                 map.insert(mail_id.clone(), result.clone());
             }
             _ => {}
@@ -109,15 +104,14 @@ pub async fn classify_unassigned(
     cancel_flag: State<'_, ClassifyCancelFlag>,
     handle: AppHandle,
     account_id: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     // Reset cancel flag
     cancel_flag.0.store(false, Ordering::SeqCst);
 
     // Load unclassified mails and settings
     let (mails, corrections, endpoint, model) = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        let mails = assignments::get_unclassified_mails(&conn, &account_id)
-            .map_err(|e| e.to_string())?;
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
+        let mails = assignments::get_unclassified_mails(&conn, &account_id)?;
         let corrections = assignments::get_recent_corrections(&conn, &account_id, 20)
             .unwrap_or_default();
         let endpoint = settings::get_or_default(&conn,"ollama_endpoint", "http://localhost:11434");
@@ -125,13 +119,10 @@ pub async fn classify_unassigned(
         (mails, corrections, endpoint, model)
     };
 
-    let classifier = OllamaClassifier::new(&endpoint, &model).map_err(|e| e.to_string())?;
+    let classifier = OllamaClassifier::new(&endpoint, &model)?;
 
     // Health check before starting the loop
-    classifier
-        .health_check()
-        .await
-        .map_err(|e| e.to_string())?;
+    classifier.health_check().await?;
 
     let total = mails.len();
     let mut assigned = 0u32;
@@ -142,9 +133,8 @@ pub async fn classify_unassigned(
     // New projects are only inserted when the user approves (approve_new_project),
     // not during classification, so per-iteration reload is unnecessary.
     let project_summaries = {
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        projects::build_project_summaries(&conn, &account_id)
-            .map_err(|e| e.to_string())?
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
+        projects::build_project_summaries(&conn, &account_id)?
     };
 
     for (idx, mail) in mails.iter().enumerate() {
@@ -182,7 +172,7 @@ pub async fn classify_unassigned(
 
         // Persist result
         {
-            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            let conn = db.0.lock().map_err(AppError::lock_err)?;
             match &result.action {
                 ClassifyAction::Assign { project_id }
                     if result.confidence >= CONFIDENCE_UNCERTAIN =>
@@ -199,7 +189,7 @@ pub async fn classify_unassigned(
                     assigned += 1;
                 }
                 ClassifyAction::Create { .. } => {
-                    let mut map = pending.0.lock().map_err(|e| e.to_string())?;
+                    let mut map = pending.0.lock().map_err(AppError::lock_err)?;
                     map.insert(mail.id.clone(), result);
                     needs_review += 1;
                 }
@@ -236,7 +226,7 @@ pub async fn classify_unassigned(
 
 /// Cancel an in-progress `classify_unassigned` run.
 #[tauri::command]
-pub fn cancel_classification(cancel_flag: State<ClassifyCancelFlag>) -> Result<(), String> {
+pub fn cancel_classification(cancel_flag: State<ClassifyCancelFlag>) -> Result<(), AppError> {
     cancel_flag.0.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -247,10 +237,9 @@ pub fn approve_classification(
     db: State<DbState>,
     mail_id: String,
     project_id: String,
-) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    assignments::approve_classification(&conn, &mail_id, &project_id)
-        .map_err(|e| e.to_string())
+) -> Result<(), AppError> {
+    let conn = db.0.lock().map_err(AppError::lock_err)?;
+    Ok(assignments::approve_classification(&conn, &mail_id, &project_id)?)
 }
 
 /// Approve a "create new project" suggestion: creates the project and assigns the mail.
@@ -261,13 +250,13 @@ pub fn approve_new_project(
     mail_id: String,
     project_name: String,
     description: Option<String>,
-) -> Result<Project, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+) -> Result<Project, AppError> {
+    let mut conn = db.0.lock().map_err(AppError::lock_err)?;
 
     // Load mail to get account_id
-    let mail = mails::get_mail_by_id(&conn, &mail_id).map_err(|e| e.to_string())?;
+    let mail = mails::get_mail_by_id(&conn, &mail_id)?;
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn.transaction()?;
 
     let req = CreateProjectRequest {
         account_id: mail.account_id.clone(),
@@ -275,15 +264,14 @@ pub fn approve_new_project(
         description,
         color: None,
     };
-    let project = projects::insert_project(&tx, &req).map_err(|e| e.to_string())?;
+    let project = projects::insert_project(&tx, &req)?;
 
-    assignments::assign_mail(&tx, &mail_id, &project.id, "user", Some(1.0))
-        .map_err(|e| e.to_string())?;
+    assignments::assign_mail(&tx, &mail_id, &project.id, "user", Some(1.0))?;
 
-    tx.commit().map_err(|e| e.to_string())?;
+    tx.commit()?;
 
     // Remove from pending map
-    let mut map = pending.0.lock().map_err(|e| e.to_string())?;
+    let mut map = pending.0.lock().map_err(AppError::lock_err)?;
     map.remove(&mail_id);
     Ok(project)
 }
@@ -294,21 +282,21 @@ pub fn reject_classification(
     db: State<DbState>,
     pending: State<PendingClassifications>,
     mail_id: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     // Remove from pending map if present
     {
-        let mut map = pending.0.lock().map_err(|e| e.to_string())?;
+        let mut map = pending.0.lock().map_err(AppError::lock_err)?;
         map.remove(&mail_id);
     }
 
     // Also remove from DB assignments if present
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = db.0.lock().map_err(AppError::lock_err)?;
     let result = assignments::reject_classification(&conn, &mail_id);
     match result {
         Ok(()) => Ok(()),
-        // MailNotFound means there was no assignment — that's fine after removing from pending
-        Err(crate::error::AppError::MailNotFound(_)) => Ok(()),
-        Err(e) => Err(e.to_string()),
+        // MailNotFound means there was no assignment -- that's fine after removing from pending
+        Err(AppError::MailNotFound(_)) => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -317,9 +305,9 @@ pub fn reject_classification(
 pub fn get_unclassified_mails(
     db: State<DbState>,
     account_id: String,
-) -> Result<Vec<Mail>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    assignments::get_unclassified_mails(&conn, &account_id).map_err(|e| e.to_string())
+) -> Result<Vec<Mail>, AppError> {
+    let conn = db.0.lock().map_err(AppError::lock_err)?;
+    Ok(assignments::get_unclassified_mails(&conn, &account_id)?)
 }
 
 /// Move a mail to a different project (used by D&D and context menu).
@@ -328,10 +316,9 @@ pub fn move_mail(
     db: State<DbState>,
     mail_id: String,
     project_id: String,
-) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    assignments::move_mail_to_project(&conn, &mail_id, &project_id)
-        .map_err(|e| e.to_string())
+) -> Result<(), AppError> {
+    let conn = db.0.lock().map_err(AppError::lock_err)?;
+    Ok(assignments::move_mail_to_project(&conn, &mail_id, &project_id)?)
 }
 
 /// Get all mails assigned to a specific project.
@@ -339,9 +326,9 @@ pub fn move_mail(
 pub fn get_mails_by_project(
     db: State<DbState>,
     project_id: String,
-) -> Result<Vec<Mail>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    assignments::get_mails_by_project(&conn, &project_id).map_err(|e| e.to_string())
+) -> Result<Vec<Mail>, AppError> {
+    let conn = db.0.lock().map_err(AppError::lock_err)?;
+    Ok(assignments::get_mails_by_project(&conn, &project_id)?)
 }
 
 #[cfg(test)]

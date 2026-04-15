@@ -1,3 +1,4 @@
+use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -49,10 +50,22 @@ pub enum AppError {
 
     #[error("Invalid LLM response: {0}")]
     InvalidLlmResponse(String),
+
+    #[error("Internal lock error: {0}")]
+    LockError(String),
 }
 
-impl From<AppError> for String {
-    fn from(err: AppError) -> String {
-        err.to_string()
+impl Serialize for AppError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl AppError {
+    pub fn lock_err<T>(e: std::sync::PoisonError<T>) -> Self {
+        AppError::LockError(e.to_string())
     }
 }

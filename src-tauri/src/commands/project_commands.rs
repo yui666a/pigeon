@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::state::DbState;
 use crate::db::projects;
+use crate::error::AppError;
 use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
 
 #[tauri::command]
@@ -11,21 +12,21 @@ pub fn create_project(
     name: String,
     description: Option<String>,
     color: Option<String>,
-) -> Result<Project, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
+) -> Result<Project, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
     let req = CreateProjectRequest {
         account_id,
         name,
         description,
         color,
     };
-    projects::insert_project(&conn, &req).map_err(|e| e.to_string())
+    Ok(projects::insert_project(&conn, &req)?)
 }
 
 #[tauri::command]
-pub fn get_projects(state: State<DbState>, account_id: String) -> Result<Vec<Project>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    projects::list_projects(&conn, &account_id).map_err(|e| e.to_string())
+pub fn get_projects(state: State<DbState>, account_id: String) -> Result<Vec<Project>, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    Ok(projects::list_projects(&conn, &account_id)?)
 }
 
 #[tauri::command]
@@ -35,26 +36,26 @@ pub fn update_project(
     name: Option<String>,
     description: Option<String>,
     color: Option<String>,
-) -> Result<Project, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
+) -> Result<Project, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
     let req = UpdateProjectRequest {
         name,
         description,
         color,
     };
-    projects::update_project(&conn, &id, &req).map_err(|e| e.to_string())
+    Ok(projects::update_project(&conn, &id, &req)?)
 }
 
 #[tauri::command]
-pub fn archive_project(state: State<DbState>, id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    projects::archive_project(&conn, &id).map_err(|e| e.to_string())
+pub fn archive_project(state: State<DbState>, id: String) -> Result<(), AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    Ok(projects::archive_project(&conn, &id)?)
 }
 
 #[tauri::command]
-pub fn delete_project(state: State<DbState>, id: String) -> Result<(), String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    projects::delete_project(&conn, &id).map_err(|e| e.to_string())
+pub fn delete_project(state: State<DbState>, id: String) -> Result<(), AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    Ok(projects::delete_project(&conn, &id)?)
 }
 
 #[cfg(test)]

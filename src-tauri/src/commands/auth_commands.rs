@@ -18,8 +18,8 @@ pub async fn start_oauth(
     app_handle: AppHandle,
     oauth_store: State<'_, OAuthStateStore>,
     provider: String,
-) -> Result<String, String> {
-    start_oauth_inner(&app_handle, &oauth_store, &provider).map_err(|e| e.to_string())
+) -> Result<String, AppError> {
+    start_oauth_inner(&app_handle, &oauth_store, &provider)
 }
 
 fn start_oauth_inner(
@@ -130,10 +130,8 @@ pub async fn handle_oauth_callback(
     secure_store: State<'_, SecureStoreState>,
     oauth_store: State<'_, OAuthStateStore>,
     url: String,
-) -> Result<String, String> {
-    handle_oauth_callback_inner(&state, &secure_store.0, &oauth_store, &url)
-        .await
-        .map_err(|e| e.to_string())
+) -> Result<String, AppError> {
+    handle_oauth_callback_inner(&state, &secure_store.0, &oauth_store, &url).await
 }
 
 async fn handle_oauth_callback_inner(
@@ -173,10 +171,7 @@ async fn handle_oauth_callback_inner(
 
     // Check for duplicate email
     {
-        let conn = db_state
-            .0
-            .lock()
-            .map_err(|e| AppError::OAuth(e.to_string()))?;
+        let conn = db_state.0.lock().map_err(AppError::lock_err)?;
         if let Some(existing) = accounts::account_exists_by_email(&conn, &email)? {
             return Err(AppError::DuplicateAccount(format!(
                 "Account with email {} already exists (id: {})",
@@ -190,10 +185,7 @@ async fn handle_oauth_callback_inner(
 
     // Save account to DB
     let account_result = {
-        let conn = db_state
-            .0
-            .lock()
-            .map_err(|e| AppError::OAuth(e.to_string()))?;
+        let conn = db_state.0.lock().map_err(AppError::lock_err)?;
         let req = CreateAccountRequest {
             name: email.clone(),
             email: email.clone(),
