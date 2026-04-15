@@ -94,7 +94,8 @@ fn handle_loopback_request(app_handle: &AppHandle, port: u16, stream: &mut TcpSt
     let (status, body) = match request_target {
         Some(target) if target.starts_with(OAUTH_CALLBACK_PATH) => {
             let callback_url = format!("http://{}:{}{}", LOOPBACK_HOST, port, target);
-            let _ = app_handle.emit("deep-link://new-url", vec![callback_url]);
+            let _ = app_handle.emit("deep-link://new-url", vec![callback_url.clone()]);
+            let _ = app_handle.emit("oauth-callback", callback_url);
             (
                 "200 OK",
                 "<html><body><h2>OAuth completed. You can close this tab.</h2></body></html>",

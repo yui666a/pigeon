@@ -114,15 +114,25 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   },
 
   initDeepLinkListener: async () => {
-    const unlisten = await listen<string[]>("deep-link://new-url", (event) => {
+    const handleCallbackUrl = (url: string) => {
+      if (url.includes("oauth/callback")) {
+        get().handleOAuthCallback(url);
+      }
+    };
+
+    const unlistenDeepLink = await listen<string[]>("deep-link://new-url", (event) => {
       const urls = event.payload;
       if (urls.length > 0) {
-        const url = urls[0];
-        if (url.includes("oauth/callback")) {
-          get().handleOAuthCallback(url);
-        }
+        handleCallbackUrl(urls[0]);
       }
     });
-    return unlisten;
+    const unlistenOAuthCallback = await listen<string>("oauth-callback", (event) => {
+      handleCallbackUrl(event.payload);
+    });
+
+    return () => {
+      unlistenDeepLink();
+      unlistenOAuthCallback();
+    };
   },
 }));
