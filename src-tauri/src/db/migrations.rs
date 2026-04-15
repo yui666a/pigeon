@@ -169,8 +169,51 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 4 {
+        migrate_v4(conn)?;
+        version = 4;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
+    Ok(())
+}
+
+fn migrate_v4(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts_mails USING fts5(
+            mail_id UNINDEXED,
+            subject,
+            body_text,
+            from_addr,
+            to_addr,
+            tokenize = 'trigram'
+        );
+
+        -- Auto-sync FTS on INSERT (INSERT OR REPLACE triggers DELETE then INSERT)
+        CREATE TRIGGER IF NOT EXISTS trg_fts_mails_insert
+        AFTER INSERT ON mails
+        BEGIN
+            INSERT INTO fts_mails (mail_id, subject, body_text, from_addr, to_addr)
+            VALUES (NEW.id, NEW.subject, COALESCE(NEW.body_text, ''), NEW.from_addr, NEW.to_addr);
+        END;
+
+        -- Auto-sync FTS on DELETE
+        CREATE TRIGGER IF NOT EXISTS trg_fts_mails_delete
+        AFTER DELETE ON mails
+        BEGIN
+            DELETE FROM fts_mails WHERE mail_id = OLD.id;
+        END;
+
+        -- Backfill existing mails into FTS
+        INSERT INTO fts_mails (mail_id, subject, body_text, from_addr, to_addr)
+        SELECT id, subject, COALESCE(body_text, ''), from_addr, to_addr
+        FROM mails
+        WHERE id NOT IN (SELECT mail_id FROM fts_mails);
+        ",
+    )?;
     Ok(())
 }
 
@@ -284,11 +327,11 @@ mod tests {
         assert!(tables.contains(&"mail_project_assignments".to_string()));
         assert!(tables.contains(&"correction_log".to_string()));
 
-        // Verify schema version is 3
+        // Verify schema version is 4 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -491,10 +534,178 @@ mod tests {
             .unwrap();
         assert_eq!(provider, "other");
 
-        // Schema version should be 3 (latest)
+        // Schema version should be 4 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn test_v4_migration_creates_fts_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Verify fts_mails virtual table exists
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='fts_mails'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists, "fts_mails table should exist after v4 migration");
+
+        // Schema version should be 4
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn test_v4_migration_backfills_existing_mails() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        // Bootstrap schema_version table via get_schema_version (creates table + inserts row)
+        get_schema_version(&conn).unwrap();
+
+        // Manually run v1-v3 migrations without FTS
+        migrate_v1(&conn).unwrap();
+        set_schema_version(&conn, 1).unwrap();
+        migrate_v2(&conn).unwrap();
+        set_schema_version(&conn, 2).unwrap();
+        migrate_v3(&conn).unwrap();
+        set_schema_version(&conn, 3).unwrap();
+
+        // Insert data while no FTS triggers exist
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'sender@example.com', 'me@example.com', 'BackfillTest subject', 'body text here', '2026-04-13', 1)",
+            [],
+        ).unwrap();
+
+        // Verify no FTS table exists yet
+        let fts_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='fts_mails'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!fts_exists, "fts_mails should not exist before v4");
+
+        // Now run full migrations — v4 should backfill the existing mail into FTS
+        run_migrations(&conn).unwrap();
+
+        let fts_count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM fts_mails", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fts_count, 1, "backfill should populate fts_mails for pre-existing mails");
+
+        // Verify the backfilled content is searchable
+        let search_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fts_mails WHERE fts_mails MATCH '\"BackfillTest\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(search_count, 1, "backfilled mail should be searchable");
+    }
+
+    #[test]
+    fn test_v4_fts_trigger_on_insert() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'alice@example.com', 'me@example.com', 'Meeting Tomorrow', 'Let us discuss the project plan', '2026-04-13', 1)",
+            [],
+        ).unwrap();
+
+        // trigram tokenizer: substring match with 3+ chars
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fts_mails WHERE fts_mails MATCH '\"Meeting\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_v4_fts_trigger_on_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'alice@example.com', 'me@example.com', 'DeleteTarget', 'body', '2026-04-13', 1)",
+            [],
+        ).unwrap();
+
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", []).unwrap();
+
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fts_mails WHERE fts_mails MATCH '\"DeleteTarget\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "FTS entry should be removed when mail is deleted");
+    }
+
+    #[test]
+    fn test_v4_fts_japanese_3char_search() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'sender@example.com', 'me@example.com', '見積もりの件', '予算について相談があります', '2026-04-13', 1)",
+            [],
+        ).unwrap();
+
+        // trigram: 3+ char Japanese substring works via FTS
+        let subject_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fts_mails WHERE fts_mails MATCH '\"見積もり\"'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(subject_count, 1, "3+ char Japanese substring search should work via FTS trigram");
     }
 }
