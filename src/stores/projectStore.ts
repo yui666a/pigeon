@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../types/project";
+import { useErrorStore } from "./errorStore";
 
 interface ProjectState {
   projects: Project[];
@@ -38,6 +39,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set({ projects, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -54,6 +56,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       return project;
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
       throw e;
     }
   },
@@ -80,6 +83,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set({ projects, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -95,6 +99,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -110,6 +115,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 

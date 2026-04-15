@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, CreateAccountRequest, OAuthStatus } from "../types/account";
+import { useErrorStore } from "./errorStore";
 
 interface AccountState {
   accounts: Account[];
@@ -36,6 +37,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       set({ accounts, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -47,6 +49,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       set({ accounts, loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -58,6 +61,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       set({ accounts, loading: false, selectedAccountId: null });
     } catch (e) {
       set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -70,6 +74,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       await openUrl(authUrl);
     } catch (e) {
       set({ oauthStatus: "error", oauthError: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -83,6 +88,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       set({ accounts, oauthStatus: "idle", oauthError: null });
     } catch (e) {
       set({ oauthStatus: "error", oauthError: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Mail, Thread } from "../types/mail";
+import { useErrorStore } from "./errorStore";
 
 interface MailState {
   threads: Thread[];
@@ -36,6 +37,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       set({ threads });
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -47,6 +49,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       return count;
     } catch (e) {
       set({ error: String(e), syncing: false });
+      useErrorStore.getState().addError(String(e));
       return 0;
     }
   },
@@ -63,6 +66,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       set({ unclassifiedMails: mails });
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -75,6 +79,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       get().fetchUnclassified(accountId);
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 

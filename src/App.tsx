@@ -4,6 +4,7 @@ import { ThreadList } from "./components/thread-list/ThreadList";
 import { UnclassifiedList } from "./components/thread-list/UnclassifiedList";
 import { MailView } from "./components/mail-view/MailView";
 import { DragOverlay } from "./components/common/DragOverlay";
+import { ErrorToast } from "./components/common/ErrorToast";
 import { useUiStore } from "./stores/uiStore";
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
         <MailView />
       </div>
       <DragOverlay />
+      <ErrorToast />
     </div>
   );
 }
