@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tauri::State;
 
 use crate::db::{accounts, mails};
@@ -7,13 +8,29 @@ use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::Thread;
 use crate::state::{DbState, SecureStoreState};
 
+#[derive(Debug, Serialize)]
+pub struct SyncAccountResult {
+    pub count: u32,
+    pub reauth_required: bool,
+}
+
 #[tauri::command]
 pub async fn sync_account(
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
     account_id: String,
-) -> Result<u32, AppError> {
-    sync_account_inner(&state, &secure_store.0, &account_id).await
+) -> Result<SyncAccountResult, AppError> {
+    match sync_account_inner(&state, &secure_store.0, &account_id).await {
+        Ok(count) => Ok(SyncAccountResult {
+            count,
+            reauth_required: false,
+        }),
+        Err(AppError::ReauthRequired(_)) => Ok(SyncAccountResult {
+            count: 0,
+            reauth_required: true,
+        }),
+        Err(e) => Err(e),
+    }
 }
 
 /// Resolve IMAP credentials for the given account.

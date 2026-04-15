@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, CreateAccountRequest, OAuthStatus } from "../types/account";
 import { useErrorStore } from "./errorStore";
+import { useMailStore } from "./mailStore";
 
 interface AccountState {
   accounts: Account[];
@@ -12,7 +13,6 @@ interface AccountState {
   error: string | null;
   oauthStatus: OAuthStatus;
   oauthError: string | null;
-  reauthAccountId: string | null;
   fetchAccounts: () => Promise<void>;
   createAccount: (req: CreateAccountRequest) => Promise<void>;
   removeAccount: (id: string) => Promise<void>;
@@ -31,7 +31,6 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   error: null,
   oauthStatus: "idle",
   oauthError: null,
-  reauthAccountId: null,
 
   fetchAccounts: async () => {
     set({ loading: true, error: null });
@@ -82,7 +81,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   },
 
   startReauth: async (accountId) => {
-    set({ oauthStatus: "waiting", oauthError: null, reauthAccountId: accountId });
+    set({ oauthStatus: "waiting", oauthError: null });
     try {
       const authUrl = await invoke<string>("start_oauth", {
         provider: "google",
@@ -90,7 +89,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       });
       await openUrl(authUrl);
     } catch (e) {
-      set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
+      set({ oauthStatus: "error", oauthError: String(e) });
       useErrorStore.getState().addError(String(e));
     }
   },
@@ -100,17 +99,18 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     if (get().oauthStatus === "exchanging") return;
     set({ oauthStatus: "exchanging" });
     try {
-      await invoke("handle_oauth_callback", { url });
+      const callbackAccountId = await invoke<string>("handle_oauth_callback", { url });
+      useMailStore.getState().clearNeedsReauth(callbackAccountId);
       const accounts = await invoke<Account[]>("get_accounts");
-      set({ accounts, oauthStatus: "idle", oauthError: null, reauthAccountId: null });
+      set({ accounts, oauthStatus: "idle", oauthError: null });
     } catch (e) {
-      set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
+      set({ oauthStatus: "error", oauthError: String(e) });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   resetOAuth: () => {
-    set({ oauthStatus: "idle", oauthError: null, reauthAccountId: null });
+    set({ oauthStatus: "idle", oauthError: null });
   },
 
   initDeepLinkListener: async () => {

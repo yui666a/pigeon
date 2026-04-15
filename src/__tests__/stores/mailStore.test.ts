@@ -14,7 +14,7 @@ describe("mailStore", () => {
       selectedThread: null,
       selectedMail: null,
       syncing: false,
-      needsReauth: false,
+      needsReauthAccountId: null,
       unclassifiedMails: [],
       error: null,
     });
@@ -44,7 +44,7 @@ describe("mailStore", () => {
 
   describe("syncAccount", () => {
     it("sets syncing state and returns count", async () => {
-      mockInvoke.mockResolvedValue(5);
+      mockInvoke.mockResolvedValue({ count: 5, reauth_required: false });
 
       const count = await useMailStore.getState().syncAccount("acc1");
 
@@ -62,22 +62,60 @@ describe("mailStore", () => {
       expect(useMailStore.getState().syncing).toBe(false);
     });
 
-    it("sets needsReauth on reauth error", async () => {
-      mockInvoke.mockRejectedValue("Reauth required: acc1");
+    it("sets needsReauthAccountId on reauth response", async () => {
+      mockInvoke.mockResolvedValue({ count: 0, reauth_required: true });
 
       const count = await useMailStore.getState().syncAccount("acc1");
 
       expect(count).toBe(0);
-      expect(useMailStore.getState().needsReauth).toBe(true);
+      expect(useMailStore.getState().needsReauthAccountId).toBe("acc1");
       expect(useMailStore.getState().syncing).toBe(false);
     });
 
-    it("does not set needsReauth on other errors", async () => {
+    it("does not set needsReauthAccountId on other errors", async () => {
       mockInvoke.mockRejectedValue("IMAP connection failed");
 
       await useMailStore.getState().syncAccount("acc1");
 
-      expect(useMailStore.getState().needsReauth).toBe(false);
+      expect(useMailStore.getState().needsReauthAccountId).toBeNull();
+    });
+
+    it("keeps other account reauth flag on non-reauth error", async () => {
+      useMailStore.setState({ needsReauthAccountId: "acc2" });
+      mockInvoke.mockRejectedValue("IMAP connection failed");
+
+      await useMailStore.getState().syncAccount("acc1");
+
+      expect(useMailStore.getState().needsReauthAccountId).toBe("acc2");
+    });
+
+    it("clears matching needsReauthAccountId before retry sync", async () => {
+      useMailStore.setState({ needsReauthAccountId: "acc1" });
+      mockInvoke.mockResolvedValue({ count: 3, reauth_required: false });
+
+      await useMailStore.getState().syncAccount("acc1");
+
+      expect(useMailStore.getState().needsReauthAccountId).toBeNull();
+    });
+  });
+
+  describe("clearNeedsReauth", () => {
+    it("clears state when accountId matches", () => {
+      useMailStore.setState({ needsReauthAccountId: "acc1" });
+      useMailStore.getState().clearNeedsReauth("acc1");
+      expect(useMailStore.getState().needsReauthAccountId).toBeNull();
+    });
+
+    it("keeps state when accountId does not match", () => {
+      useMailStore.setState({ needsReauthAccountId: "acc1" });
+      useMailStore.getState().clearNeedsReauth("acc2");
+      expect(useMailStore.getState().needsReauthAccountId).toBe("acc1");
+    });
+
+    it("clears state when called without accountId", () => {
+      useMailStore.setState({ needsReauthAccountId: "acc1" });
+      useMailStore.getState().clearNeedsReauth();
+      expect(useMailStore.getState().needsReauthAccountId).toBeNull();
     });
   });
 

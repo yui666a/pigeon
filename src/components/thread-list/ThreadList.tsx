@@ -15,8 +15,19 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
   const startReauth = useAccountStore((s) => s.startReauth);
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
-  const { threads, syncing, needsReauth, selectedThread, fetchThreads, syncAccount, selectThread, setThreads } =
+  const {
+    threads,
+    syncing,
+    needsReauthAccountId,
+    selectedThread,
+    fetchThreads,
+    syncAccount,
+    selectThread,
+    setThreads,
+  } =
     useMailStore();
+  const needsReauth =
+    selectedAccountId !== null && needsReauthAccountId === selectedAccountId;
 
   useEffect(() => {
     if (viewMode === "project" && selectedProjectId) {
@@ -28,16 +39,27 @@ export function ThreadList({ viewMode }: ThreadListProps) {
           setThreads([]);
         });
     } else if (viewMode === "threads" && selectedAccountId) {
+      if (needsReauth) {
+        return;
+      }
       syncAccount(selectedAccountId).then(() => {
         fetchThreads(selectedAccountId, "INBOX");
       });
     }
-  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount, setThreads]);
+  }, [
+    viewMode,
+    selectedAccountId,
+    selectedProjectId,
+    needsReauth,
+    fetchThreads,
+    syncAccount,
+    setThreads,
+  ]);
 
   if (!selectedAccountId) {
     return <EmptyState message="アカウントを選択してください" />;
   }
-  if (needsReauth && selectedAccountId) {
+  if (needsReauth) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-4">
         <p className="text-sm text-amber-600">
