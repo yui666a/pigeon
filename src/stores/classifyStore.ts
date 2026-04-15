@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useMailStore } from "./mailStore";
+import { useErrorStore } from "./errorStore";
 import type {
   ClassifyResponse,
   ClassifyProgress,
@@ -48,6 +49,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       });
     } catch (e) {
       set({ error: String(e), classifying: false });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -57,6 +59,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       await invoke("classify_unassigned", { accountId });
     } catch (e) {
       set({ error: String(e), classifying: false, classifyingAccountId: null, progress: null });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -66,6 +69,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       set({ classifying: false, progress: null });
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -78,6 +82,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       });
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -94,6 +99,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       });
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -105,6 +111,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
       });
     } catch (e) {
       set({ error: String(e) });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
