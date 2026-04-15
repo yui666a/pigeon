@@ -23,6 +23,14 @@ pub struct Mail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub mail: Mail,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     pub thread_id: String,
     pub subject: String,
