@@ -12,11 +12,13 @@ interface AccountState {
   error: string | null;
   oauthStatus: OAuthStatus;
   oauthError: string | null;
+  reauthAccountId: string | null;
   fetchAccounts: () => Promise<void>;
   createAccount: (req: CreateAccountRequest) => Promise<void>;
   removeAccount: (id: string) => Promise<void>;
   selectAccount: (id: string | null) => void;
   startOAuth: (provider: string) => Promise<void>;
+  startReauth: (accountId: string) => Promise<void>;
   handleOAuthCallback: (url: string) => Promise<void>;
   resetOAuth: () => void;
   initDeepLinkListener: () => Promise<() => void>;
@@ -29,6 +31,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   error: null,
   oauthStatus: "idle",
   oauthError: null,
+  reauthAccountId: null,
 
   fetchAccounts: async () => {
     set({ loading: true, error: null });
@@ -78,6 +81,20 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     }
   },
 
+  startReauth: async (accountId) => {
+    set({ oauthStatus: "waiting", oauthError: null, reauthAccountId: accountId });
+    try {
+      const authUrl = await invoke<string>("start_oauth", {
+        provider: "google",
+        accountId,
+      });
+      await openUrl(authUrl);
+    } catch (e) {
+      set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
   handleOAuthCallback: async (url) => {
     // Prevent double-processing of the same callback
     if (get().oauthStatus === "exchanging") return;
@@ -85,15 +102,15 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     try {
       await invoke("handle_oauth_callback", { url });
       const accounts = await invoke<Account[]>("get_accounts");
-      set({ accounts, oauthStatus: "idle", oauthError: null });
+      set({ accounts, oauthStatus: "idle", oauthError: null, reauthAccountId: null });
     } catch (e) {
-      set({ oauthStatus: "error", oauthError: String(e) });
+      set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   resetOAuth: () => {
-    set({ oauthStatus: "idle", oauthError: null });
+    set({ oauthStatus: "idle", oauthError: null, reauthAccountId: null });
   },
 
   initDeepLinkListener: async () => {
