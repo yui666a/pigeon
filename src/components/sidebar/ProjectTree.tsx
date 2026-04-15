@@ -3,8 +3,8 @@ import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useDragStore } from "../../stores/dragStore";
-import { useProjectRename } from "../../hooks/useProjectRename";
 import { ProjectListItem } from "./ProjectListItem";
+import { ProjectRenameProvider, useProjectRenameContext } from "./ProjectRenameContext";
 import { ContextMenu } from "../common/ContextMenu";
 
 interface ProjectTreeProps {
@@ -14,27 +14,8 @@ interface ProjectTreeProps {
 
 export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTreeProps) {
   const { selectedAccountId } = useAccountStore();
-  const { projects, selectedProjectId, fetchProjects, selectProject, archiveProject, deleteProject } =
-    useProjectStore();
-  const { unclassifiedMails, fetchUnclassified, moveMail } = useMailStore();
-  const draggingMailIds = useDragStore((s) => s.draggingMailIds);
-  const endDrag = useDragStore((s) => s.endDrag);
-  const [hoverProjectId, setHoverProjectId] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    projectId: string;
-  } | null>(null);
-
-  const {
-    renamingProjectId,
-    renameValue,
-    setRenameValue,
-    renameInputRef,
-    startRename,
-    submitRename,
-    cancelRename,
-  } = useProjectRename(projects);
+  const { projects, fetchProjects } = useProjectStore();
+  const { unclassifiedMails, fetchUnclassified } = useMailStore();
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -43,16 +24,69 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
     }
   }, [selectedAccountId, fetchProjects, fetchUnclassified]);
 
-  useEffect(() => {
-    if (!draggingMailIds) {
-      setHoverProjectId(null);
-    }
-  }, [draggingMailIds]);
-
   if (!selectedAccountId) {
     return null;
   }
-  const accountId = selectedAccountId;
+
+  return (
+    <div className="mt-2">
+      <div className="px-4 py-1">
+        <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+          案件
+        </span>
+      </div>
+      <ProjectRenameProvider projects={projects}>
+        <ProjectListInner
+          accountId={selectedAccountId}
+          onSelectProject={onSelectProject}
+        />
+      </ProjectRenameProvider>
+      {projects.length > 0 && <hr className="mx-4 my-1 border-gray-200" />}
+      <button
+        onClick={onSelectUnclassified}
+        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-amber-500">!</span>
+          <span>未分類</span>
+          {unclassifiedMails.length > 0 && (
+            <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-600">
+              {unclassifiedMails.length}
+            </span>
+          )}
+        </div>
+      </button>
+    </div>
+  );
+}
+
+function ProjectListInner({
+  accountId,
+  onSelectProject,
+}: {
+  accountId: string;
+  onSelectProject: () => void;
+}) {
+  const { projects, selectedProjectId, selectProject, archiveProject, deleteProject } =
+    useProjectStore();
+  const draggingMailIds = useDragStore((s) => s.draggingMailIds);
+  const endDrag = useDragStore((s) => s.endDrag);
+  const { moveMail } = useMailStore();
+  const { startRename } = useProjectRenameContext();
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    projectId: string;
+  } | null>(null);
+
+  const handleDropOnProject = async (projectId: string) => {
+    if (!draggingMailIds) return;
+    const mailIds = [...draggingMailIds];
+    endDrag();
+    for (const mailId of mailIds) {
+      await moveMail(mailId, projectId, accountId);
+    }
+  };
 
   const getProjectMenuItems = (projectId: string) => [
     {
@@ -74,65 +108,26 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
     },
   ];
 
-  const handleDropOnProject = async (projectId: string) => {
-    if (!draggingMailIds) return;
-    const mailIds = [...draggingMailIds];
-    endDrag();
-    for (const mailId of mailIds) {
-      await moveMail(mailId, projectId, accountId);
-    }
-  };
-
   return (
-    <div className="mt-2">
-      <div className="px-4 py-1">
-        <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-          案件
-        </span>
-      </div>
+    <>
       <ul className="flex flex-col">
         {projects.map((project) => (
           <ProjectListItem
             key={project.id}
             project={project}
             selected={selectedProjectId === project.id}
-            isRenaming={renamingProjectId === project.id}
-            renameValue={renameValue}
-            renameInputRef={renameInputRef}
-            isDragHover={hoverProjectId === project.id}
-            isDragging={!!draggingMailIds}
             onSelect={() => {
               selectProject(project.id);
               onSelectProject();
             }}
-            onRenameValueChange={setRenameValue}
-            onRenameSubmit={submitRename}
-            onRenameCancel={cancelRename}
             onContextMenu={(e) => {
               e.preventDefault();
               setContextMenu({ x: e.clientX, y: e.clientY, projectId: project.id });
             }}
-            onDragEnter={() => setHoverProjectId(project.id)}
-            onDragLeave={() => setHoverProjectId(null)}
-            onDrop={() => handleDropOnProject(project.id)}
+            onDrop={handleDropOnProject}
           />
         ))}
       </ul>
-      {projects.length > 0 && <hr className="mx-4 my-1 border-gray-200" />}
-      <button
-        onClick={onSelectUnclassified}
-        className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100"
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-amber-500">!</span>
-          <span>未分類</span>
-          {unclassifiedMails.length > 0 && (
-            <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-600">
-              {unclassifiedMails.length}
-            </span>
-          )}
-        </div>
-      </button>
 
       {contextMenu && (
         <ContextMenu
@@ -142,6 +137,6 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
           onClose={() => setContextMenu(null)}
         />
       )}
-    </div>
+    </>
   );
 }
