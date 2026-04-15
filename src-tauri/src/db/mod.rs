@@ -3,4 +3,5 @@ pub mod assignments;
 pub mod mails;
 pub mod migrations;
 pub mod projects;
+pub mod search;
 pub mod settings;
