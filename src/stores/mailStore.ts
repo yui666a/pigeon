@@ -8,6 +8,7 @@ interface MailState {
   selectedThread: Thread | null;
   selectedMail: Mail | null;
   syncing: boolean;
+  needsReauth: boolean;
   unclassifiedMails: Mail[];
   error: string | null;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
@@ -25,6 +26,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   selectedThread: null,
   selectedMail: null,
   syncing: false,
+  needsReauth: false,
   unclassifiedMails: [],
   error: null,
 
@@ -42,14 +44,18 @@ export const useMailStore = create<MailState>((set, get) => ({
   },
 
   syncAccount: async (accountId) => {
-    set({ syncing: true, error: null });
+    set({ syncing: true, error: null, needsReauth: false });
     try {
       const count = await invoke<number>("sync_account", { accountId });
       set({ syncing: false });
       return count;
     } catch (e) {
-      set({ error: String(e), syncing: false });
-      useErrorStore.getState().addError(String(e));
+      const errorMsg = String(e);
+      const isReauth = errorMsg.includes("Reauth required");
+      set({ error: errorMsg, syncing: false, needsReauth: isReauth });
+      if (!isReauth) {
+        useErrorStore.getState().addError(errorMsg);
+      }
       return 0;
     }
   },

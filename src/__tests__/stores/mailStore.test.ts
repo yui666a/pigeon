@@ -14,6 +14,7 @@ describe("mailStore", () => {
       selectedThread: null,
       selectedMail: null,
       syncing: false,
+      needsReauth: false,
       unclassifiedMails: [],
       error: null,
     });
@@ -59,6 +60,24 @@ describe("mailStore", () => {
       expect(count).toBe(0);
       expect(useMailStore.getState().error).toBe("sync error");
       expect(useMailStore.getState().syncing).toBe(false);
+    });
+
+    it("sets needsReauth on reauth error", async () => {
+      mockInvoke.mockRejectedValue("Reauth required: acc1");
+
+      const count = await useMailStore.getState().syncAccount("acc1");
+
+      expect(count).toBe(0);
+      expect(useMailStore.getState().needsReauth).toBe(true);
+      expect(useMailStore.getState().syncing).toBe(false);
+    });
+
+    it("does not set needsReauth on other errors", async () => {
+      mockInvoke.mockRejectedValue("IMAP connection failed");
+
+      await useMailStore.getState().syncAccount("acc1");
+
+      expect(useMailStore.getState().needsReauth).toBe(false);
     });
   });
 
