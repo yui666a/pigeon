@@ -260,7 +260,10 @@ mod tests {
              VALUES ('m1', 'nonexistent', 'INBOX', '<msg1>', 'a@b.com', 'c@d.com', 'Test', '2026-01-01', 1)",
             [],
         );
-        assert!(result.is_err(), "foreign key constraint should have prevented insert");
+        assert!(
+            result.is_err(),
+            "foreign key constraint should have prevented insert"
+        );
     }
 
     #[test]
@@ -317,7 +320,8 @@ mod tests {
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('proj2', 'acc2', 'Project 2')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Attempting to assign mail (acc1) to project (acc2) should fail
         let result = conn.execute(
@@ -325,7 +329,10 @@ mod tests {
              VALUES ('mail1', 'proj2', 'ai')",
             [],
         );
-        assert!(result.is_err(), "cross-account assignment should be rejected by trigger");
+        assert!(
+            result.is_err(),
+            "cross-account assignment should be rejected by trigger"
+        );
     }
 
     #[test]
@@ -350,7 +357,8 @@ mod tests {
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('proj1', 'acc1', 'Project 1')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Same-account assignment should succeed
         let result = conn.execute(
@@ -381,12 +389,14 @@ mod tests {
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('proj1', 'acc1', 'Project 1')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO mail_project_assignments (mail_id, project_id, assigned_by)
              VALUES ('mail1', 'proj1', 'user')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify assignment exists
         let count: i32 = conn
@@ -399,7 +409,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Delete the project — assignment should cascade-delete
-        conn.execute("DELETE FROM projects WHERE id = 'proj1'", []).unwrap();
+        conn.execute("DELETE FROM projects WHERE id = 'proj1'", [])
+            .unwrap();
 
         let count_after: i32 = conn
             .query_row(
@@ -408,7 +419,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count_after, 0, "assignment should be cascade-deleted when project is deleted");
+        assert_eq!(
+            count_after, 0,
+            "assignment should be cascade-deleted when project is deleted"
+        );
     }
 
     #[test]

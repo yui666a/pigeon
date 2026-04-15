@@ -18,20 +18,22 @@ pub async fn start_oauth(
     app_handle: AppHandle,
     oauth_store: State<'_, OAuthStateStore>,
     provider: String,
+    account_id: Option<String>,
 ) -> Result<String, AppError> {
-    start_oauth_inner(&app_handle, &oauth_store, &provider)
+    start_oauth_inner(&app_handle, &oauth_store, &provider, account_id)
 }
 
 fn start_oauth_inner(
     app_handle: &AppHandle,
     oauth_store: &OAuthStateStore,
     provider: &str,
+    existing_account_id: Option<String>,
 ) -> Result<String, AppError> {
     match provider {
         "google" => {
             let redirect_uri = start_loopback_callback_listener(app_handle.clone())?;
             let config = OAuthConfig::google_with_redirect(redirect_uri.clone())?;
-            let account_id = Uuid::new_v4().to_string();
+            let account_id = existing_account_id.unwrap_or_else(|| Uuid::new_v4().to_string());
             let code_verifier = oauth::generate_code_verifier();
             let code_challenge = oauth::generate_code_challenge(&code_verifier);
             let state = oauth::generate_state();
@@ -168,6 +170,18 @@ async fn handle_oauth_callback_inner(
 
     // Build token data
     let token_data = oauth::build_token_data(&token_response, &email, None)?;
+
+    // Check if this is a reauth (account already exists in DB)
+    let is_reauth = {
+        let conn = db_state.0.lock().map_err(AppError::lock_err)?;
+        accounts::get_account(&conn, &pending.account_id).is_ok()
+    };
+
+    if is_reauth {
+        // Reauth: only save token, skip DB insert
+        save_oauth_token(secure_store, &pending.account_id, &token_data)?;
+        return Ok(pending.account_id);
+    }
 
     // Check for duplicate email
     {
