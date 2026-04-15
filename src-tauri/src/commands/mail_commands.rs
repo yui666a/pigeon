@@ -26,21 +26,32 @@ async fn resolve_imap_credentials(
     match account.provider {
         AccountProvider::Google => {
             let mut token_data =
-                crate::commands::auth_commands::load_oauth_token(secure_store, &account.id)?;
+                match crate::commands::auth_commands::load_oauth_token(secure_store, &account.id) {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Err(AppError::ReauthRequired(account.id.clone()));
+                    }
+                };
 
             if oauth::token_needs_refresh(&token_data) {
                 let config = oauth::OAuthConfig::google()?;
-                let response = oauth::refresh_token(&config, &token_data.refresh_token).await?;
-                token_data = oauth::build_token_data(
-                    &response,
-                    &token_data.email,
-                    Some(&token_data.refresh_token),
-                )?;
-                crate::commands::auth_commands::save_oauth_token(
-                    secure_store,
-                    &account.id,
-                    &token_data,
-                )?;
+                match oauth::refresh_token(&config, &token_data.refresh_token).await {
+                    Ok(response) => {
+                        token_data = oauth::build_token_data(
+                            &response,
+                            &token_data.email,
+                            Some(&token_data.refresh_token),
+                        )?;
+                        crate::commands::auth_commands::save_oauth_token(
+                            secure_store,
+                            &account.id,
+                            &token_data,
+                        )?;
+                    }
+                    Err(_) => {
+                        return Err(AppError::ReauthRequired(account.id.clone()));
+                    }
+                }
             }
 
             Ok((AuthType::Oauth2, token_data.email, token_data.access_token))
