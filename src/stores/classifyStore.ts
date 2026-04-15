@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useMailStore } from "./mailStore";
 import { useErrorStore } from "./errorStore";
 import type {
   ClassifyResponse,
@@ -76,7 +75,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
   approveClassification: async (mailId, projectId) => {
     try {
       await invoke("approve_classification", { mailId, projectId });
-      useMailStore.getState().removeUnclassifiedMail(mailId);
       set({
         results: get().results.filter((r) => r.mail_id !== mailId),
       });
@@ -93,7 +91,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
         projectName,
         description: description ?? null,
       });
-      useMailStore.getState().removeUnclassifiedMail(mailId);
       set({
         results: get().results.filter((r) => r.mail_id !== mailId),
       });
@@ -136,16 +133,12 @@ export const useClassifyStore = create<ClassifyState>((set, get) => ({
     const unlistenComplete = await listen<ClassifySummary>(
       "classify-complete",
       (event) => {
-        const accountId = get().classifyingAccountId;
         set({
           summary: event.payload,
           classifying: false,
           classifyingAccountId: null,
           progress: null,
         });
-        if (accountId) {
-          useMailStore.getState().fetchUnclassified(accountId);
-        }
       },
     );
 

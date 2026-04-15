@@ -13,10 +13,11 @@ export function UnclassifiedList() {
   const results = useClassifyStore((s) => s.results);
   const summary = useClassifyStore((s) => s.summary);
   const classifying = useClassifyStore((s) => s.classifying);
-  const approveNewProject = useClassifyStore((s) => s.approveNewProject);
+  const approveNewProjectStore = useClassifyStore((s) => s.approveNewProject);
   const rejectClassification = useClassifyStore(
     (s) => s.rejectClassification,
   );
+  const removeUnclassifiedMail = useMailStore((s) => s.removeUnclassifiedMail);
   const initClassifyListeners = useClassifyStore(
     (s) => s.initClassifyListeners,
   );
@@ -41,10 +42,16 @@ export function UnclassifiedList() {
   useEffect(() => {
     if (!classifying && summary && selectedAccountId) {
       fetchProjects(selectedAccountId);
+      fetchUnclassified(selectedAccountId);
     }
-  }, [classifying, summary, selectedAccountId, fetchProjects]);
+  }, [classifying, summary, selectedAccountId, fetchProjects, fetchUnclassified]);
 
   if (!selectedAccountId) return null;
+
+  const handleApproveNewProject = async (mailId: string, projectName: string, description?: string) => {
+    await approveNewProjectStore(mailId, projectName, description);
+    removeUnclassifiedMail(mailId);
+  };
 
   const createResults = results.filter((r) => r.action === "create");
 
@@ -88,7 +95,7 @@ export function UnclassifiedList() {
               suggestedName={result.project_name ?? ""}
               suggestedDescription={result.description}
               reason={result.reason}
-              onApprove={approveNewProject}
+              onApprove={handleApproveNewProject}
               onReject={rejectClassification}
             />
           ))}

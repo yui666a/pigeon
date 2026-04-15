@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useClassifyStore } from "../../stores/classifyStore";
-import { useMailStore } from "../../stores/mailStore";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -19,10 +18,6 @@ describe("classifyStore", () => {
       progress: null,
       results: [],
       summary: null,
-      error: null,
-    });
-    useMailStore.setState({
-      unclassifiedMails: [],
       error: null,
     });
   });
@@ -50,13 +45,7 @@ describe("classifyStore", () => {
   });
 
   describe("approveClassification", () => {
-    it("removes mail from mailStore.unclassifiedMails and classifyStore.results", async () => {
-      useMailStore.setState({
-        unclassifiedMails: [
-          { id: "m1" } as never,
-          { id: "m2" } as never,
-        ],
-      });
+    it("removes result from classifyStore.results", async () => {
       useClassifyStore.setState({
         results: [
           { mail_id: "m1", action: "assign", confidence: 0.9, reason: "test" },
@@ -67,18 +56,13 @@ describe("classifyStore", () => {
 
       await useClassifyStore.getState().approveClassification("m1", "proj1");
 
-      expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
-      expect(useMailStore.getState().unclassifiedMails[0].id).toBe("m2");
       expect(useClassifyStore.getState().results).toHaveLength(1);
       expect(useClassifyStore.getState().results[0].mail_id).toBe("m2");
     });
   });
 
   describe("rejectClassification", () => {
-    it("removes result but keeps mail in unclassified", async () => {
-      useMailStore.setState({
-        unclassifiedMails: [{ id: "m1" } as never],
-      });
+    it("removes result from classifyStore.results", async () => {
       useClassifyStore.setState({
         results: [{ mail_id: "m1", action: "assign", confidence: 0.5, reason: "test" }],
       });
@@ -87,7 +71,6 @@ describe("classifyStore", () => {
       await useClassifyStore.getState().rejectClassification("m1");
 
       expect(useClassifyStore.getState().results).toHaveLength(0);
-      expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
     });
   });
 
