@@ -6,8 +6,7 @@ use std::collections::HashMap;
 
 /// Column list for SELECT queries on the mails table (no table prefix).
 /// Must match the field order expected by `row_to_mail`.
-pub const MAIL_COLUMNS: &str =
-    "id, account_id, folder, message_id, in_reply_to, \"references\",
+pub const MAIL_COLUMNS: &str = "id, account_id, folder, message_id, in_reply_to, \"references\",
      from_addr, to_addr, cc_addr, subject, body_text, body_html,
      date, has_attachments, raw_size, uid, flags, fetched_at";
 
@@ -87,12 +86,10 @@ pub fn get_mails_by_account(
     account_id: &str,
     folder: &str,
 ) -> Result<Vec<Mail>, AppError> {
-    let mut stmt = conn.prepare(
-        &format!(
-            "SELECT {} FROM mails WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC",
-            MAIL_COLUMNS
-        ),
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM mails WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC",
+        MAIL_COLUMNS
+    ))?;
     let mails = stmt
         .query_map(params![account_id, folder], row_to_mail)?
         .filter_map(|r| r.ok())
@@ -206,7 +203,10 @@ pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
     threads
 }
 
-pub fn get_threads_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Thread>, AppError> {
+pub fn get_threads_by_project(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<Thread>, AppError> {
     let mails = assignments::get_mails_by_project(conn, project_id)?;
     Ok(build_threads(&mails))
 }
@@ -362,9 +362,19 @@ mod tests {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
         let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
         m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let mut m3 = make_mail("m3", "<msg3@ex.com>", "Re: Re: Topic", "2026-04-13T12:00:00");
+        let mut m3 = make_mail(
+            "m3",
+            "<msg3@ex.com>",
+            "Re: Re: Topic",
+            "2026-04-13T12:00:00",
+        );
         m3.in_reply_to = Some("<msg2@ex.com>".into());
-        let mut m4 = make_mail("m4", "<msg4@ex.com>", "Re: Re: Re: Topic", "2026-04-13T13:00:00");
+        let mut m4 = make_mail(
+            "m4",
+            "<msg4@ex.com>",
+            "Re: Re: Re: Topic",
+            "2026-04-13T13:00:00",
+        );
         m4.in_reply_to = Some("<msg3@ex.com>".into());
         let threads = build_threads(&[m1, m2, m3, m4]);
         assert_eq!(threads.len(), 1);

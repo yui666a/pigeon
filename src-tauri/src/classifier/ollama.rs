@@ -163,7 +163,8 @@ mod tests {
 
     #[test]
     fn test_extract_json() {
-        let input = r#"{"action": "assign", "project_id": "p1", "confidence": 0.9, "reason": "test"}"#;
+        let input =
+            r#"{"action": "assign", "project_id": "p1", "confidence": 0.9, "reason": "test"}"#;
         let result = OllamaClassifier::extract_json(input);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), input);
@@ -214,7 +215,8 @@ mod tests {
 
     #[test]
     fn test_parse_response_unclassified() {
-        let content = r#"{"action": "unclassified", "confidence": 0.2, "reason": "内容が曖昧すぎる"}"#;
+        let content =
+            r#"{"action": "unclassified", "confidence": 0.2, "reason": "内容が曖昧すぎる"}"#;
         let result = OllamaClassifier::parse_response(content).unwrap();
         assert!(matches!(result.action, ClassifyAction::Unclassified));
         assert!((result.confidence - 0.2).abs() < f64::EPSILON);

@@ -69,13 +69,11 @@ async fn connect_xoauth2(
 
     // Read the server greeting — this is critical!
     // Without consuming the greeting, authenticate() hangs waiting for it.
-    let _greeting = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        client.read_response(),
-    )
-    .await
-    .map_err(|_| AppError::Imap("Server greeting timed out".into()))?
-    .map_err(|e| AppError::Imap(format!("Failed to read greeting: {}", e)))?;
+    let _greeting =
+        tokio::time::timeout(std::time::Duration::from_secs(10), client.read_response())
+            .await
+            .map_err(|_| AppError::Imap("Server greeting timed out".into()))?
+            .map_err(|e| AppError::Imap(format!("Failed to read greeting: {}", e)))?;
 
     let authenticator = XOAuth2Authenticator {
         email: email.to_string(),
@@ -100,7 +98,10 @@ struct XOAuth2Authenticator {
 impl async_imap::Authenticator for XOAuth2Authenticator {
     type Response = String;
     fn process(&mut self, _data: &[u8]) -> Self::Response {
-        format!("user={}\x01auth=Bearer {}\x01\x01", self.email, self.access_token)
+        format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            self.email, self.access_token
+        )
     }
 }
 
@@ -202,6 +203,9 @@ mod tests {
             access_token: "ya29.token".into(),
         };
         let response = async_imap::Authenticator::process(&mut auth, b"");
-        assert_eq!(response, "user=user@gmail.com\x01auth=Bearer ya29.token\x01\x01");
+        assert_eq!(
+            response,
+            "user=user@gmail.com\x01auth=Bearer ya29.token\x01\x01"
+        );
     }
 }

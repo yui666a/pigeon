@@ -23,6 +23,7 @@ interface ProjectState {
   ) => Promise<void>;
   archiveProject: (id: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
+  mergeProject: (sourceId: string, targetId: string) => Promise<number>;
   selectProject: (id: string | null) => void;
 }
 
@@ -116,6 +117,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     } catch (e) {
       set({ error: String(e), loading: false });
       useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  mergeProject: async (sourceId, targetId) => {
+    set({ loading: true, error: null });
+    try {
+      const moved = await invoke<number>("merge_projects", {
+        sourceId,
+        targetId,
+      });
+      set({
+        projects: get().projects.filter((p) => p.id !== sourceId),
+        selectedProjectId:
+          get().selectedProjectId === sourceId ? targetId : get().selectedProjectId,
+        loading: false,
+      });
+      return moved;
+    } catch (e) {
+      set({ error: String(e), loading: false });
+      useErrorStore.getState().addError(String(e));
+      throw e;
     }
   },
 

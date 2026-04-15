@@ -74,19 +74,14 @@ pub fn reject_classification(conn: &Connection, mail_id: &str) -> Result<(), App
 }
 
 /// Get mails that have no project assignment for a given account.
-pub fn get_unclassified_mails(
-    conn: &Connection,
-    account_id: &str,
-) -> Result<Vec<Mail>, AppError> {
-    let mut stmt = conn.prepare(
-        &format!(
-            "SELECT {} FROM mails m
+pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec<Mail>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM mails m
              LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
              WHERE mpa.mail_id IS NULL AND m.account_id = ?1
              ORDER BY m.date DESC",
-            MAIL_COLUMNS_PREFIXED
-        ),
-    )?;
+        MAIL_COLUMNS_PREFIXED
+    ))?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?
         .filter_map(|r| r.ok())
@@ -95,19 +90,14 @@ pub fn get_unclassified_mails(
 }
 
 /// Get mails assigned to a specific project.
-pub fn get_mails_by_project(
-    conn: &Connection,
-    project_id: &str,
-) -> Result<Vec<Mail>, AppError> {
-    let mut stmt = conn.prepare(
-        &format!(
-            "SELECT {} FROM mails m
+pub fn get_mails_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Mail>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM mails m
              JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
              WHERE mpa.project_id = ?1
              ORDER BY m.date DESC",
-            MAIL_COLUMNS_PREFIXED
-        ),
-    )?;
+        MAIL_COLUMNS_PREFIXED
+    ))?;
     let mails = stmt
         .query_map(params![project_id], row_to_mail)?
         .filter_map(|r| r.ok())
@@ -491,7 +481,10 @@ mod tests {
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert_eq!(corrections.len(), 1);
         assert_eq!(corrections[0].mail_subject, "Mail Subject");
-        assert_eq!(corrections[0].from_project, Some("Project Alpha".to_string()));
+        assert_eq!(
+            corrections[0].from_project,
+            Some("Project Alpha".to_string())
+        );
         assert_eq!(corrections[0].to_project, "Project Beta");
     }
 
@@ -520,7 +513,12 @@ mod tests {
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
         for i in 0..5 {
-            let m = make_mail(&format!("m{}", i), "acc1", &format!("Subject {}", i), &format!("2026-04-13T1{}:00:00", i));
+            let m = make_mail(
+                &format!("m{}", i),
+                "acc1",
+                &format!("Subject {}", i),
+                &format!("2026-04-13T1{}:00:00", i),
+            );
             insert_mail(&conn, &m);
             insert_correction(&conn, &format!("m{}", i), Some("proj1"), "proj2").unwrap();
         }
@@ -546,7 +544,10 @@ mod tests {
 
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert_eq!(corrections.len(), 1);
-        assert_eq!(corrections[0].from_project, Some("Project Alpha".to_string()));
+        assert_eq!(
+            corrections[0].from_project,
+            Some("Project Alpha".to_string())
+        );
         assert_eq!(corrections[0].to_project, "Project Beta");
     }
 

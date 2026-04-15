@@ -86,6 +86,7 @@ pub fn run() {
             commands::project_commands::update_project,
             commands::project_commands::archive_project,
             commands::project_commands::delete_project,
+            commands::project_commands::merge_projects,
             commands::classify_commands::classify_mail,
             commands::classify_commands::classify_unassigned,
             commands::classify_commands::cancel_classification,

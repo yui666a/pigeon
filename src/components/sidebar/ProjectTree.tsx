@@ -6,6 +6,7 @@ import { useDragStore } from "../../stores/dragStore";
 import { ProjectListItem } from "./ProjectListItem";
 import { ProjectRenameProvider, useProjectRenameContext } from "./ProjectRenameContext";
 import { ContextMenu } from "../common/ContextMenu";
+import { MergeProjectDialog } from "./MergeProjectDialog";
 
 interface ProjectTreeProps {
   onSelectUnclassified: () => void;
@@ -64,7 +65,7 @@ function ProjectListInner({
 }: {
   onSelectProject: () => void;
 }) {
-  const { projects, selectedProjectId, selectProject, archiveProject, deleteProject } =
+  const { projects, selectedProjectId, selectProject, archiveProject, deleteProject, mergeProject } =
     useProjectStore();
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
   const endDrag = useDragStore((s) => s.endDrag);
@@ -75,6 +76,7 @@ function ProjectListInner({
     y: number;
     projectId: string;
   } | null>(null);
+  const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
 
   const handleDropOnProject = async (projectId: string) => {
     if (!draggingMailIds) return;
@@ -89,6 +91,10 @@ function ProjectListInner({
     {
       label: "名前変更",
       onClick: () => startRename(projectId),
+    },
+    {
+      label: "マージ",
+      onClick: () => setMergeSourceId(projectId),
     },
     {
       label: "アーカイブ",
@@ -134,6 +140,23 @@ function ProjectListInner({
           onClose={() => setContextMenu(null)}
         />
       )}
+
+      {mergeSourceId && (() => {
+        const sourceProject = projects.find((p) => p.id === mergeSourceId);
+        if (!sourceProject) return null;
+        const candidates = projects.filter((p) => p.id !== mergeSourceId);
+        return (
+          <MergeProjectDialog
+            sourceProject={sourceProject}
+            candidates={candidates}
+            onMerge={async (targetId) => {
+              await mergeProject(mergeSourceId, targetId);
+              setMergeSourceId(null);
+            }}
+            onCancel={() => setMergeSourceId(null)}
+          />
+        );
+      })()}
     </>
   );
 }

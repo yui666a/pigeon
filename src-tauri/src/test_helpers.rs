@@ -53,6 +53,11 @@ pub fn make_mail(id: &str, message_id: &str, subject: &str, date: &str) -> Mail 
 /// Creates a mail with the given `id` and `subject`, using defaults for
 /// everything else, and inserts it into the database.
 pub fn insert_test_mail(conn: &Connection, id: &str, subject: &str) {
-    let mail = make_mail(id, &format!("<{}@test.com>", id), subject, "2026-04-13T10:00:00");
+    let mail = make_mail(
+        id,
+        &format!("<{}@test.com>", id),
+        subject,
+        "2026-04-13T10:00:00",
+    );
     crate::db::mails::insert_mail(conn, &mail).unwrap();
 }

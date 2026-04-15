@@ -5,15 +5,14 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::classifier::ollama::OllamaClassifier;
 use crate::classifier::LlmClassifier;
-use crate::state::DbState;
 use crate::db::{assignments, mails, projects, settings};
 use crate::error::AppError;
 use crate::models::classifier::{
-    ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary,
-    CONFIDENCE_UNCERTAIN,
+    ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary, CONFIDENCE_UNCERTAIN,
 };
 use crate::models::mail::Mail;
 use crate::models::project::{CreateProjectRequest, Project};
+use crate::state::DbState;
 
 // ---------------------------------------------------------------------------
 // State types
@@ -51,10 +50,10 @@ pub async fn classify_mail(
         let conn = db.0.lock().map_err(AppError::lock_err)?;
         let mail = mails::get_mail_by_id(&conn, &mail_id)?;
         let project_summaries = projects::build_project_summaries(&conn, &mail.account_id)?;
-        let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)
-            .unwrap_or_default();
-        let endpoint = settings::get_or_default(&conn,"ollama_endpoint", "http://localhost:11434");
-        let model = settings::get_or_default(&conn,"ollama_model", "llama3.1:8b");
+        let corrections =
+            assignments::get_recent_corrections(&conn, &mail.account_id, 20).unwrap_or_default();
+        let endpoint = settings::get_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
+        let model = settings::get_or_default(&conn, "ollama_model", "llama3.1:8b");
         (mail, project_summaries, corrections, endpoint, model)
     };
 
@@ -90,10 +89,7 @@ pub async fn classify_mail(
         }
     }
 
-    Ok(ClassifyResponse {
-        mail_id,
-        result,
-    })
+    Ok(ClassifyResponse { mail_id, result })
 }
 
 /// Classify all unassigned mails for `account_id`, emitting progress events.
@@ -112,10 +108,10 @@ pub async fn classify_unassigned(
     let (mails, corrections, endpoint, model) = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
         let mails = assignments::get_unclassified_mails(&conn, &account_id)?;
-        let corrections = assignments::get_recent_corrections(&conn, &account_id, 20)
-            .unwrap_or_default();
-        let endpoint = settings::get_or_default(&conn,"ollama_endpoint", "http://localhost:11434");
-        let model = settings::get_or_default(&conn,"ollama_model", "llama3.1:8b");
+        let corrections =
+            assignments::get_recent_corrections(&conn, &account_id, 20).unwrap_or_default();
+        let endpoint = settings::get_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
+        let model = settings::get_or_default(&conn, "ollama_model", "llama3.1:8b");
         (mails, corrections, endpoint, model)
     };
 
@@ -239,7 +235,11 @@ pub fn approve_classification(
     project_id: String,
 ) -> Result<(), AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
-    Ok(assignments::approve_classification(&conn, &mail_id, &project_id)?)
+    Ok(assignments::approve_classification(
+        &conn,
+        &mail_id,
+        &project_id,
+    )?)
 }
 
 /// Approve a "create new project" suggestion: creates the project and assigns the mail.
@@ -312,21 +312,18 @@ pub fn get_unclassified_mails(
 
 /// Move a mail to a different project (used by D&D and context menu).
 #[tauri::command]
-pub fn move_mail(
-    db: State<DbState>,
-    mail_id: String,
-    project_id: String,
-) -> Result<(), AppError> {
+pub fn move_mail(db: State<DbState>, mail_id: String, project_id: String) -> Result<(), AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
-    Ok(assignments::move_mail_to_project(&conn, &mail_id, &project_id)?)
+    Ok(assignments::move_mail_to_project(
+        &conn,
+        &mail_id,
+        &project_id,
+    )?)
 }
 
 /// Get all mails assigned to a specific project.
 #[tauri::command]
-pub fn get_mails_by_project(
-    db: State<DbState>,
-    project_id: String,
-) -> Result<Vec<Mail>, AppError> {
+pub fn get_mails_by_project(db: State<DbState>, project_id: String) -> Result<Vec<Mail>, AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
     Ok(assignments::get_mails_by_project(&conn, &project_id)?)
 }
