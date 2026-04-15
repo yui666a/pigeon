@@ -236,41 +236,7 @@ fn normalize_subject(subject: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::migrations::run_migrations;
-
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
-             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
-            [],
-        ).unwrap();
-        conn
-    }
-
-    fn make_mail(id: &str, message_id: &str, subject: &str, date: &str) -> Mail {
-        Mail {
-            id: id.into(),
-            account_id: "acc1".into(),
-            folder: "INBOX".into(),
-            message_id: message_id.into(),
-            in_reply_to: None,
-            references: None,
-            from_addr: "sender@example.com".into(),
-            to_addr: "me@example.com".into(),
-            cc_addr: None,
-            subject: subject.into(),
-            body_text: Some("Hello".into()),
-            body_html: None,
-            date: date.into(),
-            has_attachments: false,
-            raw_size: None,
-            uid: 1,
-            flags: None,
-            fetched_at: "2026-04-13T00:00:00".into(),
-        }
-    }
+    use crate::test_helpers::{make_mail, setup_db};
 
     #[test]
     fn test_insert_and_get_mails() {

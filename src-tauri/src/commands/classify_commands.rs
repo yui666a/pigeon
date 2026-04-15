@@ -334,44 +334,7 @@ pub fn get_mails_by_project(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::migrations::run_migrations;
-    use crate::db::mails;
-    use rusqlite::Connection;
-
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
-             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
-            [],
-        ).unwrap();
-        conn
-    }
-
-    fn insert_test_mail(conn: &Connection, id: &str, subject: &str) {
-        let mail = Mail {
-            id: id.into(),
-            account_id: "acc1".into(),
-            folder: "INBOX".into(),
-            message_id: format!("<{}@test.com>", id),
-            in_reply_to: None,
-            references: None,
-            from_addr: "sender@example.com".into(),
-            to_addr: "me@example.com".into(),
-            cc_addr: None,
-            subject: subject.into(),
-            body_text: Some("Hello".into()),
-            body_html: None,
-            date: "2026-04-13T10:00:00".into(),
-            has_attachments: false,
-            raw_size: None,
-            uid: 1,
-            flags: None,
-            fetched_at: "2026-04-13T00:00:00".into(),
-        };
-        mails::insert_mail(conn, &mail).unwrap();
-    }
+    use crate::test_helpers::{insert_test_mail, setup_db};
 
     // --- get_mail_by_id (now in db::mails) ---
 

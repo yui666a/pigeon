@@ -7,6 +7,9 @@ pub mod models;
 pub mod secure_store;
 pub mod state;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 use state::DbState;
 use state::SecureStoreState;
 use db::migrations;

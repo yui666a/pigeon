@@ -61,20 +61,8 @@ pub fn delete_project(state: State<DbState>, id: String) -> Result<(), AppError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::migrations::run_migrations;
     use crate::models::project::UpdateProjectRequest;
-    use rusqlite::Connection;
-
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
-             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
-            [],
-        ).unwrap();
-        conn
-    }
+    use crate::test_helpers::setup_db;
 
     #[test]
     fn test_create_and_list_projects() {
