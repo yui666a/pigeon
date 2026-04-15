@@ -43,6 +43,8 @@ pub struct Account {
     pub auth_type: AuthType,
     pub provider: AccountProvider,
     pub created_at: String,
+    #[serde(default)]
+    pub needs_reauth: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

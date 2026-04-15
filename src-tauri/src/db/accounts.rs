@@ -43,6 +43,7 @@ pub fn get_account(conn: &Connection, id: &str) -> Result<Account, AppError> {
                 auth_type: AuthType::try_from(auth_str.as_str()).unwrap_or(AuthType::Plain),
                 provider: AccountProvider::try_from(provider_str.as_str()).unwrap_or(AccountProvider::Other),
                 created_at: row.get(9)?,
+                needs_reauth: false,
             })
         },
     ).map_err(|_| AppError::AccountNotFound(id.to_string()))
@@ -69,6 +70,7 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>, AppError> {
                 provider: AccountProvider::try_from(provider_str.as_str())
                     .unwrap_or(AccountProvider::Other),
                 created_at: row.get(9)?,
+                needs_reauth: false,
             })
         })?
         .filter_map(|r| r.ok())
@@ -110,6 +112,7 @@ pub fn account_exists_by_email(
             provider: AccountProvider::try_from(provider_str.as_str())
                 .unwrap_or(AccountProvider::Other),
             created_at: row.get(9)?,
+            needs_reauth: false,
         })
     })?;
     match rows.next() {
