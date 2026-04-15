@@ -12,8 +12,8 @@ pub async fn sync_account(
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
     account_id: String,
-) -> Result<u32, String> {
-    sync_account_inner(&state, &secure_store.0, &account_id).await.map_err(|e| e.to_string())
+) -> Result<u32, AppError> {
+    sync_account_inner(&state, &secure_store.0, &account_id).await
 }
 
 /// Resolve IMAP credentials for the given account.
@@ -59,7 +59,7 @@ async fn sync_account_inner(
     account_id: &str,
 ) -> Result<u32, AppError> {
     let (account, max_uid) = {
-        let conn = state.0.lock().map_err(|e| AppError::Imap(format!("DB lock failed: {}", e)))?;
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
         let account = accounts::get_account(&conn, account_id)?;
         let max_uid = mails::get_max_uid(&conn, account_id, "INBOX")?;
         (account, max_uid)
@@ -81,7 +81,7 @@ async fn sync_account_inner(
 
     let mut count = 0u32;
     {
-        let conn = state.0.lock().map_err(|e| AppError::Imap(format!("DB lock failed: {}", e)))?;
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
         for (uid, body) in &raw_mails {
             if let Some(mail) = mime_parser::parse_mime(body, account_id, "INBOX", *uid) {
                 mails::insert_mail(&conn, &mail)?;
@@ -101,10 +101,9 @@ pub fn get_threads(
     state: State<DbState>,
     account_id: String,
     folder: String,
-) -> Result<Vec<Thread>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let all_mails =
-        mails::get_mails_by_account(&conn, &account_id, &folder).map_err(|e| e.to_string())?;
+) -> Result<Vec<Thread>, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    let all_mails = mails::get_mails_by_account(&conn, &account_id, &folder)?;
     Ok(mails::build_threads(&all_mails))
 }
 
@@ -112,9 +111,9 @@ pub fn get_threads(
 pub fn get_threads_by_project(
     state: State<DbState>,
     project_id: String,
-) -> Result<Vec<Thread>, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    mails::get_threads_by_project(&conn, &project_id).map_err(|e| e.to_string())
+) -> Result<Vec<Thread>, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    Ok(mails::get_threads_by_project(&conn, &project_id)?)
 }
 
 #[cfg(test)]
