@@ -1,7 +1,6 @@
 use tauri::State;
 
-use crate::commands::account_commands::DbState;
-use crate::commands::auth_commands::SecureStoreState;
+use crate::state::{DbState, SecureStoreState};
 use crate::db::{accounts, mails};
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};

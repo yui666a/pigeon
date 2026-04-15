@@ -3,14 +3,12 @@ use std::net::{TcpListener, TcpStream};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::commands::account_commands::DbState;
 use crate::db::accounts;
 use crate::error::AppError;
 use crate::mail_sync::oauth::{self, OAuthConfig, OAuthStateStore, PendingOAuth};
 use crate::models::account::{AccountProvider, AuthType, CreateAccountRequest, OAuthTokenData};
 use crate::secure_store::SecureStore;
-
-pub struct SecureStoreState(pub SecureStore);
+use crate::state::{DbState, SecureStoreState};
 
 const LOOPBACK_HOST: &str = "127.0.0.1";
 const OAUTH_CALLBACK_PATH: &str = "/oauth/callback";

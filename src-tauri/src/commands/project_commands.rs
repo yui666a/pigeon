@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::commands::account_commands::DbState;
+use crate::state::DbState;
 use crate::db::projects;
 use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
 

@@ -1,12 +1,8 @@
-use rusqlite::Connection;
-use std::sync::Mutex;
 use tauri::State;
 
-use crate::commands::auth_commands::SecureStoreState;
 use crate::db::accounts;
 use crate::models::account::{Account, AuthType, CreateAccountRequest};
-
-pub struct DbState(pub Mutex<Connection>);
+use crate::state::{DbState, SecureStoreState};
 
 #[tauri::command]
 pub fn create_account(

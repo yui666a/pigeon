@@ -5,9 +5,10 @@ pub mod error;
 pub mod mail_sync;
 pub mod models;
 pub mod secure_store;
+pub mod state;
 
-use commands::account_commands::DbState;
-use commands::auth_commands::SecureStoreState;
+use state::DbState;
+use state::SecureStoreState;
 use db::migrations;
 use mail_sync::oauth::OAuthStateStore;
 use rusqlite::Connection;
