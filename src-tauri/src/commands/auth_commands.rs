@@ -220,7 +220,7 @@ async fn handle_oauth_callback_inner(
     }
 }
 
-fn save_oauth_token(
+pub fn save_oauth_token(
     secure_store: &SecureStore,
     account_id: &str,
     token_data: &OAuthTokenData,
@@ -229,14 +229,6 @@ fn save_oauth_token(
     let value = serde_json::to_vec(token_data)
         .map_err(|e| AppError::Stronghold(format!("Failed to serialize token data: {}", e)))?;
     secure_store.insert(&key, &value)
-}
-
-pub fn save_oauth_token_public(
-    secure_store: &SecureStore,
-    account_id: &str,
-    token_data: &OAuthTokenData,
-) -> Result<(), AppError> {
-    save_oauth_token(secure_store, account_id, token_data)
 }
 
 pub fn load_oauth_token(

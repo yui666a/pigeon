@@ -37,7 +37,7 @@ async fn resolve_imap_credentials(
                     &token_data.email,
                     Some(&token_data.refresh_token),
                 )?;
-                crate::commands::auth_commands::save_oauth_token_public(
+                crate::commands::auth_commands::save_oauth_token(
                     secure_store,
                     &account.id,
                     &token_data,
@@ -59,14 +59,11 @@ async fn sync_account_inner(
     secure_store: &crate::secure_store::SecureStore,
     account_id: &str,
 ) -> Result<u32, AppError> {
-    let account = {
-        let conn = state.0.lock().map_err(|e| AppError::OAuth(e.to_string()))?;
-        accounts::get_account(&conn, account_id)?
-    };
-
-    let max_uid = {
-        let conn = state.0.lock().map_err(|e| AppError::OAuth(e.to_string()))?;
-        mails::get_max_uid(&conn, account_id, "INBOX")?
+    let (account, max_uid) = {
+        let conn = state.0.lock().map_err(|e| AppError::Imap(format!("DB lock failed: {}", e)))?;
+        let account = accounts::get_account(&conn, account_id)?;
+        let max_uid = mails::get_max_uid(&conn, account_id, "INBOX")?;
+        (account, max_uid)
     };
 
     let (auth_type, username, credential) =
@@ -85,7 +82,7 @@ async fn sync_account_inner(
 
     let mut count = 0u32;
     {
-        let conn = state.0.lock().map_err(|e| AppError::OAuth(e.to_string()))?;
+        let conn = state.0.lock().map_err(|e| AppError::Imap(format!("DB lock failed: {}", e)))?;
         for (uid, body) in &raw_mails {
             if let Some(mail) = mime_parser::parse_mime(body, account_id, "INBOX", *uid) {
                 mails::insert_mail(&conn, &mail)?;
