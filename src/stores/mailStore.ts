@@ -16,7 +16,7 @@ interface MailState {
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
   fetchUnclassified: (accountId: string) => Promise<void>;
-  moveMail: (mailId: string, projectId: string, accountId: string) => Promise<void>;
+  moveMail: (mailId: string, projectId: string) => Promise<void>;
   removeUnclassifiedMail: (mailId: string) => void;
 }
 
@@ -70,13 +70,12 @@ export const useMailStore = create<MailState>((set, get) => ({
     }
   },
 
-  moveMail: async (mailId, projectId, accountId) => {
+  moveMail: async (mailId, projectId) => {
     try {
       await invoke("move_mail", { mailId, projectId });
       set({
         unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
       });
-      get().fetchUnclassified(accountId);
     } catch (e) {
       set({ error: String(e) });
       useErrorStore.getState().addError(String(e));
