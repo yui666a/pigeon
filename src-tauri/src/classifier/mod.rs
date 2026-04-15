@@ -1,9 +1,9 @@
 pub mod ollama;
 pub mod prompt;
 
-use async_trait::async_trait;
 use crate::error::AppError;
 use crate::models::classifier::{ClassifyResult, CorrectionEntry, MailSummary, ProjectSummary};
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait LlmClassifier: Send + Sync {

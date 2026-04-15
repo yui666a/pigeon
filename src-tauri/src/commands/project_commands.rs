@@ -1,9 +1,9 @@
 use tauri::State;
 
-use crate::state::DbState;
 use crate::db::projects;
 use crate::error::AppError;
 use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
+use crate::state::DbState;
 
 #[tauri::command]
 pub fn create_project(
@@ -56,6 +56,18 @@ pub fn archive_project(state: State<DbState>, id: String) -> Result<(), AppError
 pub fn delete_project(state: State<DbState>, id: String) -> Result<(), AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
     Ok(projects::delete_project(&conn, &id)?)
+}
+
+/// Merge source project into target: reassign all mails, log corrections, delete source.
+/// Returns the number of mails moved.
+#[tauri::command]
+pub fn merge_projects(
+    state: State<DbState>,
+    source_id: String,
+    target_id: String,
+) -> Result<u32, AppError> {
+    let mut conn = state.0.lock().map_err(AppError::lock_err)?;
+    Ok(projects::merge_projects(&mut conn, &source_id, &target_id)?)
 }
 
 #[cfg(test)]
