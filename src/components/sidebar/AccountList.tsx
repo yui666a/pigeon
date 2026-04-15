@@ -5,6 +5,7 @@ interface AccountListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
+  onReauth?: (id: string) => void;
 }
 
 export function AccountList({
@@ -12,6 +13,7 @@ export function AccountList({
   selectedId,
   onSelect,
   onRemove,
+  onReauth,
 }: AccountListProps) {
   if (accounts.length === 0) {
     return <p className="px-4 py-2 text-sm text-gray-400">アカウントなし</p>;
@@ -48,6 +50,18 @@ export function AccountList({
               </div>
               <div className="text-xs text-gray-400">{account.email}</div>
             </button>
+            {account.needs_reauth && onReauth && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReauth(account.id);
+                }}
+                className="ml-1 shrink-0 rounded px-2 py-1 text-xs text-amber-600 hover:bg-amber-50"
+                title="再認証"
+              >
+                再認証
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation();

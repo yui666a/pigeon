@@ -16,6 +16,7 @@ export function Sidebar() {
     createAccount,
     removeAccount,
     selectAccount,
+    startReauth,
     initDeepLinkListener,
   } = useAccountStore();
   const { createProject } = useProjectStore();
@@ -80,6 +81,7 @@ export function Sidebar() {
           selectedId={selectedAccountId}
           onSelect={handleSelectAccount}
           onRemove={removeAccount}
+          onReauth={startReauth}
         />
         <ProjectTree
           onSelectUnclassified={() => setViewMode("unclassified")}

@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { AccountList } from "../components/sidebar/AccountList";
 import type { Account } from "../types/account";
 
@@ -83,5 +83,27 @@ describe("AccountList", () => {
       <AccountList accounts={[]} selectedId={null} onSelect={() => {}} onRemove={() => {}} />,
     );
     expect(screen.getByText("アカウントなし")).toBeInTheDocument();
+  });
+
+  it("calls onReauth when reauth button is clicked", () => {
+    const onReauth = vi.fn();
+    const reauthAccount: Account = {
+      ...baseAccount,
+      id: "4",
+      provider: "google",
+      auth_type: "oauth2",
+      needs_reauth: true,
+    };
+    render(
+      <AccountList
+        accounts={[reauthAccount]}
+        selectedId={null}
+        onSelect={() => {}}
+        onRemove={() => {}}
+        onReauth={onReauth}
+      />,
+    );
+    fireEvent.click(screen.getByTitle("再認証"));
+    expect(onReauth).toHaveBeenCalledWith("4");
   });
 });
