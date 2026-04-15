@@ -42,8 +42,14 @@ fn check_accounts_reauth(accounts: &mut [Account], secure_store: &SecureStore) {
             let key = format!("oauth_{}", account.id);
             match secure_store.get(&key) {
                 Ok(Some(_)) => {}
-                _ => {
+                Ok(None) => {
                     account.needs_reauth = true;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[warn] Failed to check OAuth token for account {}: {}",
+                        account.id, e
+                    );
                 }
             }
         }
@@ -96,8 +102,14 @@ mod tests {
 
         check_accounts_reauth(&mut accounts, &store);
 
-        assert!(accounts[0].needs_reauth, "Google account without token should need reauth");
-        assert!(!accounts[1].needs_reauth, "Non-OAuth account should not need reauth");
+        assert!(
+            accounts[0].needs_reauth,
+            "Google account without token should need reauth"
+        );
+        assert!(
+            !accounts[1].needs_reauth,
+            "Non-OAuth account should not need reauth"
+        );
     }
 
     #[test]
@@ -113,11 +125,15 @@ mod tests {
             expires_at: 9999999999,
             email: "test@gmail.com".to_string(),
         };
-        crate::commands::auth_commands::save_oauth_token(&store, "acc-google", &token_data).unwrap();
+        crate::commands::auth_commands::save_oauth_token(&store, "acc-google", &token_data)
+            .unwrap();
 
         let mut accounts = vec![make_account("acc-google", AccountProvider::Google)];
         check_accounts_reauth(&mut accounts, &store);
 
-        assert!(!accounts[0].needs_reauth, "Google account with token should not need reauth");
+        assert!(
+            !accounts[0].needs_reauth,
+            "Google account with token should not need reauth"
+        );
     }
 }

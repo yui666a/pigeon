@@ -1,11 +1,11 @@
 use tauri::State;
 
-use crate::state::{DbState, SecureStoreState};
 use crate::db::{accounts, mails};
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::Thread;
+use crate::state::{DbState, SecureStoreState};
 
 #[tauri::command]
 pub async fn sync_account(
@@ -28,7 +28,11 @@ async fn resolve_imap_credentials(
             let mut token_data =
                 match crate::commands::auth_commands::load_oauth_token(secure_store, &account.id) {
                     Ok(data) => data,
-                    Err(_) => {
+                    Err(e) => {
+                        eprintln!(
+                            "[warn] OAuth token not found for account {}: {}",
+                            account.id, e
+                        );
                         return Err(AppError::ReauthRequired(account.id.clone()));
                     }
                 };
@@ -48,7 +52,11 @@ async fn resolve_imap_credentials(
                             &token_data,
                         )?;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        eprintln!(
+                            "[warn] Token refresh failed for account {}: {}",
+                            account.id, e
+                        );
                         return Err(AppError::ReauthRequired(account.id.clone()));
                     }
                 }

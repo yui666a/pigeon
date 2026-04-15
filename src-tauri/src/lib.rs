@@ -10,12 +10,12 @@ pub mod state;
 #[cfg(test)]
 pub mod test_helpers;
 
-use state::DbState;
-use state::SecureStoreState;
 use db::migrations;
 use mail_sync::oauth::OAuthStateStore;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use state::DbState;
+use state::SecureStoreState;
 use std::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

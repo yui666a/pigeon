@@ -113,8 +113,14 @@ mod tests {
 
     #[test]
     fn test_account_provider_try_from_valid() {
-        assert_eq!(AccountProvider::try_from("google").unwrap(), AccountProvider::Google);
-        assert_eq!(AccountProvider::try_from("other").unwrap(), AccountProvider::Other);
+        assert_eq!(
+            AccountProvider::try_from("google").unwrap(),
+            AccountProvider::Google
+        );
+        assert_eq!(
+            AccountProvider::try_from("other").unwrap(),
+            AccountProvider::Other
+        );
     }
 
     #[test]
@@ -131,8 +137,14 @@ mod tests {
 
     #[test]
     fn test_auth_type_try_from_valid() {
-        assert!(matches!(AuthType::try_from("plain").unwrap(), AuthType::Plain));
-        assert!(matches!(AuthType::try_from("oauth2").unwrap(), AuthType::Oauth2));
+        assert!(matches!(
+            AuthType::try_from("plain").unwrap(),
+            AuthType::Plain
+        ));
+        assert!(matches!(
+            AuthType::try_from("oauth2").unwrap(),
+            AuthType::Oauth2
+        ));
     }
 
     #[test]
