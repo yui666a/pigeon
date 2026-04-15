@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type ViewMode = "threads" | "unclassified" | "project";
+export type ViewMode = "threads" | "unclassified" | "project" | "search";
 
 interface UiState {
   viewMode: ViewMode;

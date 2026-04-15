@@ -14,7 +14,9 @@ function App() {
     <div className="flex h-screen">
       <Sidebar />
       <div className="w-80 border-r">
-        {viewMode === "unclassified" ? (
+        {viewMode === "search" ? (
+          <div />
+        ) : viewMode === "unclassified" ? (
           <UnclassifiedList />
         ) : (
           <ThreadList viewMode={viewMode} />
