@@ -5,6 +5,7 @@ import { useMailStore } from "../../stores/mailStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ThreadItem } from "./ThreadItem";
 import { EmptyState } from "../common/EmptyState";
+import { useDisplayLimit } from "../../hooks/useDisplayLimit";
 import type { Thread } from "../../types/mail";
 
 interface ThreadListProps {
@@ -17,6 +18,10 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
   const { threads, syncing, needsReauth, selectedThread, fetchThreads, syncAccount, selectThread, setThreads } =
     useMailStore();
+  const { visible, hasMore, remaining, showMore } = useDisplayLimit(
+    threads,
+    `${viewMode}:${selectedProjectId ?? ""}:${selectedAccountId ?? ""}`,
+  );
 
   useEffect(() => {
     if (viewMode === "project" && selectedProjectId) {
@@ -60,7 +65,7 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   }
   return (
     <div className="h-full overflow-y-auto">
-      {threads.map((thread) => (
+      {visible.map((thread) => (
         <ThreadItem
           key={thread.thread_id}
           thread={thread}
@@ -68,6 +73,14 @@ export function ThreadList({ viewMode }: ThreadListProps) {
           onClick={() => selectThread(thread)}
         />
       ))}
+      {hasMore && (
+        <button
+          onClick={showMore}
+          className="w-full py-2 text-sm text-blue-600 hover:bg-gray-50"
+        >
+          もっと見る（残り {remaining.toLocaleString()} 件）
+        </button>
+      )}
     </div>
   );
 }

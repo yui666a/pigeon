@@ -6,6 +6,7 @@ import { useMailStore } from "../../stores/mailStore";
 import { ClassifyButton } from "./ClassifyButton";
 import { MailDragItem } from "./MailDragItem";
 import { NewProjectProposal } from "../common/NewProjectProposal";
+import { useDisplayLimit } from "../../hooks/useDisplayLimit";
 import type { Mail } from "../../types/mail";
 import { threadFromMail } from "../../utils/thread";
 
@@ -26,6 +27,12 @@ export function UnclassifiedList() {
   const unclassifiedMails = useMailStore((s) => s.unclassifiedMails);
   const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
   const { selectThread, selectMail } = useMailStore();
+  const {
+    visible: visibleMails,
+    hasMore,
+    remaining,
+    showMore,
+  } = useDisplayLimit(unclassifiedMails, selectedAccountId);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -98,13 +105,21 @@ export function UnclassifiedList() {
 
       {unclassifiedMails.length > 0 && (
         <div className="max-h-48 overflow-y-auto">
-          {unclassifiedMails.map((mail) => (
+          {visibleMails.map((mail) => (
             <MailDragItem
               key={mail.id}
               mail={mail}
               onClick={() => handleMailClick(mail)}
             />
           ))}
+          {hasMore && (
+            <button
+              onClick={showMore}
+              className="w-full py-2 text-xs text-blue-600 hover:bg-gray-50"
+            >
+              もっと見る（残り {remaining.toLocaleString()} 件）
+            </button>
+          )}
         </div>
       )}
     </div>
