@@ -1,7 +1,13 @@
 import { useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 interface ProjectFormProps {
-  onSubmit: (name: string, description?: string, color?: string) => void;
+  onSubmit: (
+    name: string,
+    description?: string,
+    color?: string,
+    directoryPath?: string,
+  ) => void;
   onCancel: () => void;
 }
 
@@ -9,11 +15,12 @@ export function ProjectForm({ onSubmit, onCancel }: ProjectFormProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor] = useState("#6b7280");
+  const [directoryPath, setDirectoryPath] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    onSubmit(name.trim(), description.trim() || undefined, color);
+    onSubmit(name.trim(), description.trim() || undefined, color, directoryPath ?? undefined);
   };
 
   return (
@@ -54,6 +61,30 @@ export function ProjectForm({ onSubmit, onCancel }: ProjectFormProps) {
           onChange={(e) => setColor(e.target.value)}
           className="h-7 w-10 cursor-pointer rounded border border-gray-300"
         />
+      </div>
+      <div className="mb-3">
+        <label className="mb-1 block text-xs font-medium text-gray-600">
+          案件フォルダ（任意）
+        </label>
+        <button
+          type="button"
+          onClick={async () => {
+            const selected = await open({
+              directory: true,
+              multiple: false,
+              title: "案件フォルダを選択",
+            });
+            if (typeof selected === "string") setDirectoryPath(selected);
+          }}
+          className="rounded border border-gray-300 px-2 py-1 text-sm text-gray-600 hover:bg-gray-100"
+        >
+          📁 フォルダを選択
+        </button>
+        {directoryPath && (
+          <p className="mt-1 truncate text-xs text-gray-500" title={directoryPath}>
+            {directoryPath}
+          </p>
+        )}
       </div>
       <div className="flex gap-2">
         <button

@@ -23,7 +23,7 @@ export function Sidebar() {
     startReauth,
     initDeepLinkListener,
   } = useAccountStore();
-  const { createProject } = useProjectStore();
+  const { createProject, linkDirectory, rescanProject } = useProjectStore();
   const { search, clearSearch } = useSearchStore();
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
@@ -86,9 +86,14 @@ export function Sidebar() {
     name: string,
     description?: string,
     color?: string,
+    directoryPath?: string,
   ) => {
     if (!selectedAccountId) return;
-    await createProject(selectedAccountId, name, description, color);
+    const project = await createProject(selectedAccountId, name, description, color);
+    if (directoryPath) {
+      await linkDirectory(project.id, directoryPath);
+      void rescanProject(project.id);
+    }
     setShowProjectForm(false);
   };
 
