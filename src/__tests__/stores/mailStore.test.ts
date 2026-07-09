@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useMailStore } from "../../stores/mailStore";
+import { useAccountStore } from "../../stores/accountStore";
+import { useUiStore } from "../../stores/uiStore";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -28,6 +30,8 @@ describe("mailStore", () => {
       error: null,
       syncProgress: null,
     });
+    useAccountStore.setState({ selectedAccountId: "acc1" });
+    useUiStore.setState({ viewMode: "threads" });
   });
 
   describe("fetchThreads", () => {
@@ -214,6 +218,49 @@ describe("mailStore", () => {
         accountId: "acc1",
         folder: "INBOX",
       });
+    });
+
+    it("refreshes threads and unclassified when viewMode is 'threads' and the synced account is selected", async () => {
+      useAccountStore.setState({ selectedAccountId: "acc1" });
+      useUiStore.setState({ viewMode: "threads" });
+      mockInvoke.mockResolvedValue([]);
+      await useMailStore.getState().initSyncListener();
+
+      syncProgressHandler!({ payload: { account_id: "acc1", done: 500, total: 1200 } });
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
+        accountId: "acc1",
+        folder: "INBOX",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", {
+        accountId: "acc1",
+      });
+    });
+
+    it("does not call get_threads when viewMode is 'project' (but still refreshes unclassified)", async () => {
+      useAccountStore.setState({ selectedAccountId: "acc1" });
+      useUiStore.setState({ viewMode: "project" });
+      mockInvoke.mockResolvedValue([]);
+      await useMailStore.getState().initSyncListener();
+
+      syncProgressHandler!({ payload: { account_id: "acc1", done: 500, total: 1200 } });
+
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", {
+        accountId: "acc1",
+      });
+    });
+
+    it("does not refresh anything when a different account is selected", async () => {
+      useAccountStore.setState({ selectedAccountId: "acc2" });
+      useUiStore.setState({ viewMode: "threads" });
+      mockInvoke.mockResolvedValue([]);
+      await useMailStore.getState().initSyncListener();
+
+      syncProgressHandler!({ payload: { account_id: "acc1", done: 500, total: 1200 } });
+
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_unclassified_mails", expect.anything());
     });
 
     it("clears syncProgress when syncAccount finishes", async () => {
