@@ -42,7 +42,11 @@ pub fn make_mail(id: &str, message_id: &str, subject: &str, date: &str) -> Mail 
         date: date.into(),
         has_attachments: false,
         raw_size: None,
-        uid: 1,
+        // (account_id, folder, uid) は UNIQUE (migrate_v6) のため、
+        // id から決定的に導出して同一アカウント内での衝突を避ける
+        uid: id
+            .bytes()
+            .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b))),
         flags: None,
         fetched_at: "2026-04-13T00:00:00".into(),
     }
