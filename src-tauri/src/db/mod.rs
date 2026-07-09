@@ -4,6 +4,7 @@ pub mod cloud_rules;
 pub mod directories;
 pub mod mails;
 pub mod migrations;
+pub mod project_contexts;
 pub mod project_files;
 pub mod projects;
 pub mod search;
