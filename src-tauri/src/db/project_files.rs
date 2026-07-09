@@ -67,7 +67,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::setup_db;
 
-    fn setup_dir(conn: &Connection) -> String {
+    fn setup_dir(conn: &mut Connection) -> String {
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'Proj')",
             [],
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn test_replace_inventory_inserts_and_lists() {
         let mut conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let dir_id = setup_dir(&mut conn);
 
         replace_inventory(&mut conn, &dir_id, &[entry("a.pdf", 100), entry("sub/b.txt", 20)])
             .unwrap();
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn test_replace_inventory_removes_deleted_files() {
         let mut conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let dir_id = setup_dir(&mut conn);
 
         replace_inventory(&mut conn, &dir_id, &[entry("a.pdf", 100), entry("b.txt", 20)])
             .unwrap();
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn test_replace_inventory_empty_is_ok() {
         let mut conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let dir_id = setup_dir(&mut conn);
         replace_inventory(&mut conn, &dir_id, &[]).unwrap();
         assert!(list_files(&conn, &dir_id).unwrap().is_empty());
     }

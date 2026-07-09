@@ -101,19 +101,28 @@ pub fn archive_project(conn: &Connection, id: &str) -> Result<(), AppError> {
 }
 
 /// Build ProjectSummary list for LLM classification context.
+///
+/// `for_cloud=true` のときは allow_cloud_context が付いた案件のみ context を注入する
+/// （スペック§5不変条件2）。Ollama（ローカル）は false で全案件注入。
 pub fn build_project_summaries(
     conn: &Connection,
     account_id: &str,
+    for_cloud: bool,
 ) -> Result<Vec<ProjectSummary>, AppError> {
     let projs = list_projects(conn, account_id)?;
     let mut summaries = Vec::with_capacity(projs.len());
     for p in projs {
         let recent_subjects = assignments::get_recent_subjects(conn, &p.id, 5).unwrap_or_default();
+        let context = crate::db::project_contexts::get_context(conn, &p.id)?
+            .filter(|c| !for_cloud || c.allow_cloud_context)
+            .and_then(|c| c.cached_context)
+            .map(|c| c.chars().take(800).collect::<String>());
         summaries.push(ProjectSummary {
             id: p.id,
             name: p.name,
             description: p.description,
             recent_subjects,
+            context,
         });
     }
     Ok(summaries)
@@ -294,6 +303,39 @@ mod tests {
         let result = get_project(&conn, "nonexistent-id");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), AppError::ProjectNotFound(_)));
+    }
+
+    #[test]
+    fn test_build_project_summaries_includes_cached_context() {
+        let conn = setup_db();
+        create_test_account(&conn, "acc1");
+        let p = insert_project(&conn, &sample_create_req("acc1")).unwrap();
+        crate::db::project_contexts::upsert_generated(&conn, &p.id, "会場: 〇〇ホール", "h", "i")
+            .unwrap();
+
+        let summaries = build_project_summaries(&conn, "acc1", false).unwrap();
+        assert_eq!(summaries[0].context.as_deref(), Some("会場: 〇〇ホール"));
+    }
+
+    #[test]
+    fn test_build_project_summaries_cloud_excludes_unallowed_context() {
+        let conn = setup_db();
+        create_test_account(&conn, "acc1");
+        let p = insert_project(&conn, &sample_create_req("acc1")).unwrap();
+        crate::db::project_contexts::upsert_generated(&conn, &p.id, "秘密のコンテキスト", "h", "i")
+            .unwrap();
+        // allow_cloud_context はデフォルト false のまま
+
+        let summaries = build_project_summaries(&conn, "acc1", true).unwrap();
+        assert!(
+            summaries[0].context.is_none(),
+            "スペック§5不変条件2: 未許可案件のコンテキストはクラウドに注入しない"
+        );
+
+        // 許可すると注入される
+        crate::db::project_contexts::set_allow_cloud_context(&conn, &p.id, true).unwrap();
+        let summaries = build_project_summaries(&conn, "acc1", true).unwrap();
+        assert!(summaries[0].context.is_some());
     }
 
     #[test]

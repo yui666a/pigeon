@@ -135,9 +135,8 @@ impl LlmClassifier for OllamaClassifier {
     ) -> Result<ClassifyResult, AppError> {
         let user_prompt = prompt::build_user_prompt(mail, projects, corrections);
         let content = self.chat(prompt::SYSTEM_PROMPT, &user_prompt).await?;
-        let content = &content;
 
-        match Self::parse_response(content) {
+        match Self::parse_response(&content) {
             Ok(result) => Ok(result),
             Err(_) => Ok(ClassifyResult {
                 action: ClassifyAction::Unclassified,

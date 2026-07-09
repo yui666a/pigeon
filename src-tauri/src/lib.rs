@@ -71,6 +71,58 @@ pub fn run() {
                 });
             }
 
+            // 起動時バックグラウンドスキャン（スペック§4）
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let db = app_handle.state::<DbState>();
+                    let targets: Vec<String> = {
+                        let conn = match db.0.lock() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        let mut stmt = match conn
+                            .prepare("SELECT project_id FROM project_directories")
+                        {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        stmt.query_map([], |row| row.get(0))
+                            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                            .unwrap_or_default()
+                    };
+                    if targets.is_empty() {
+                        return;
+                    }
+                    let (endpoint, model) = {
+                        let conn = match db.0.lock() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        (
+                            db::settings::get_or_default(
+                                &conn, "ollama_endpoint", "http://localhost:11434",
+                            ),
+                            db::settings::get_or_default(&conn, "ollama_model", "llama3.1:8b"),
+                        )
+                    };
+                    let generator = match classifier::ollama::OllamaClassifier::new(&endpoint, &model) {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    for project_id in targets {
+                        if let Err(e) = project_context::rescan_project(
+                            &db.0, &generator, &project_id, false,
+                        )
+                        .await
+                        {
+                            eprintln!("[warn] startup scan failed for {}: {}", project_id, e);
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -98,6 +150,15 @@ pub fn run() {
             commands::classify_commands::get_unclassified_mails,
             commands::classify_commands::get_mails_by_project,
             commands::search_commands::search_mails,
+            commands::directory_commands::link_project_directory,
+            commands::directory_commands::unlink_project_directory,
+            commands::directory_commands::get_project_directory,
+            commands::directory_commands::rescan_project_directory,
+            commands::directory_commands::list_project_files,
+            commands::directory_commands::set_cloud_rule,
+            commands::directory_commands::get_cloud_rules,
+            commands::directory_commands::set_allow_cloud_context,
+            commands::directory_commands::get_project_context,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

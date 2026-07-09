@@ -49,7 +49,7 @@ pub async fn classify_mail(
     let (mail, project_summaries, corrections, endpoint, model) = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
         let mail = mails::get_mail_by_id(&conn, &mail_id)?;
-        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id)?;
+        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id, false)?;
         let corrections =
             assignments::get_recent_corrections(&conn, &mail.account_id, 20).unwrap_or_default();
         let endpoint = settings::get_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
@@ -130,7 +130,7 @@ pub async fn classify_unassigned(
     // not during classification, so per-iteration reload is unnecessary.
     let project_summaries = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
-        projects::build_project_summaries(&conn, &account_id)?
+        projects::build_project_summaries(&conn, &account_id, false)?
     };
 
     for (idx, mail) in mails.iter().enumerate() {
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn test_build_project_summaries_empty() {
         let conn = setup_db();
-        let summaries = projects::build_project_summaries(&conn, "acc1").unwrap();
+        let summaries = projects::build_project_summaries(&conn, "acc1", false).unwrap();
         assert!(summaries.is_empty());
     }
 
@@ -370,7 +370,7 @@ mod tests {
             color: None,
         };
         projects::insert_project(&conn, &req).unwrap();
-        let summaries = projects::build_project_summaries(&conn, "acc1").unwrap();
+        let summaries = projects::build_project_summaries(&conn, "acc1", false).unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].name, "Project Alpha");
     }

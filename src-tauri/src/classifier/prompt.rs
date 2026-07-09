@@ -56,6 +56,12 @@ pub fn build_user_prompt(
                     project.recent_subjects.join("; ")
                 ));
             }
+            if let Some(context) = project.context.as_deref() {
+                prompt.push_str(&format!(
+                    "  Context: {}\n",
+                    context.replace('\n', " / ")
+                ));
+            }
         }
     }
 
@@ -96,6 +102,7 @@ mod tests {
             name: name.to_string(),
             description: Some(format!("Description for {}", name)),
             recent_subjects: vec!["Subject A".to_string(), "Subject B".to_string()],
+            context: None,
         }
     }
 
@@ -168,6 +175,7 @@ mod tests {
             name: "No Desc Project".to_string(),
             description: None,
             recent_subjects: vec![],
+            context: None,
         }];
         let prompt = build_user_prompt(&mail, &projects, &[]);
         assert!(prompt.contains("p1"));
@@ -183,6 +191,7 @@ mod tests {
             name: "Empty Project".to_string(),
             description: Some("desc".to_string()),
             recent_subjects: vec![],
+            context: None,
         }];
         let prompt = build_user_prompt(&mail, &projects, &[]);
         assert!(!prompt.contains("Recent subjects"));
@@ -203,6 +212,35 @@ mod tests {
         for i in 0..5 {
             assert!(prompt.contains(&format!("Mail {}", i)));
         }
+    }
+
+    #[test]
+    fn test_build_user_prompt_includes_project_context() {
+        let mail = make_mail();
+        let projects = vec![ProjectSummary {
+            id: "p1".to_string(),
+            name: "春公演".to_string(),
+            description: None,
+            recent_subjects: vec![],
+            context: Some("会場: 〇〇ホール\n重量制限に注意".to_string()),
+        }];
+        let prompt = build_user_prompt(&mail, &projects, &[]);
+        assert!(prompt.contains("Context:"));
+        assert!(prompt.contains("会場: 〇〇ホール"));
+    }
+
+    #[test]
+    fn test_build_user_prompt_no_context_line_when_none() {
+        let mail = make_mail();
+        let projects = vec![ProjectSummary {
+            id: "p1".to_string(),
+            name: "春公演".to_string(),
+            description: None,
+            recent_subjects: vec![],
+            context: None,
+        }];
+        let prompt = build_user_prompt(&mail, &projects, &[]);
+        assert!(!prompt.contains("Context:"));
     }
 
     #[test]
