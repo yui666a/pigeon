@@ -181,6 +181,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 6 {
+        migrate_v6(conn)?;
+        version = 6;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -282,6 +288,28 @@ fn migrate_v5(conn: &Connection) -> Result<(), AppError> {
             allow_cloud_context BOOLEAN NOT NULL DEFAULT FALSE,
             generated_at        DATETIME
         );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v6(conn: &Connection) -> Result<(), AppError> {
+    // 同期の多重実行（v5以前は未ガード）で発生した重複メールを掃除してから
+    // UNIQUE を張る。案件割り当てが付いている行を優先して残す
+    conn.execute_batch(
+        "
+        DELETE FROM mails WHERE id IN (
+            SELECT id FROM (
+                SELECT m.id, ROW_NUMBER() OVER (
+                    PARTITION BY m.account_id, m.folder, m.uid
+                    ORDER BY (CASE WHEN a.mail_id IS NOT NULL THEN 0 ELSE 1 END), m.id
+                ) AS rn
+                FROM mails m
+                LEFT JOIN mail_project_assignments a ON a.mail_id = m.id
+            ) WHERE rn > 1
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mails_account_folder_uid
+            ON mails(account_id, folder, uid);
         ",
     )?;
     Ok(())
@@ -397,11 +425,11 @@ mod tests {
         assert!(tables.contains(&"mail_project_assignments".to_string()));
         assert!(tables.contains(&"correction_log".to_string()));
 
-        // Verify schema version is 5 (latest)
+        // Verify schema version is 6 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -604,11 +632,11 @@ mod tests {
             .unwrap();
         assert_eq!(provider, "other");
 
-        // Schema version should be 5 (latest)
+        // Schema version should be 6 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -627,11 +655,11 @@ mod tests {
             .unwrap();
         assert!(table_exists, "fts_mails table should exist after v4 migration");
 
-        // Schema version should be 5
+        // Schema version should be 6
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -801,7 +829,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -902,5 +930,98 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "only one primary directory per project");
+    }
+
+    #[test]
+    fn test_v6_unique_index_rejects_duplicate_uid() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-10', 100)",
+            [],
+        )
+        .unwrap();
+
+        // 同じ (account_id, folder, uid) の別行は UNIQUE 違反
+        let result = conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m2', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-10', 100)",
+            [],
+        );
+        assert!(result.is_err(), "same (account, folder, uid) must be rejected");
+
+        // 別フォルダなら同じ uid でも入る
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m3', 'acc1', 'Sent', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-10', 100)",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_v6_dedupes_existing_duplicates_preferring_assigned_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        // v5 以前の状態を再現: UNIQUE を外して、同期の多重実行で入った重複を仕込む
+        conn.execute_batch("DROP INDEX idx_mails_account_folder_uid;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P')",
+            [],
+        )
+        .unwrap();
+        for id in ["m1", "m2", "m3"] {
+            conn.execute(
+                &format!(
+                    "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+                     VALUES ('{}', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-10', 100)",
+                    id
+                ),
+                [],
+            )
+            .unwrap();
+        }
+        // 複製のうち1行にだけ案件割り当てが付いている
+        conn.execute(
+            "INSERT INTO mail_project_assignments (mail_id, project_id, assigned_by)
+             VALUES ('m2', 'p1', 'user')",
+            [],
+        )
+        .unwrap();
+
+        migrate_v6(&conn).unwrap();
+
+        let (count, kept): (i32, String) = conn
+            .query_row("SELECT COUNT(*), MIN(id) FROM mails", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(count, 1, "重複は1行に統合される");
+        assert_eq!(kept, "m2", "割り当てが付いた行を優先して残す");
+
+        let assignments: i32 = conn
+            .query_row("SELECT COUNT(*) FROM mail_project_assignments", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(assignments, 1, "割り当ては失われない");
     }
 }

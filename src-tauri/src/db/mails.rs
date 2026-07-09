@@ -50,9 +50,13 @@ pub fn get_mail_by_id(conn: &Connection, mail_id: &str) -> Result<Mail, AppError
     .map_err(|_| AppError::MailNotFound(mail_id.to_string()))
 }
 
-pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<(), AppError> {
-    conn.execute(
-        "INSERT OR REPLACE INTO mails
+/// メールを挿入する。同じ (account_id, folder, uid) の行が既にあれば
+/// 何もせず false を返す（挿入したら true）。
+/// OR REPLACE にすると UNIQUE 衝突時に既存行が削除され、案件割り当てが
+/// CASCADE で消えるため、必ず IGNORE で既存行を守ること。
+pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
+    let affected = conn.execute(
+        "INSERT OR IGNORE INTO mails
          (id, account_id, folder, message_id, in_reply_to, \"references\",
           from_addr, to_addr, cc_addr, subject, body_text, body_html,
           date, has_attachments, raw_size, uid, flags, fetched_at)
@@ -78,7 +82,7 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<(), AppError> {
             mail.fetched_at,
         ],
     )?;
-    Ok(())
+    Ok(affected > 0)
 }
 
 pub fn get_mails_by_account(
@@ -246,6 +250,24 @@ mod tests {
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].subject, "Hello");
+    }
+
+    #[test]
+    fn test_insert_mail_ignores_duplicate_uid_and_keeps_existing_row() {
+        let conn = setup_db();
+        let original = make_mail("m1", "<msg1@example.com>", "Original", "2026-04-13T10:00:00");
+        assert!(insert_mail(&conn, &original).unwrap(), "初回は挿入される");
+
+        // 同期の多重実行を模擬: 同じ (account, folder, uid) を別idで再挿入
+        let mut duplicate =
+            make_mail("m2", "<msg1@example.com>", "Duplicate", "2026-04-13T10:00:00");
+        duplicate.uid = original.uid;
+        assert!(!insert_mail(&conn, &duplicate).unwrap(), "重複は挿入されない");
+
+        let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+        assert_eq!(mails.len(), 1);
+        assert_eq!(mails[0].id, "m1", "既存行が残る（REPLACEで消さない）");
+        assert_eq!(mails[0].subject, "Original");
     }
 
     #[test]

@@ -273,7 +273,10 @@ mod tests {
             date: date.into(),
             has_attachments: false,
             raw_size: None,
-            uid: 1,
+            // (account_id, folder, uid) は UNIQUE (migrate_v6) のため id から導出
+            uid: id
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b))),
             flags: None,
             fetched_at: "2026-04-13T00:00:00".into(),
         }

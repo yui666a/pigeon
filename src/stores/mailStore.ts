@@ -56,6 +56,9 @@ export const useMailStore = create<MailState>((set, get) => ({
   },
 
   syncAccount: async (accountId) => {
+    // 多重実行ガード（バックエンドにもアカウント単位ロックがあり、これは
+    // 画面遷移や開発モードの二重effectで無駄なinvokeを出さないための前段）
+    if (get().syncing) return 0;
     set({ syncing: true, error: null, needsReauth: false });
     try {
       const count = await invoke<number>("sync_account", { accountId });
