@@ -35,6 +35,7 @@ pub struct ProjectSummary {
     pub name: String,
     pub description: Option<String>,
     pub recent_subjects: Vec<String>,
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
