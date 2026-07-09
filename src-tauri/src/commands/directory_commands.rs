@@ -10,7 +10,7 @@ use rusqlite::Connection;
 
 /// パスを検証して紐付ける（コマンド本体から分離してテスト可能に）。
 pub(crate) fn validate_and_link(
-    conn: &Connection,
+    conn: &mut Connection,
     project_id: &str,
     path: &str,
 ) -> Result<ProjectDirectory, AppError> {
@@ -42,8 +42,8 @@ pub fn link_project_directory(
     project_id: String,
     path: String,
 ) -> Result<ProjectDirectory, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    validate_and_link(&conn, &project_id, &path)
+    let mut conn = db.0.lock().map_err(AppError::lock_err)?;
+    validate_and_link(&mut conn, &project_id, &path)
 }
 
 #[tauri::command]
@@ -135,13 +135,13 @@ mod tests {
 
     #[test]
     fn test_set_cloud_rule_none_deletes() {
-        let conn = setup_db();
+        let mut conn = setup_db();
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P')",
             [],
         )
         .unwrap();
-        let dir = directories::link_directory(&conn, "p1", "/tmp/x").unwrap();
+        let dir = directories::link_directory(&mut conn, "p1", "/tmp/x").unwrap();
 
         super::apply_cloud_rule(&conn, &dir.id, "file", "a.txt", Some(true)).unwrap();
         assert_eq!(cloud_rules::list_rules(&conn, &dir.id).unwrap().len(), 1);
@@ -152,13 +152,13 @@ mod tests {
 
     #[test]
     fn test_link_validates_path_is_absolute() {
-        let conn = setup_db();
+        let mut conn = setup_db();
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P')",
             [],
         )
         .unwrap();
-        let result = super::validate_and_link(&conn, "p1", "relative/path");
+        let result = super::validate_and_link(&mut conn, "p1", "relative/path");
         assert!(result.is_err(), "相対パスは拒否する");
     }
 }

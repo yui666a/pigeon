@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::setup_db;
 
-    fn setup_dir(conn: &Connection) -> String {
+    fn setup_dir(conn: &mut Connection) -> String {
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'Proj')",
             [],
@@ -77,8 +77,8 @@ mod tests {
 
     #[test]
     fn test_set_rule_upserts() {
-        let conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let mut conn = setup_db();
+        let dir_id = setup_dir(&mut conn);
 
         set_rule(&conn, &dir_id, "directory", "図面", true).unwrap();
         set_rule(&conn, &dir_id, "directory", "図面", false).unwrap(); // 同キーは上書き
@@ -90,8 +90,8 @@ mod tests {
 
     #[test]
     fn test_delete_rule() {
-        let conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let mut conn = setup_db();
+        let dir_id = setup_dir(&mut conn);
         set_rule(&conn, &dir_id, "file", "a.txt", true).unwrap();
         delete_rule(&conn, &dir_id, "file", "a.txt").unwrap();
         assert!(list_rules(&conn, &dir_id).unwrap().is_empty());
@@ -99,8 +99,8 @@ mod tests {
 
     #[test]
     fn test_set_rule_normalizes_trailing_slash() {
-        let conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let mut conn = setup_db();
+        let dir_id = setup_dir(&mut conn);
 
         set_rule(&conn, &dir_id, "directory", "図面/", true).unwrap();
 
@@ -111,8 +111,8 @@ mod tests {
 
     #[test]
     fn test_delete_rule_normalizes_trailing_slash() {
-        let conn = setup_db();
-        let dir_id = setup_dir(&conn);
+        let mut conn = setup_db();
+        let dir_id = setup_dir(&mut conn);
 
         set_rule(&conn, &dir_id, "directory", "図面/", true).unwrap();
         delete_rule(&conn, &dir_id, "directory", "図面/").unwrap(); // 末尾スラッシュ付きでも削除できる
