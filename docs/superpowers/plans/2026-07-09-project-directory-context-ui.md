@@ -143,8 +143,9 @@ git commit -m "feat(ui): tauri-plugin-dialogを導入しディレクトリ連携
 - Consumes: `CloudRule`（Task 1）
 - Produces:
   - `effectiveAllow(rules: CloudRule[], relativePath: string): boolean` — Rust の `cloud_policy::is_cloud_allowed` と同一セマンティクス（マッチ無し→false / 最長マッチ / 同長は file 優先 / `..` セグメントは無条件 false / directory は `''`=全体・完全一致・`{rule}/` 前方一致）
-  - `planToggle(rules: CloudRule[], scope: "directory" | "file", relativePath: string): ToggleAction` — チェックボックス切替時に「明示ルールを設定すべきか、自ルール削除で親の継承に戻すべきか」を返す
-  - `type ToggleAction = { action: "set"; allow: boolean } | { action: "delete" }`
+  - `planToggle(rules: CloudRule[], scope: "directory" | "file", relativePath: string): RuleOp[]` — チェックボックス切替時に適用すべきルール操作列。同一パスの逆スコープ残留ルールの掃除を含み、適用後は必ず `effectiveAllow` が反転する
+  - `interface RuleOp { action: "set" | "delete"; scope: "directory" | "file"; allow?: boolean }`
+  - （注: 当初案は単一 `ToggleAction` を返す API だったが、レビューで逆スコープ残留ルールによるサイレント no-op が発見され、操作列を返す API に改訂）
 
 - [ ] **Step 1: 失敗するテストを書く**
 
@@ -1161,14 +1162,16 @@ export function CloudSettingsDialog({
 
   const handleToggleNode = async (node: TreeNode) => {
     const scope = node.isDir ? "directory" : "file";
-    const action = planToggle(rules, scope, node.path);
+    const ops = planToggle(rules, scope, node.path);
     try {
-      await invoke("set_cloud_rule", {
-        directoryId: directory.id,
-        scope,
-        relativePath: node.path,
-        allow: action.action === "set" ? action.allow : null,
-      });
+      for (const op of ops) {
+        await invoke("set_cloud_rule", {
+          directoryId: directory.id,
+          scope: op.scope,
+          relativePath: node.path,
+          allow: op.action === "set" ? op.allow : null,
+        });
+      }
       const rulesRes = await invoke<CloudRule[]>("get_cloud_rules", {
         directoryId: directory.id,
       });

@@ -1,6 +1,10 @@
 import type { CloudRule } from "../types/directory";
 
-export type ToggleAction = { action: "set"; allow: boolean } | { action: "delete" };
+export interface RuleOp {
+  action: "set" | "delete";
+  scope: "directory" | "file";
+  allow?: boolean; // action === "set" のときのみ
+}
 
 function hasDotDotSegment(path: string): boolean {
   return path.split("/").some((seg) => seg === "..");
@@ -10,11 +14,14 @@ function ruleMatches(rule: CloudRule, relativePath: string): boolean {
   if (rule.scope === "file") {
     return rule.relative_path === relativePath;
   }
-  return (
-    rule.relative_path === "" ||
-    relativePath === rule.relative_path ||
-    relativePath.startsWith(`${rule.relative_path}/`)
-  );
+  if (rule.scope === "directory") {
+    return (
+      rule.relative_path === "" ||
+      relativePath === rule.relative_path ||
+      relativePath.startsWith(`${rule.relative_path}/`)
+    );
+  }
+  return false; // 未知 scope はフェイルクローズ（Rust 側と同一）
 }
 
 /**
@@ -41,22 +48,32 @@ export function effectiveAllow(rules: CloudRule[], relativePath: string): boolea
 }
 
 /**
- * チェックボックス切替時のルール操作を決める。
- * 望む状態が「自ルールを消したときの継承状態」と同じなら delete（ルールを増やさない）、
- * 違うなら明示ルールを set する。
+ * チェックボックス切替時に適用すべきルール操作列を返す。
+ * 同一 relative_path の逆スコープの残留ルール（ファイル⇔ディレクトリの入れ替わり等）も
+ * 掃除するため、適用後は必ず effectiveAllow が反転する。
  */
 export function planToggle(
   rules: CloudRule[],
   scope: "directory" | "file",
   relativePath: string,
-): ToggleAction {
+): RuleOp[] {
   const desired = !effectiveAllow(rules, relativePath);
-  const withoutOwn = rules.filter(
-    (r) => !(r.scope === scope && r.relative_path === relativePath),
-  );
-  const inherited = effectiveAllow(withoutOwn, relativePath);
-  if (desired === inherited) {
-    return { action: "delete" };
+  const withoutPath = rules.filter((r) => r.relative_path !== relativePath);
+  const inherited = effectiveAllow(withoutPath, relativePath);
+
+  const ops: RuleOp[] = [];
+  // 逆スコープの残留ルールを削除（存在する場合のみ）
+  const otherScope = scope === "file" ? "directory" : "file";
+  if (rules.some((r) => r.scope === otherScope && r.relative_path === relativePath)) {
+    ops.push({ action: "delete", scope: otherScope });
   }
-  return { action: "set", allow: desired };
+  if (desired === inherited) {
+    // 継承と同じ状態にしたい → 自スコープのルールも消す（無ければ backend の delete は冪等なので不要）
+    if (rules.some((r) => r.scope === scope && r.relative_path === relativePath)) {
+      ops.push({ action: "delete", scope });
+    }
+  } else {
+    ops.push({ action: "set", scope, allow: desired });
+  }
+  return ops;
 }
