@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useMailStore } from "../../stores/mailStore";
@@ -65,8 +66,19 @@ function ProjectListInner({
 }: {
   onSelectProject: () => void;
 }) {
-  const { projects, selectedProjectId, selectProject, archiveProject, deleteProject, mergeProject } =
-    useProjectStore();
+  const {
+    projects,
+    selectedProjectId,
+    selectProject,
+    archiveProject,
+    deleteProject,
+    mergeProject,
+    directories,
+    scanningProjects,
+    rescanProject,
+    unlinkDirectory,
+    linkDirectory,
+  } = useProjectStore();
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
   const endDrag = useDragStore((s) => s.endDrag);
   const { moveMail } = useMailStore();
@@ -77,6 +89,8 @@ function ProjectListInner({
     projectId: string;
   } | null>(null);
   const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
+  const [cloudSettingsProjectId, setCloudSettingsProjectId] = useState<string | null>(null);
+  void cloudSettingsProjectId; // Task 6 で CloudSettingsDialog に接続する（未使用警告の一時抑止）
 
   const handleDropOnProject = async (projectId: string) => {
     if (!draggingMailIds) return;
@@ -87,29 +101,41 @@ function ProjectListInner({
     }
   };
 
-  const getProjectMenuItems = (projectId: string) => [
-    {
-      label: "名前変更",
-      onClick: () => startRename(projectId),
-    },
-    {
-      label: "マージ",
-      onClick: () => setMergeSourceId(projectId),
-    },
-    {
-      label: "アーカイブ",
-      onClick: async () => {
-        await archiveProject(projectId);
+  const handleLinkDirectory = async (projectId: string) => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "案件フォルダを選択",
+    });
+    if (typeof selected === "string") {
+      await linkDirectory(projectId, selected);
+      void rescanProject(projectId); // 紐付け直後に初回スキャン
+    }
+  };
+
+  const getProjectMenuItems = (projectId: string) => {
+    const directory = directories[projectId] ?? null;
+    return [
+      {
+        label: directory ? "フォルダを変更…" : "フォルダを紐付け…",
+        onClick: () => void handleLinkDirectory(projectId),
       },
-    },
-    {
-      label: "削除",
-      danger: true,
-      onClick: async () => {
-        await deleteProject(projectId);
-      },
-    },
-  ];
+      ...(directory
+        ? [
+            { label: "再スキャン", onClick: () => void rescanProject(projectId) },
+            {
+              label: "クラウド送信設定…",
+              onClick: () => setCloudSettingsProjectId(projectId),
+            },
+            { label: "紐付け解除", onClick: () => void unlinkDirectory(projectId) },
+          ]
+        : []),
+      { label: "名前変更", onClick: () => startRename(projectId) },
+      { label: "マージ", onClick: () => setMergeSourceId(projectId) },
+      { label: "アーカイブ", onClick: async () => { await archiveProject(projectId); } },
+      { label: "削除", danger: true, onClick: async () => { await deleteProject(projectId); } },
+    ];
+  };
 
   return (
     <>
@@ -128,6 +154,8 @@ function ProjectListInner({
               setContextMenu({ x: e.clientX, y: e.clientY, projectId: project.id });
             }}
             onDrop={handleDropOnProject}
+            directory={directories[project.id] ?? null}
+            scanning={!!scanningProjects[project.id]}
           />
         ))}
       </ul>
