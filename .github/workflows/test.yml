@@ -18,13 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # libglib2.0-dev / libgtk-3-dev はランナーイメージに含まれる前提だったが
-      # イメージ更新で外れたため明示する。version はキャッシュ無効化用
-      - name: Cache apt packages
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libglib2.0-dev libgtk-3-dev
-          version: 2.0
+      # cache-apt-pkgs-action は apt-get update を行わず、イメージの古い
+      # パッケージインデックスがミラーに無い deb を参照して 404 になっても
+      # ジョブを失敗させず握りつぶすため、素の apt-get に置き換えた
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libglib2.0-dev libgtk-3-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
