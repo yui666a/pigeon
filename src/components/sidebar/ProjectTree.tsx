@@ -108,8 +108,12 @@ function ProjectListInner({
       title: "案件フォルダを選択",
     });
     if (typeof selected === "string") {
-      await linkDirectory(projectId, selected);
-      void rescanProject(projectId); // 紐付け直後に初回スキャン
+      try {
+        await linkDirectory(projectId, selected);
+        void rescanProject(projectId); // 紐付け直後に初回スキャン
+      } catch {
+        // linkDirectory は projectStore 内で errorStore へ通知済み
+      }
     }
   };
 

@@ -91,8 +91,13 @@ export function Sidebar() {
     if (!selectedAccountId) return;
     const project = await createProject(selectedAccountId, name, description, color);
     if (directoryPath) {
-      await linkDirectory(project.id, directoryPath);
-      void rescanProject(project.id);
+      try {
+        await linkDirectory(project.id, directoryPath);
+        void rescanProject(project.id);
+      } catch {
+        // linkDirectory は projectStore 内で errorStore へ通知済み。
+        // 案件自体は作成済みなので、フォームは閉じて二重作成を防ぐ
+      }
     }
     setShowProjectForm(false);
   };
