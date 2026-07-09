@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Mail, Thread } from "../types/mail";
 import { useErrorStore } from "./errorStore";
+import { useAccountStore } from "./accountStore";
+import { useUiStore } from "./uiStore";
 
 interface SyncProgress {
   account_id: string;
@@ -111,7 +113,13 @@ export const useMailStore = create<MailState>((set, get) => ({
       // 一覧への順次反映は500件ごと（=5バッチに1回）と完了時のみ。
       // 毎バッチのDB再読込を避ける
       if (p.done % 500 === 0 || p.done === p.total) {
-        void get().fetchThreads(p.account_id, "INBOX");
+        // 同期中アカウントを表示している場合のみ一覧へ順次反映する。
+        // 別アカウント・案件ビュー・検索を見ているときに INBOX で上書きしない
+        const selectedAccountId = useAccountStore.getState().selectedAccountId;
+        if (selectedAccountId !== p.account_id) return;
+        if (useUiStore.getState().viewMode === "threads") {
+          void get().fetchThreads(p.account_id, "INBOX");
+        }
         void get().fetchUnclassified(p.account_id);
       }
     });
