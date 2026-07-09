@@ -119,7 +119,10 @@ pub async fn rescan_project(
             continue;
         }
         if let Ok(extracted) = extractor::extract_text(&root.join(&f.relative_path)) {
-            let take = extracted.text.len().min(budget);
+            let mut take = extracted.text.len().min(budget);
+            while take > 0 && !extracted.text.is_char_boundary(take) {
+                take -= 1;
+            }
             let mut text = extracted.text;
             text.truncate(take);
             budget -= take;
@@ -210,13 +213,13 @@ mod tests {
     }
 
     fn setup(dir_path: &str) -> Mutex<rusqlite::Connection> {
-        let conn = crate::test_helpers::setup_db();
+        let mut conn = crate::test_helpers::setup_db();
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', '春公演')",
             [],
         )
         .unwrap();
-        crate::db::directories::link_directory(&conn, "p1", dir_path).unwrap();
+        crate::db::directories::link_directory(&mut conn, "p1", dir_path).unwrap();
         Mutex::new(conn)
     }
 
@@ -346,5 +349,24 @@ mod tests {
             !saw_secret.load(Ordering::SeqCst),
             "cloud=true では未許可ファイルは名前も内容もLLMに渡さない（スペック§5不変条件1）"
         );
+    }
+
+    #[tokio::test]
+    async fn test_rescan_does_not_panic_when_budget_splits_multibyte_char() {
+        // MAX_EXTRACT_BYTES_PER_PROJECT (100KB = 102400バイト) は3で割り切れないため、
+        // 「あ」(3バイト)の繰り返しファイルだけを予算超過まで並べると、最後のファイルで
+        // 残り予算がちょうど文字の途中（3の倍数でないバイト位置）に落ちる。
+        // 102400 % 9999 = 2410, 2410 % 3 = 1 → 文字境界ではない。
+        let dir = tempfile::tempdir().unwrap();
+        // 「あ」(3バイト) を 3333 回 = 9999バイト/ファイル。10KB上限(MAX_EXTRACT_BYTES_PER_FILE)未満。
+        let chunk: String = "あ".repeat(3333);
+        for i in 1..=11 {
+            std::fs::write(dir.path().join(format!("{:03}.txt", i)), &chunk).unwrap();
+        }
+        let db = setup(dir.path().to_str().unwrap());
+
+        // 修正前は budget がマルチバイト文字境界に落ちて String::truncate が panic する。
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        assert_eq!(outcome.status, "ok");
     }
 }
