@@ -1,7 +1,16 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { Mail, Thread } from "../types/mail";
 import { useErrorStore } from "./errorStore";
+import { useAccountStore } from "./accountStore";
+import { useUiStore } from "./uiStore";
+
+interface SyncProgress {
+  account_id: string;
+  done: number;
+  total: number;
+}
 
 interface MailState {
   threads: Thread[];
@@ -11,6 +20,7 @@ interface MailState {
   needsReauth: boolean;
   unclassifiedMails: Mail[];
   error: string | null;
+  syncProgress: SyncProgress | null;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
   syncAccount: (accountId: string) => Promise<number>;
   setThreads: (threads: Thread[]) => void;
@@ -19,6 +29,7 @@ interface MailState {
   fetchUnclassified: (accountId: string) => Promise<void>;
   moveMail: (mailId: string, projectId: string) => Promise<void>;
   removeUnclassifiedMail: (mailId: string) => void;
+  initSyncListener: () => Promise<() => void>;
 }
 
 export const useMailStore = create<MailState>((set, get) => ({
@@ -29,6 +40,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   needsReauth: false,
   unclassifiedMails: [],
   error: null,
+  syncProgress: null,
 
   fetchThreads: async (accountId, folder) => {
     try {
@@ -47,12 +59,12 @@ export const useMailStore = create<MailState>((set, get) => ({
     set({ syncing: true, error: null, needsReauth: false });
     try {
       const count = await invoke<number>("sync_account", { accountId });
-      set({ syncing: false });
+      set({ syncing: false, syncProgress: null });
       return count;
     } catch (e) {
       const errorMsg = String(e);
       const isReauth = errorMsg.includes("Reauth required");
-      set({ error: errorMsg, syncing: false, needsReauth: isReauth });
+      set({ error: errorMsg, syncing: false, needsReauth: isReauth, syncProgress: null });
       if (!isReauth) {
         useErrorStore.getState().addError(errorMsg);
       }
@@ -92,5 +104,25 @@ export const useMailStore = create<MailState>((set, get) => ({
     set({
       unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
     });
+  },
+
+  initSyncListener: async () => {
+    const unlisten = await listen<SyncProgress>("sync-progress", (event) => {
+      const p = event.payload;
+      set({ syncProgress: p });
+      // 一覧への順次反映は500件ごと（=5バッチに1回）と完了時のみ。
+      // 毎バッチのDB再読込を避ける
+      if (p.done % 500 === 0 || p.done === p.total) {
+        // 同期中アカウントを表示している場合のみ一覧へ順次反映する。
+        // 別アカウント・案件ビュー・検索を見ているときに INBOX で上書きしない
+        const selectedAccountId = useAccountStore.getState().selectedAccountId;
+        if (selectedAccountId !== p.account_id) return;
+        if (useUiStore.getState().viewMode === "threads") {
+          void get().fetchThreads(p.account_id, "INBOX");
+        }
+        void get().fetchUnclassified(p.account_id);
+      }
+    });
+    return unlisten;
   },
 }));

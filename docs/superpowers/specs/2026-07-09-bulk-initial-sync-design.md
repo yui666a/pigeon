@@ -96,7 +96,7 @@ pub async fn fetch_mails_batched(
     since_uid: u32,
     initial_limit: u32,
     mut on_batch: impl FnMut(Vec<(u32, Vec<u8>)>, SyncProgress) -> Result<(), AppError>,
-) -> Result<u32, AppError>  // 取り込み対象の総件数を返す
+) -> Result<usize, AppError>  // 取り込み対象の総件数を返す
 ```
 
 - `sync_account_inner` は `on_batch` 内でパース・DB挿入・`app_handle.emit("sync-progress", ...)` を行う
@@ -108,14 +108,14 @@ pub async fn fetch_mails_batched(
 **進捗表示（`SyncIndicator`）**
 
 - `src/components/sidebar/SyncIndicator.tsx` を新規作成（`ScanIndicator` と同型・並び）
-- `mailStore` に `syncProgress: { accountId: string; done: number; total: number } | null` を追加
+- `mailStore` に `syncProgress: { account_id: string; done: number; total: number } | null` を追加
 - マウント時に `listen("sync-progress", ...)` で購読（`initDeepLinkListener` と同じ既存パターン）。同期完了（`syncAccount` の resolve）で `null` に戻す
 - 表示: 「メール同期中… 1,200 / 5,000」
 
 **一覧の順次反映**
 
 - `syncAccount` 実行中、進捗イベント受信のたびに現在のビュー（スレッド一覧/未分類一覧)を再取得はしない。**進捗イベント5回に1回（=500件）程度で再取得**し、DB読み出しの無駄打ちを抑える。完了時に必ず最終再取得
-- 実装は mailStore 内（イベントハンドラで `done % 500 === 0` 相当の判定）
+- 実装は mailStore 内（イベントハンドラで `done % 500 === 0` 相当の判定）。同期中アカウントを表示している場合のみ反映（別ビュー・別アカウントは上書きしない）
 
 **表示ページング（固まり防止）**
 
@@ -138,8 +138,7 @@ pub async fn fetch_mails_batched(
 ### Rust
 
 - `fetch_mails_batched` のバッチ分割ロジック: UID一覧が `SYNC_BATCH_SIZE` を跨ぐときの分割数・**昇順（古い順）処理**・`since_uid` フィルタ（純粋ロジック部を関数に切り出してテスト。IMAP セッションはテスト境界の外）
-- 中断再開: 途中バッチまで挿入済みの DB 状態を作り、`max_uid` が再開点として機能すること（db レイヤのテスト）
-- `sync_account_inner` の進捗コールバック発火回数（モック化した on_batch で検証）
+- 中断再開: `plan_batches` の再開ケーステストと既存 `get_max_uid` テストで担保（古い順処理により max_uid が再開点になる）
 
 ### React（Vitest + RTL)
 

@@ -10,6 +10,7 @@ import type { SearchBarHandle } from "./SearchBar";
 import { ProjectTree } from "./ProjectTree";
 import { ProjectForm } from "./ProjectForm";
 import { ScanIndicator } from "./ScanIndicator";
+import { SyncIndicator } from "./SyncIndicator";
 import type { CreateAccountRequest } from "../../types/account";
 
 export function Sidebar() {
@@ -150,6 +151,7 @@ export function Sidebar() {
           )}
         </div>
       )}
+      <SyncIndicator />
       <ScanIndicator />
     </aside>
   );
