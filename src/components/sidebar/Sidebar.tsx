@@ -9,6 +9,7 @@ import { SearchBar } from "./SearchBar";
 import type { SearchBarHandle } from "./SearchBar";
 import { ProjectTree } from "./ProjectTree";
 import { ProjectForm } from "./ProjectForm";
+import { ScanIndicator } from "./ScanIndicator";
 import type { CreateAccountRequest } from "../../types/account";
 
 export function Sidebar() {
@@ -22,7 +23,7 @@ export function Sidebar() {
     startReauth,
     initDeepLinkListener,
   } = useAccountStore();
-  const { createProject } = useProjectStore();
+  const { createProject, linkDirectory, rescanProject } = useProjectStore();
   const { search, clearSearch } = useSearchStore();
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
@@ -85,9 +86,19 @@ export function Sidebar() {
     name: string,
     description?: string,
     color?: string,
+    directoryPath?: string,
   ) => {
     if (!selectedAccountId) return;
-    await createProject(selectedAccountId, name, description, color);
+    const project = await createProject(selectedAccountId, name, description, color);
+    if (directoryPath) {
+      try {
+        await linkDirectory(project.id, directoryPath);
+        void rescanProject(project.id);
+      } catch {
+        // linkDirectory は projectStore 内で errorStore へ通知済み。
+        // 案件自体は作成済みなので、フォームは閉じて二重作成を防ぐ
+      }
+    }
     setShowProjectForm(false);
   };
 
@@ -139,6 +150,7 @@ export function Sidebar() {
           )}
         </div>
       )}
+      <ScanIndicator />
     </aside>
   );
 }

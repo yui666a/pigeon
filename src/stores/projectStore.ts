@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../types/project";
+import type { ProjectContext, ProjectDirectory, RescanOutcome } from "../types/directory";
 import { useErrorStore } from "./errorStore";
 
 interface ProjectState {
@@ -8,6 +9,9 @@ interface ProjectState {
   selectedProjectId: string | null;
   loading: boolean;
   error: string | null;
+  directories: Record<string, ProjectDirectory | null>;
+  contexts: Record<string, ProjectContext | null>;
+  scanningProjects: Record<string, boolean>;
   fetchProjects: (accountId: string) => Promise<void>;
   createProject: (
     accountId: string,
@@ -25,6 +29,12 @@ interface ProjectState {
   deleteProject: (id: string) => Promise<void>;
   mergeProject: (sourceId: string, targetId: string) => Promise<number>;
   selectProject: (id: string | null) => void;
+  fetchDirectory: (projectId: string) => Promise<void>;
+  linkDirectory: (projectId: string, path: string) => Promise<void>;
+  unlinkDirectory: (projectId: string) => Promise<void>;
+  rescanProject: (projectId: string) => Promise<void>;
+  fetchProjectContext: (projectId: string) => Promise<void>;
+  setAllowCloudContext: (projectId: string, allow: boolean) => Promise<void>;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -32,12 +42,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   selectedProjectId: null,
   loading: false,
   error: null,
+  directories: {},
+  contexts: {},
+  scanningProjects: {},
 
   fetchProjects: async (accountId) => {
     set({ loading: true, error: null });
     try {
       const projects = await invoke<Project[]>("get_projects", { accountId });
       set({ projects, loading: false });
+      for (const p of projects) {
+        void get().fetchDirectory(p.id);
+      }
     } catch (e) {
       set({ error: String(e), loading: false });
       useErrorStore.getState().addError(String(e));
@@ -142,4 +158,71 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   selectProject: (id) => set({ selectedProjectId: id }),
+
+  fetchDirectory: async (projectId) => {
+    try {
+      const dir = await invoke<ProjectDirectory | null>("get_project_directory", {
+        projectId,
+      });
+      set({ directories: { ...get().directories, [projectId]: dir } });
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  linkDirectory: async (projectId, path) => {
+    try {
+      const dir = await invoke<ProjectDirectory>("link_project_directory", {
+        projectId,
+        path,
+      });
+      set({ directories: { ...get().directories, [projectId]: dir } });
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      throw e;
+    }
+  },
+
+  unlinkDirectory: async (projectId) => {
+    try {
+      await invoke("unlink_project_directory", { projectId });
+      set({ directories: { ...get().directories, [projectId]: null } });
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  rescanProject: async (projectId) => {
+    set({ scanningProjects: { ...get().scanningProjects, [projectId]: true } });
+    try {
+      await invoke<RescanOutcome>("rescan_project_directory", { projectId });
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    } finally {
+      const { [projectId]: _removed, ...rest } = get().scanningProjects;
+      set({ scanningProjects: rest });
+      void get().fetchDirectory(projectId);
+      void get().fetchProjectContext(projectId);
+    }
+  },
+
+  fetchProjectContext: async (projectId) => {
+    try {
+      const context = await invoke<ProjectContext | null>("get_project_context", {
+        projectId,
+      });
+      set({ contexts: { ...get().contexts, [projectId]: context } });
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  setAllowCloudContext: async (projectId, allow) => {
+    try {
+      await invoke("set_allow_cloud_context", { projectId, allow });
+      await get().fetchProjectContext(projectId);
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
 }));

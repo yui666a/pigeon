@@ -1,5 +1,6 @@
 import { memo, useState } from "react";
 import type { Project } from "../../types/project";
+import type { ProjectDirectory } from "../../types/directory";
 import { useDragStore } from "../../stores/dragStore";
 import { useProjectRenameContext } from "./ProjectRenameContext";
 
@@ -9,6 +10,8 @@ interface ProjectListItemProps {
   onSelect: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onDrop: (projectId: string) => void;
+  directory?: ProjectDirectory | null;
+  scanning?: boolean;
 }
 
 export const ProjectListItem = memo(function ProjectListItem({
@@ -17,6 +20,8 @@ export const ProjectListItem = memo(function ProjectListItem({
   onSelect,
   onContextMenu,
   onDrop,
+  directory,
+  scanning,
 }: ProjectListItemProps) {
   const {
     renamingProjectId,
@@ -82,6 +87,24 @@ export const ProjectListItem = memo(function ProjectListItem({
             style={{ backgroundColor: project.color ?? "#6b7280" }}
           />
           <span className="truncate">{project.name}</span>
+          {scanning ? (
+            <span className="ml-auto flex-shrink-0 animate-pulse text-xs" title="スキャン中">
+              ⏳
+            </span>
+          ) : directory ? (
+            directory.status === "ok" ? (
+              <span className="ml-auto flex-shrink-0 text-xs" title={directory.path}>
+                📁
+              </span>
+            ) : (
+              <span
+                className="ml-auto flex-shrink-0 text-xs text-amber-500"
+                title={`フォルダにアクセスできません（${directory.status}）: ${directory.path}`}
+              >
+                ⚠📁
+              </span>
+            )
+          ) : null}
         </div>
       </button>
     </li>
