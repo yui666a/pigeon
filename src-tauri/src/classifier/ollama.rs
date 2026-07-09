@@ -49,6 +49,57 @@ impl OllamaClassifier {
             ))
         })
     }
+
+    /// /api/chat を呼び、応答テキストを返す（classify と TextGenerator の共通部）。
+    async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
+        let request_body = OllamaChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                OllamaMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                OllamaMessage {
+                    role: "user".to_string(),
+                    content: user_prompt.to_string(),
+                },
+            ],
+            stream: false,
+        };
+
+        let url = format!("{}/api/chat", self.endpoint);
+        let response = self
+            .client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| AppError::OllamaConnection(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::OllamaConnection(format!(
+                "Ollama returned status {}",
+                response.status()
+            )));
+        }
+
+        let chat_response: OllamaChatResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::InvalidLlmResponse(e.to_string()))?;
+        Ok(chat_response.message.content)
+    }
+}
+
+#[async_trait]
+impl crate::classifier::TextGenerator for OllamaClassifier {
+    async fn generate_text(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError> {
+        self.chat(system_prompt, user_prompt).await
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -83,44 +134,8 @@ impl LlmClassifier for OllamaClassifier {
         corrections: &[CorrectionEntry],
     ) -> Result<ClassifyResult, AppError> {
         let user_prompt = prompt::build_user_prompt(mail, projects, corrections);
-
-        let request_body = OllamaChatRequest {
-            model: self.model.clone(),
-            messages: vec![
-                OllamaMessage {
-                    role: "system".to_string(),
-                    content: prompt::SYSTEM_PROMPT.to_string(),
-                },
-                OllamaMessage {
-                    role: "user".to_string(),
-                    content: user_prompt,
-                },
-            ],
-            stream: false,
-        };
-
-        let url = format!("{}/api/chat", self.endpoint);
-        let response = self
-            .client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| AppError::OllamaConnection(e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(AppError::OllamaConnection(format!(
-                "Ollama returned status {}",
-                response.status()
-            )));
-        }
-
-        let chat_response: OllamaChatResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::InvalidLlmResponse(e.to_string()))?;
-
-        let content = &chat_response.message.content;
+        let content = self.chat(prompt::SYSTEM_PROMPT, &user_prompt).await?;
+        let content = &content;
 
         match Self::parse_response(content) {
             Ok(result) => Ok(result),

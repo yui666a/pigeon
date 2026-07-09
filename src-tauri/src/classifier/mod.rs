@@ -16,3 +16,13 @@ pub trait LlmClassifier: Send + Sync {
 
     async fn health_check(&self) -> Result<(), AppError>;
 }
+
+/// 汎用テキスト生成（ダイジェスト生成等に使用）。LlmClassifier と同じプロバイダが実装する。
+#[async_trait]
+pub trait TextGenerator: Send + Sync {
+    async fn generate_text(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError>;
+}
