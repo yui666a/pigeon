@@ -10,11 +10,16 @@ pub fn set_rule(
     relative_path: &str,
     allow: bool,
 ) -> Result<(), AppError> {
+    // directory スコープの relative_path が末尾 '/' 付きで保存されると
+    // is_cloud_allowed の prefix マッチ（"{path}/"）が二重スラッシュとなり
+    // ルールが機能しなくなるため、保存前に末尾の '/' を除去する。
+    // 空文字になった場合はそのまま（全体ルールを表す）。
+    let normalized_path = relative_path.trim_end_matches('/');
     conn.execute(
         "INSERT INTO project_cloud_rules (id, directory_id, scope, relative_path, allow)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(directory_id, scope, relative_path) DO UPDATE SET allow = ?5",
-        params![Uuid::new_v4().to_string(), directory_id, scope, relative_path, allow],
+        params![Uuid::new_v4().to_string(), directory_id, scope, normalized_path, allow],
     )?;
     Ok(())
 }
@@ -87,5 +92,17 @@ mod tests {
         set_rule(&conn, &dir_id, "file", "a.txt", true).unwrap();
         delete_rule(&conn, &dir_id, "file", "a.txt").unwrap();
         assert!(list_rules(&conn, &dir_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_set_rule_normalizes_trailing_slash() {
+        let conn = setup_db();
+        let dir_id = setup_dir(&conn);
+
+        set_rule(&conn, &dir_id, "directory", "図面/", true).unwrap();
+
+        let rules = list_rules(&conn, &dir_id).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].relative_path, "図面");
     }
 }

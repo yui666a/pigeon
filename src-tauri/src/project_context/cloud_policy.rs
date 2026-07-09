@@ -4,7 +4,19 @@ use crate::models::directory::CloudRule;
 /// - マッチするルールが無ければ常に false（危険側に倒れない）
 /// - 最長 relative_path のルールが勝つ。同長なら file スコープが勝つ
 /// - directory スコープは prefix マッチ（'' は全体）、file スコープは完全一致
+///
+/// # 前提条件
+/// - `relative_path` は scanner が生成する正規化済み相対パス（`..` セグメントを
+///   含まない）を前提とする。`..` セグメントを含むパスが渡された場合は、
+///   不変条件「曖昧なら false」に従い無条件で `false` を返す（防御的チェック）。
+/// - `rules` には単一ディレクトリ（`list_rules` の出力）のルールのみを渡すこと。
+///   複数ディレクトリのルールを結合して渡してはならない（ディレクトリを跨いだ
+///   relative_path の意味的な衝突・誤マッチを避けるため）。
 pub fn is_cloud_allowed(rules: &[CloudRule], relative_path: &str) -> bool {
+    if contains_dotdot_segment(relative_path) {
+        return false;
+    }
+
     let mut best: Option<&CloudRule> = None;
     for rule in rules {
         let matches = match rule.scope.as_str() {
@@ -35,6 +47,12 @@ pub fn is_cloud_allowed(rules: &[CloudRule], relative_path: &str) -> bool {
         };
     }
     best.map(|r| r.allow).unwrap_or(false)
+}
+
+/// パスが `..` セグメントを含むかどうかを判定する（`"."`区切りではなく `/` 区切りの
+/// パスセグメント単位で判定する。`"..foo"` のような紛らわしい名前は対象外）。
+fn contains_dotdot_segment(path: &str) -> bool {
+    path.split('/').any(|segment| segment == "..")
 }
 
 #[cfg(test)]
@@ -108,5 +126,27 @@ mod tests {
             rule("file", "a/b.txt", false),     // fileスコープが勝つ
         ];
         assert!(!is_cloud_allowed(&rules, "a/b.txt"));
+    }
+
+    #[test]
+    fn test_file_scope_beats_directory_scope_at_same_length_reversed_order() {
+        // 挿入順（file→directory）を逆にしても結果が変わらないことを固定する
+        let rules = vec![
+            rule("file", "a/b.txt", false),     // fileスコープが勝つ
+            rule("directory", "a/b.txt", true), // 不正気味なルールでも
+        ];
+        assert!(!is_cloud_allowed(&rules, "a/b.txt"));
+    }
+
+    #[test]
+    fn test_dotdot_segment_is_always_denied() {
+        let rules = vec![rule("directory", "図面", true)];
+        assert!(
+            !is_cloud_allowed(&rules, "図面/../契約/x.pdf"),
+            "..セグメントを含むパスはallowルールに前方一致させず拒否する"
+        );
+        assert!(!is_cloud_allowed(&rules, ".."), "..単体も拒否する");
+        assert!(!is_cloud_allowed(&rules, "../図面/x.pdf"));
+        assert!(!is_cloud_allowed(&rules, "図面/.."));
     }
 }
