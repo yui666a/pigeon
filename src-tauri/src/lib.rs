@@ -17,6 +17,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use state::DbState;
 use state::SecureStoreState;
+use state::SyncLocks;
 use std::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,6 +50,7 @@ pub fn run() {
         .manage(DbState(Mutex::new(conn)))
         .manage(SecureStoreState(secure_store))
         .manage(OAuthStateStore::new())
+        .manage(SyncLocks::new())
         .manage(commands::classify_commands::PendingClassifications::new())
         .manage(commands::classify_commands::ClassifyCancelFlag::new())
         .setup(|app| {

@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::Thread;
-use crate::state::{DbState, SecureStoreState};
+use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 /// sync-progress イベントの payload
 #[derive(Clone, serde::Serialize)]
@@ -20,9 +20,15 @@ pub async fn sync_account(
     app: AppHandle,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
 ) -> Result<u32, AppError> {
-    sync_account_inner(&state, &secure_store.0, &account_id, |done, total| {
+    // 同一アカウントの同期が進行中なら開始しない（画面遷移等での多重起動対策）。
+    // エラーではなく 0 件を返す: 呼び出し側にとって「新規取り込みなし」と等価
+    if !sync_locks.try_begin(&account_id) {
+        return Ok(0);
+    }
+    let result = sync_account_inner(&state, &secure_store.0, &account_id, |done, total| {
         // 進捗はベストエフォート（emit 失敗で同期は止めない）
         let _ = app.emit(
             "sync-progress",
@@ -33,7 +39,9 @@ pub async fn sync_account(
             },
         );
     })
-    .await
+    .await;
+    sync_locks.finish(&account_id);
+    result
 }
 
 /// Resolve IMAP credentials for the given account.
@@ -131,8 +139,10 @@ async fn sync_account_inner(
                 let conn = state.0.lock().map_err(AppError::lock_err)?;
                 for (uid, body) in &batch {
                     if let Some(mail) = mime_parser::parse_mime(body, account_id, "INBOX", *uid) {
-                        mails::insert_mail(&conn, &mail)?;
-                        count += 1;
+                        // 既存行（UNIQUE 重複）は挿入されないため件数に含めない
+                        if mails::insert_mail(&conn, &mail)? {
+                            count += 1;
+                        }
                     }
                 }
             }
