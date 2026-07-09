@@ -108,6 +108,32 @@ impl async_imap::Authenticator for XOAuth2Authenticator {
 /// 初回同期時に取得するメールの最大件数
 const INITIAL_SYNC_LIMIT: u32 = 20;
 
+/// 同期バッチのサイズ。1バッチ分の全文のみメモリに保持する
+pub const SYNC_BATCH_SIZE: usize = 100;
+
+/// since_uid より新しい UID のみを昇順・重複除去し、batch_size ごとに分割する。
+/// 古い順に処理することで、中断しても DB の max_uid がそのまま再開点になる。
+#[allow(dead_code)]
+pub(crate) fn plan_batches(uids: Vec<u32>, since_uid: u32, batch_size: usize) -> Vec<Vec<u32>> {
+    let mut filtered: Vec<u32> = uids.into_iter().filter(|u| *u > since_uid).collect();
+    filtered.sort_unstable();
+    filtered.dedup();
+    filtered
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
+/// UID FETCH に渡す UID セット文字列（カンマ区切り）
+#[allow(dead_code)]
+pub(crate) fn uid_set(batch: &[u32]) -> String {
+    batch
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 pub async fn fetch_mails_since_uid(
     session: &mut ImapSession,
     folder: &str,
@@ -207,5 +233,34 @@ mod tests {
             response,
             "user=user@gmail.com\x01auth=Bearer ya29.token\x01\x01"
         );
+    }
+
+    #[test]
+    fn test_plan_batches_filters_sorts_and_chunks() {
+        // since_uid=10 より新しいものだけを昇順で 3件ずつに分割
+        let uids = vec![15, 11, 30, 10, 5, 12, 20, 11]; // 逆順・重複・既取り込み分を含む
+        let batches = plan_batches(uids, 10, 3);
+        assert_eq!(batches, vec![vec![11, 12, 15], vec![20, 30]]);
+    }
+
+    #[test]
+    fn test_plan_batches_empty_when_nothing_new() {
+        assert!(plan_batches(vec![1, 2, 3], 5, 100).is_empty());
+        assert!(plan_batches(vec![], 0, 100).is_empty());
+    }
+
+    #[test]
+    fn test_plan_batches_resume_after_interruption() {
+        // 中断再開: 250件目まで取り込み済み(since_uid=250)なら残りだけが対象になる
+        let uids: Vec<u32> = (1..=300).collect();
+        let batches = plan_batches(uids, 250, 100);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], (251..=300).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn test_uid_set_joins_with_commas() {
+        assert_eq!(uid_set(&[101, 102, 105]), "101,102,105");
+        assert_eq!(uid_set(&[7]), "7");
     }
 }
