@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod assignments;
+pub mod cloud_rules;
 pub mod directories;
 pub mod mails;
 pub mod migrations;
