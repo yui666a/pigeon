@@ -33,6 +33,9 @@ pub enum AppError {
     #[error("Project not found: {0}")]
     ProjectNotFound(String),
 
+    #[error("Directory not found: {0}")]
+    DirectoryNotFound(String),
+
     #[error("Duplicate account: {0}")]
     DuplicateAccount(String),
 

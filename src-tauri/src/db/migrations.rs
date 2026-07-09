@@ -175,6 +175,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 5 {
+        migrate_v5(conn)?;
+        version = 5;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -212,6 +218,70 @@ fn migrate_v4(conn: &Connection) -> Result<(), AppError> {
         SELECT id, subject, COALESCE(body_text, ''), from_addr, to_addr
         FROM mails
         WHERE id NOT IN (SELECT mail_id FROM fts_mails);
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v5(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        -- 案件⇔ディレクトリ (1:N。UIは当面1案件1ディレクトリに制限)
+        CREATE TABLE IF NOT EXISTS project_directories (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            path            TEXT NOT NULL UNIQUE,
+            is_primary      BOOLEAN NOT NULL DEFAULT FALSE,
+            status          TEXT NOT NULL DEFAULT 'ok'
+                            CHECK(status IN ('ok','missing','inaccessible','error')),
+            last_scanned_at DATETIME,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_directories_project
+            ON project_directories(project_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_project_directories_one_primary
+            ON project_directories(project_id) WHERE is_primary = TRUE;
+
+        -- ファイルインベントリ (現在の実体のスナップショット)
+        CREATE TABLE IF NOT EXISTS project_files (
+            id             TEXT PRIMARY KEY,
+            directory_id   TEXT NOT NULL REFERENCES project_directories(id) ON DELETE CASCADE,
+            relative_path  TEXT NOT NULL,
+            size_bytes     INTEGER NOT NULL,
+            mtime          DATETIME NOT NULL,
+            content_hash   TEXT,
+            content_kind   TEXT NOT NULL DEFAULT 'none'
+                           CHECK(content_kind IN ('none','text','pdf','office','other')),
+            extract_status TEXT NOT NULL DEFAULT 'ok'
+                           CHECK(extract_status IN ('ok','skipped_too_large','unsupported','error')),
+            indexed_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(directory_id, relative_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_files_directory
+            ON project_files(directory_id);
+
+        -- クラウド送信許可ルール (デフォルト不許可、最長マッチ優先)
+        CREATE TABLE IF NOT EXISTS project_cloud_rules (
+            id            TEXT PRIMARY KEY,
+            directory_id  TEXT NOT NULL REFERENCES project_directories(id) ON DELETE CASCADE,
+            scope         TEXT NOT NULL CHECK(scope IN ('directory','file')),
+            relative_path TEXT NOT NULL DEFAULT '',
+            allow         BOOLEAN NOT NULL,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(directory_id, scope, relative_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_cloud_rules_directory
+            ON project_cloud_rules(directory_id);
+
+        -- 案件のAIコンテキスト状態 (正本は PIGEON-CONTEXT.md、これはキャッシュ+メタ)
+        CREATE TABLE IF NOT EXISTS project_contexts (
+            project_id          TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            cached_context      TEXT,
+            context_hash        TEXT,
+            inventory_hash      TEXT,
+            allow_cloud_context BOOLEAN NOT NULL DEFAULT FALSE,
+            generated_at        DATETIME
+        );
         ",
     )?;
     Ok(())
@@ -327,11 +397,11 @@ mod tests {
         assert!(tables.contains(&"mail_project_assignments".to_string()));
         assert!(tables.contains(&"correction_log".to_string()));
 
-        // Verify schema version is 4 (latest)
+        // Verify schema version is 5 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -534,11 +604,11 @@ mod tests {
             .unwrap();
         assert_eq!(provider, "other");
 
-        // Schema version should be 4 (latest)
+        // Schema version should be 5 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -557,11 +627,11 @@ mod tests {
             .unwrap();
         assert!(table_exists, "fts_mails table should exist after v4 migration");
 
-        // Schema version should be 4
+        // Schema version should be 5
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -707,5 +777,130 @@ mod tests {
             )
             .unwrap();
         assert_eq!(subject_count, 1, "3+ char Japanese substring search should work via FTS trigram");
+    }
+
+    #[test]
+    fn test_v5_migration_creates_directory_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(tables.contains(&"project_directories".to_string()));
+        assert!(tables.contains(&"project_files".to_string()));
+        assert!(tables.contains(&"project_cloud_rules".to_string()));
+        assert!(tables.contains(&"project_contexts".to_string()));
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+    }
+
+    #[test]
+    fn test_v5_cascade_delete_from_project() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'Proj')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO project_directories (id, project_id, path, is_primary)
+             VALUES ('d1', 'p1', '/tmp/proj1', TRUE)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, directory_id, relative_path, size_bytes, mtime)
+             VALUES ('f1', 'd1', 'a.txt', 10, '2026-07-09T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO project_cloud_rules (id, directory_id, scope, relative_path, allow)
+             VALUES ('r1', 'd1', 'directory', '', TRUE)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO project_contexts (project_id, cached_context) VALUES ('p1', 'ctx')",
+            [],
+        ).unwrap();
+
+        conn.execute("DELETE FROM projects WHERE id = 'p1'", []).unwrap();
+
+        for table in ["project_directories", "project_files", "project_cloud_rules", "project_contexts"] {
+            let count: i32 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{} should cascade-delete", table);
+        }
+    }
+
+    #[test]
+    fn test_v5_unique_path_prevents_double_link() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P1')", []).unwrap();
+        conn.execute("INSERT INTO projects (id, account_id, name) VALUES ('p2', 'acc1', 'P2')", []).unwrap();
+        conn.execute(
+            "INSERT INTO project_directories (id, project_id, path, is_primary)
+             VALUES ('d1', 'p1', '/tmp/shared', TRUE)",
+            [],
+        ).unwrap();
+
+        // 同じパスを別案件に紐付けると UNIQUE(path) 違反
+        let result = conn.execute(
+            "INSERT INTO project_directories (id, project_id, path, is_primary)
+             VALUES ('d2', 'p2', '/tmp/shared', TRUE)",
+            [],
+        );
+        assert!(result.is_err(), "same path must not be linked to two projects");
+    }
+
+    #[test]
+    fn test_v5_one_primary_per_project() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P1')", []).unwrap();
+        conn.execute(
+            "INSERT INTO project_directories (id, project_id, path, is_primary)
+             VALUES ('d1', 'p1', '/tmp/a', TRUE)",
+            [],
+        ).unwrap();
+
+        // 2つ目の primary は部分ユニークインデックス違反
+        let result = conn.execute(
+            "INSERT INTO project_directories (id, project_id, path, is_primary)
+             VALUES ('d2', 'p1', '/tmp/b', TRUE)",
+            [],
+        );
+        assert!(result.is_err(), "only one primary directory per project");
     }
 }
