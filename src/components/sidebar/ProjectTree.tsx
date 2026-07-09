@@ -8,6 +8,7 @@ import { ProjectListItem } from "./ProjectListItem";
 import { ProjectRenameProvider, useProjectRenameContext } from "./ProjectRenameContext";
 import { ContextMenu } from "../common/ContextMenu";
 import { MergeProjectDialog } from "./MergeProjectDialog";
+import { CloudSettingsDialog } from "./CloudSettingsDialog";
 
 interface ProjectTreeProps {
   onSelectUnclassified: () => void;
@@ -90,7 +91,6 @@ function ProjectListInner({
   } | null>(null);
   const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
   const [cloudSettingsProjectId, setCloudSettingsProjectId] = useState<string | null>(null);
-  void cloudSettingsProjectId; // Task 6 で CloudSettingsDialog に接続する（未使用警告の一時抑止）
 
   const handleDropOnProject = async (projectId: string) => {
     if (!draggingMailIds) return;
@@ -182,6 +182,19 @@ function ProjectListInner({
               setMergeSourceId(null);
             }}
             onCancel={() => setMergeSourceId(null)}
+          />
+        );
+      })()}
+
+      {cloudSettingsProjectId && (() => {
+        const targetProject = projects.find((p) => p.id === cloudSettingsProjectId);
+        const targetDirectory = directories[cloudSettingsProjectId];
+        if (!targetProject || !targetDirectory) return null;
+        return (
+          <CloudSettingsDialog
+            project={targetProject}
+            directory={targetDirectory}
+            onClose={() => setCloudSettingsProjectId(null)}
           />
         );
       })()}
