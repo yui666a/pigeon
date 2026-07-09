@@ -18,11 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # libglib2.0-dev / libgtk-3-dev はランナーイメージに含まれる前提だったが
+      # イメージ更新で外れたため明示する。version はキャッシュ無効化用
       - name: Cache apt packages
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
-          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
-          version: 1.0
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libglib2.0-dev libgtk-3-dev
+          version: 2.0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -39,9 +41,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # latest だと pnpm のメジャー更新で挙動が変わり CI が壊れるため固定
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10
 
       - uses: actions/setup-node@v4
         with:
