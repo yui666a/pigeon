@@ -4,6 +4,7 @@ pub mod db;
 pub mod error;
 pub mod mail_sync;
 pub mod models;
+pub mod project_context;
 pub mod secure_store;
 pub mod state;
 

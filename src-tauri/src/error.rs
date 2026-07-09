@@ -36,6 +36,9 @@ pub enum AppError {
     #[error("Directory not found: {0}")]
     DirectoryNotFound(String),
 
+    #[error("Directory scan error: {0}")]
+    DirectoryScan(String),
+
     #[error("Duplicate account: {0}")]
     DuplicateAccount(String),
 
