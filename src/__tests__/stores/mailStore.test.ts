@@ -6,6 +6,15 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
+let syncProgressHandler: ((event: { payload: unknown }) => void) | null = null;
+const mockUnlisten = vi.fn();
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn((name: string, handler: (event: { payload: unknown }) => void) => {
+    if (name === "sync-progress") syncProgressHandler = handler;
+    return Promise.resolve(mockUnlisten);
+  }),
+}));
+
 describe("mailStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -17,6 +26,7 @@ describe("mailStore", () => {
       needsReauth: false,
       unclassifiedMails: [],
       error: null,
+      syncProgress: null,
     });
   });
 
@@ -165,6 +175,54 @@ describe("mailStore", () => {
 
       expect(useMailStore.getState().unclassifiedMails).toHaveLength(1);
       expect(useMailStore.getState().unclassifiedMails[0].id).toBe("m2");
+    });
+  });
+
+  describe("sync progress", () => {
+    it("updates syncProgress on sync-progress events", async () => {
+      await useMailStore.getState().initSyncListener();
+      syncProgressHandler!({
+        payload: { account_id: "acc1", done: 100, total: 5000 },
+      });
+      expect(useMailStore.getState().syncProgress).toEqual({
+        account_id: "acc1",
+        done: 100,
+        total: 5000,
+      });
+    });
+
+    it("refreshes lists every 500 mails and at completion, not on every batch", async () => {
+      mockInvoke.mockResolvedValue([]);
+      await useMailStore.getState().initSyncListener();
+
+      syncProgressHandler!({ payload: { account_id: "acc1", done: 100, total: 1200 } });
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
+
+      syncProgressHandler!({ payload: { account_id: "acc1", done: 500, total: 1200 } });
+      expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
+        accountId: "acc1",
+        folder: "INBOX",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", {
+        accountId: "acc1",
+      });
+
+      mockInvoke.mockClear();
+      mockInvoke.mockResolvedValue([]);
+      syncProgressHandler!({ payload: { account_id: "acc1", done: 1200, total: 1200 } });
+      expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
+        accountId: "acc1",
+        folder: "INBOX",
+      });
+    });
+
+    it("clears syncProgress when syncAccount finishes", async () => {
+      mockInvoke.mockResolvedValue(3);
+      useMailStore.setState({
+        syncProgress: { account_id: "acc1", done: 100, total: 200 },
+      });
+      await useMailStore.getState().syncAccount("acc1");
+      expect(useMailStore.getState().syncProgress).toBeNull();
     });
   });
 });
