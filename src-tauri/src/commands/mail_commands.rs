@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::db::{accounts, mails};
 use crate::error::AppError;
@@ -7,13 +7,33 @@ use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::Thread;
 use crate::state::{DbState, SecureStoreState};
 
+/// sync-progress イベントの payload
+#[derive(Clone, serde::Serialize)]
+struct SyncProgressEvent {
+    account_id: String,
+    done: usize,
+    total: usize,
+}
+
 #[tauri::command]
 pub async fn sync_account(
+    app: AppHandle,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
     account_id: String,
 ) -> Result<u32, AppError> {
-    sync_account_inner(&state, &secure_store.0, &account_id).await
+    sync_account_inner(&state, &secure_store.0, &account_id, |done, total| {
+        // 進捗はベストエフォート（emit 失敗で同期は止めない）
+        let _ = app.emit(
+            "sync-progress",
+            SyncProgressEvent {
+                account_id: account_id.clone(),
+                done,
+                total,
+            },
+        );
+    })
+    .await
 }
 
 /// Resolve IMAP credentials for the given account.
@@ -76,12 +96,15 @@ async fn sync_account_inner(
     state: &DbState,
     secure_store: &crate::secure_store::SecureStore,
     account_id: &str,
+    mut on_progress: impl FnMut(usize, usize),
 ) -> Result<u32, AppError> {
-    let (account, max_uid) = {
+    let (account, max_uid, initial_limit) = {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
         let account = accounts::get_account(&conn, account_id)?;
         let max_uid = mails::get_max_uid(&conn, account_id, "INBOX")?;
-        (account, max_uid)
+        let initial_limit =
+            crate::db::settings::get_u32_or(&conn, "initial_sync_limit", 5000);
+        (account, max_uid, initial_limit)
     };
 
     let (auth_type, username, credential) =
@@ -96,22 +119,33 @@ async fn sync_account_inner(
     )
     .await?;
 
-    let raw_mails = imap_client::fetch_mails_since_uid(&mut session, "INBOX", max_uid).await?;
-
     let mut count = 0u32;
-    {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        for (uid, body) in &raw_mails {
-            if let Some(mail) = mime_parser::parse_mime(body, account_id, "INBOX", *uid) {
-                mails::insert_mail(&conn, &mail)?;
-                count += 1;
+    let fetch_result = imap_client::fetch_mails_batched(
+        &mut session,
+        "INBOX",
+        max_uid,
+        initial_limit,
+        |batch, progress| {
+            // バッチ単位でロックを取り、挿入してから進捗を通知する
+            {
+                let conn = state.0.lock().map_err(AppError::lock_err)?;
+                for (uid, body) in &batch {
+                    if let Some(mail) = mime_parser::parse_mime(body, account_id, "INBOX", *uid) {
+                        mails::insert_mail(&conn, &mail)?;
+                        count += 1;
+                    }
+                }
             }
-        }
-    }
+            on_progress(progress.done, progress.total);
+            Ok(())
+        },
+    )
+    .await;
 
     if let Err(e) = session.logout().await {
         eprintln!("[warn] IMAP logout failed: {}", e);
     }
+    fetch_result?;
     Ok(count)
 }
 
@@ -132,7 +166,7 @@ pub fn get_threads_by_project(
     project_id: String,
 ) -> Result<Vec<Thread>, AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
-    Ok(mails::get_threads_by_project(&conn, &project_id)?)
+    mails::get_threads_by_project(&conn, &project_id)
 }
 
 #[cfg(test)]

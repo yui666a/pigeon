@@ -105,66 +105,109 @@ impl async_imap::Authenticator for XOAuth2Authenticator {
     }
 }
 
-/// 初回同期時に取得するメールの最大件数
-const INITIAL_SYNC_LIMIT: u32 = 20;
+/// 同期バッチのサイズ。1バッチ分の全文のみメモリに保持する
+pub const SYNC_BATCH_SIZE: usize = 100;
 
-pub async fn fetch_mails_since_uid(
+/// since_uid より新しい UID のみを昇順・重複除去し、batch_size ごとに分割する。
+/// 古い順に処理することで、中断しても DB の max_uid がそのまま再開点になる。
+pub(crate) fn plan_batches(uids: Vec<u32>, since_uid: u32, batch_size: usize) -> Vec<Vec<u32>> {
+    let mut filtered: Vec<u32> = uids.into_iter().filter(|u| *u > since_uid).collect();
+    filtered.sort_unstable();
+    filtered.dedup();
+    filtered
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
+/// UID FETCH に渡す UID セット文字列（カンマ区切り）
+pub(crate) fn uid_set(batch: &[u32]) -> String {
+    batch
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 同期の進捗（on_batch コールバックに渡す）
+pub struct SyncProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// since_uid より新しいメールを、UID一覧の軽量取得 → SYNC_BATCH_SIZE 件ずつの
+/// バッチ FETCH で取り込む。バッチごとに on_batch(そのバッチの生メール, 進捗) を呼ぶ。
+/// 古い順（UID昇順）に処理するため、途中で中断しても DB の max_uid が再開点になる。
+/// 戻り値は取り込み対象の総件数。
+pub async fn fetch_mails_batched(
     session: &mut ImapSession,
     folder: &str,
     since_uid: u32,
-) -> Result<Vec<(u32, Vec<u8>)>, AppError> {
+    initial_limit: u32,
+    mut on_batch: impl FnMut(Vec<(u32, Vec<u8>)>, SyncProgress) -> Result<(), AppError>,
+) -> Result<usize, AppError> {
     let mailbox = session
         .select(folder)
         .await
         .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
 
-    let query = if since_uid == 0 {
-        // 初回同期: 直近 INITIAL_SYNC_LIMIT 件のみ取得
-        // メールボックスのメッセージ数から開始位置を計算
+    // 対象の UID 一覧のみを軽量取得（本文なし）
+    let uids: Vec<u32> = if since_uid == 0 {
+        // 初回同期: 直近 initial_limit 件のシーケンス範囲から UID を得る
         let total = mailbox.exists;
         if total == 0 {
-            return Ok(Vec::new());
+            return Ok(0);
         }
-        let start = if total > INITIAL_SYNC_LIMIT {
-            total - INITIAL_SYNC_LIMIT + 1
+        let start = if total > initial_limit {
+            total - initial_limit + 1
         } else {
             1
         };
-        // シーケンス番号ベースでUIDを取得してからフェッチ
-        format!("{}:*", start)
-    } else {
-        format!("{}:*", since_uid + 1)
-    };
-
-    // 初回はシーケンス番号ベース、差分はUIDベース
-    let messages: Vec<_> = if since_uid == 0 {
-        session
-            .fetch(&query, "(UID RFC822)")
+        let messages: Vec<_> = session
+            .fetch(&format!("{}:*", start), "(UID)")
             .await
-            .map_err(|e| AppError::Imap(format!("Fetch failed: {}", e)))?
+            .map_err(|e| AppError::Imap(format!("UID list fetch failed: {}", e)))?
             .try_collect()
             .await
-            .map_err(|e| AppError::Imap(format!("Fetch stream failed: {}", e)))?
+            .map_err(|e| AppError::Imap(format!("UID list stream failed: {}", e)))?;
+        messages.iter().filter_map(|m| m.uid).collect()
     } else {
-        session
-            .uid_fetch(&query, "(UID RFC822)")
+        // 差分同期: since_uid より新しい範囲の UID を得る
+        let messages: Vec<_> = session
+            .uid_fetch(&format!("{}:*", since_uid + 1), "(UID)")
             .await
-            .map_err(|e| AppError::Imap(format!("Fetch failed: {}", e)))?
+            .map_err(|e| AppError::Imap(format!("UID list fetch failed: {}", e)))?
             .try_collect()
             .await
-            .map_err(|e| AppError::Imap(format!("Fetch stream failed: {}", e)))?
+            .map_err(|e| AppError::Imap(format!("UID list stream failed: {}", e)))?;
+        messages.iter().filter_map(|m| m.uid).collect()
     };
 
-    let mut results = Vec::new();
-    for msg in &messages {
-        if let Some(body) = msg.body() {
-            let uid = msg.uid.unwrap_or(0);
-            if uid > since_uid {
-                results.push((uid, body.to_vec()));
+    let batches = plan_batches(uids, since_uid, SYNC_BATCH_SIZE);
+    let total: usize = batches.iter().map(|b| b.len()).sum();
+
+    let mut done = 0usize;
+    for batch in batches {
+        let messages: Vec<_> = session
+            .uid_fetch(&uid_set(&batch), "(UID RFC822)")
+            .await
+            .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("Batch stream failed: {}", e)))?;
+
+        let mut mails = Vec::with_capacity(messages.len());
+        for msg in &messages {
+            if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
+                if uid > since_uid {
+                    mails.push((uid, body.to_vec()));
+                }
             }
         }
+        done += batch.len();
+        on_batch(mails, SyncProgress { done, total })?;
     }
-    Ok(results)
+    Ok(total)
 }
 
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
@@ -207,5 +250,34 @@ mod tests {
             response,
             "user=user@gmail.com\x01auth=Bearer ya29.token\x01\x01"
         );
+    }
+
+    #[test]
+    fn test_plan_batches_filters_sorts_and_chunks() {
+        // since_uid=10 より新しいものだけを昇順で 3件ずつに分割
+        let uids = vec![15, 11, 30, 10, 5, 12, 20, 11]; // 逆順・重複・既取り込み分を含む
+        let batches = plan_batches(uids, 10, 3);
+        assert_eq!(batches, vec![vec![11, 12, 15], vec![20, 30]]);
+    }
+
+    #[test]
+    fn test_plan_batches_empty_when_nothing_new() {
+        assert!(plan_batches(vec![1, 2, 3], 5, 100).is_empty());
+        assert!(plan_batches(vec![], 0, 100).is_empty());
+    }
+
+    #[test]
+    fn test_plan_batches_resume_after_interruption() {
+        // 中断再開: 250件目まで取り込み済み(since_uid=250)なら残りだけが対象になる
+        let uids: Vec<u32> = (1..=300).collect();
+        let batches = plan_batches(uids, 250, 100);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], (251..=300).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn test_uid_set_joins_with_commas() {
+        assert_eq!(uid_set(&[101, 102, 105]), "101,102,105");
+        assert_eq!(uid_set(&[7]), "7");
     }
 }
