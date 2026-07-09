@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod assignments;
+pub mod directories;
 pub mod mails;
 pub mod migrations;
 pub mod projects;
