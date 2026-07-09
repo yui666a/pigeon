@@ -271,5 +271,13 @@ describe("mailStore", () => {
       await useMailStore.getState().syncAccount("acc1");
       expect(useMailStore.getState().syncProgress).toBeNull();
     });
+
+    it("does not start another sync while one is in flight", async () => {
+      useMailStore.setState({ syncing: true });
+      const count = await useMailStore.getState().syncAccount("acc1");
+      expect(count).toBe(0);
+      expect(mockInvoke).not.toHaveBeenCalledWith("sync_account", expect.anything());
+      expect(useMailStore.getState().syncing).toBe(true);
+    });
   });
 });
