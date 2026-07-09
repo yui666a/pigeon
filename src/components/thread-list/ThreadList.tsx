@@ -57,7 +57,7 @@ export function ThreadList({ viewMode }: ThreadListProps) {
       </div>
     );
   }
-  if (syncing) {
+  if (syncing && threads.length === 0) {
     return <EmptyState message="メールを同期中..." />;
   }
   if (threads.length === 0) {
