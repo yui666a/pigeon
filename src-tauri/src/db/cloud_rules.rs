@@ -30,10 +30,13 @@ pub fn delete_rule(
     scope: &str,
     relative_path: &str,
 ) -> Result<(), AppError> {
+    // set_rule と同じ正規化を適用し、末尾スラッシュ付きで呼ばれた場合でも
+    // 正規化済みで保存されたルールを削除できるようにする（非対称の解消）。
+    let normalized_path = relative_path.trim_end_matches('/');
     conn.execute(
         "DELETE FROM project_cloud_rules
          WHERE directory_id = ?1 AND scope = ?2 AND relative_path = ?3",
-        params![directory_id, scope, relative_path],
+        params![directory_id, scope, normalized_path],
     )?;
     Ok(())
 }
@@ -104,5 +107,16 @@ mod tests {
         let rules = list_rules(&conn, &dir_id).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].relative_path, "図面");
+    }
+
+    #[test]
+    fn test_delete_rule_normalizes_trailing_slash() {
+        let conn = setup_db();
+        let dir_id = setup_dir(&conn);
+
+        set_rule(&conn, &dir_id, "directory", "図面/", true).unwrap();
+        delete_rule(&conn, &dir_id, "directory", "図面/").unwrap(); // 末尾スラッシュ付きでも削除できる
+
+        assert!(list_rules(&conn, &dir_id).unwrap().is_empty());
     }
 }
