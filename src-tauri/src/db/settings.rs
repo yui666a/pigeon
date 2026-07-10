@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection};
+use crate::error::AppError;
 
 /// Query the settings table for `key`, returning `default` if the row doesn't exist.
 pub fn get_or_default(conn: &Connection, key: &str, default: &str) -> String {
@@ -15,6 +16,16 @@ pub fn get_u32_or(conn: &Connection, key: &str, default: u32) -> u32 {
     get_or_default(conn, key, &default.to_string())
         .parse()
         .unwrap_or(default)
+}
+
+/// `key` に `value` を UPSERT する。
+pub fn set(conn: &Connection, key: &str, value: &str) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -71,5 +82,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(get_u32_or(&conn, "initial_sync_limit", 5000), 5000);
+    }
+
+    #[test]
+    fn test_set_inserts_new_key() {
+        let conn = setup_db();
+        set(&conn, "llm_provider", "claude").unwrap();
+        assert_eq!(get_or_default(&conn, "llm_provider", "ollama"), "claude");
+    }
+
+    #[test]
+    fn test_set_overwrites_existing_key() {
+        let conn = setup_db();
+        set(&conn, "llm_provider", "ollama").unwrap();
+        set(&conn, "llm_provider", "claude").unwrap();
+        assert_eq!(get_or_default(&conn, "llm_provider", "ollama"), "claude");
     }
 }

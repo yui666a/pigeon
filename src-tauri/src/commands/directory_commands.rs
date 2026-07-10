@@ -1,11 +1,11 @@
 use tauri::State;
 
-use crate::classifier::ollama::OllamaClassifier;
-use crate::db::{cloud_rules, directories, project_contexts, project_files, settings};
+use crate::classifier::factory::build_classifier;
+use crate::db::{cloud_rules, directories, project_contexts, project_files};
 use crate::error::AppError;
 use crate::models::directory::{CloudRule, ProjectContext, ProjectDirectory, ProjectFile};
 use crate::project_context::{self, RescanOutcome};
-use crate::state::DbState;
+use crate::state::{DbState, SecureStoreState};
 use rusqlite::Connection;
 
 /// パスを検証して紐付ける（コマンド本体から分離してテスト可能に）。
@@ -64,19 +64,20 @@ pub fn get_project_directory(
 #[tauri::command]
 pub async fn rescan_project_directory(
     db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
     project_id: String,
 ) -> Result<RescanOutcome, AppError> {
-    let (endpoint, model) = {
+    let classifier = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
-        (
-            settings::get_or_default(&conn, "ollama_endpoint", "http://localhost:11434"),
-            settings::get_or_default(&conn, "ollama_model", "llama3.1:8b"),
-        )
+        build_classifier(&conn, &secure_store.0)?
     };
-    let generator = OllamaClassifier::new(&endpoint, &model)?;
-    // 現状ダイジェスト生成は Ollama（ローカル）のみのため cloud=false。
-    // Claude 対応時は LLM プロバイダ設定に応じて true を渡す（スペック§5）。
-    project_context::rescan_project(&db.0, &generator, &project_id, false).await
+    // プロバイダが Claude のときのみクラウド送信になる。cloud フラグは
+    // 送信可否ポリシー適用のためのもので、build_classifier とは独立。
+    let cloud = {
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
+        crate::db::settings::get_or_default(&conn, "llm_provider", "ollama") == "claude"
+    };
+    project_context::rescan_project(&db.0, classifier.as_ref(), &project_id, cloud).await
 }
 
 #[tauri::command]
