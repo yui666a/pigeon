@@ -1,7 +1,7 @@
 # LLMプロバイダ選択設定 設計書
 
 - 作成日: 2026-07-10
-- ステータス: 実装済み（Ollama + Claude）
+- ステータス: 実装済み（Ollama + Claude）／ Claude (Vertex AI) 追加中
 - 関連: `2026-04-12-pigeon-design.md`, `2026-04-13-phase2-ai-classification-design.md`, `2026-07-09-project-directory-context-design.md`
 
 ## 1. 目的
@@ -9,7 +9,8 @@
 設定ウィンドウ（モーダルダイアログ）を追加し、アプリが使用するLLMプロバイダをユーザーが選択できるようにする。
 
 - **ローカル**: Ollama（現状のデフォルト、`llama3.1:8b`）
-- **クラウド**: Claude API（新規実装、デフォルト `claude-haiku-4-5`）
+- **クラウド (Anthropic 直)**: Claude API（実装済み、デフォルト `claude-haiku-4-5`）
+- **クラウド (GCP)**: Claude on Vertex AI / Agent Platform（新規追加。Anthropic 直の Claude とは別プロバイダ `claude_vertex`。§12 参照）
 - **将来**: ChatGPT（UIの口だけ用意し、選択すると「未対応」表示。実装は次フェーズ）
 
 プロバイダは**アプリ全体で単一**とする。分類・ダイジェスト生成など、すべての用途で選択したプロバイダを使う。
@@ -238,3 +239,111 @@ claude_api_key_set: bool   // キー本体ではなく登録有無のみ
 - `types/settings.ts`（新規）
 - サイドバーに設定ボタン追加（既存コンポーネント）
 - `__tests__/LlmSettingsDialog.test.tsx`（新規）
+
+## 12. Claude on Vertex AI（GCP Agent Platform）追加 — プロバイダ `claude_vertex`
+
+- 追記日: 2026-07-10
+- 既存の Anthropic 直 API プロバイダ `claude` は**変更せず残す**。GCP 経由は**別プロバイダ `claude_vertex`** として並置する。ユーザーは「Claude API（Anthropic 直）」と「Claude (GCP Vertex AI)」を独立に選べる。
+
+### 12.1 動機
+
+課金を GCP プロジェクトに集約し、Vertex AI 経由で Claude を使いたい。API キー方式ではなく **GCP サービスアカウント認証**を用いる。具体的なプロジェクト ID はリポジトリに記載せず、ユーザーのローカル設定（settings DB）にのみ保持する（§12.4 参照）。
+
+### 12.2 API 仕様（2026-07-10 公式確認）
+
+Anthropic 直 API との差分は次の3点のみ。ボディ・レスポンスの大半は Messages API と同一。
+
+- **エンドポイント**（非ストリーミング `:rawPredict`）:
+  ```
+  https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict
+  ```
+  ただし `location=global` のときだけホスト名にリージョン接頭辞が付かず `https://aiplatform.googleapis.com/...` になる（`endpoint_url` で分岐）。
+- **リクエストボディ**: `model` は**ボディに含めない**（URL パスで指定）。代わりに `anthropic_version` を**ボディに**入れ、値は必ず `"vertex-2023-10-16"`。
+  ```json
+  {
+    "anthropic_version": "vertex-2023-10-16",
+    "system": "<システムプロンプト>",
+    "messages": [{ "role": "user", "content": "<ユーザープロンプト>" }],
+    "max_tokens": 1024
+  }
+  ```
+- **認証**: `Authorization: Bearer <access_token>`（`x-api-key` ではない）。アクセストークンは SA JSON から OAuth2 スコープ `https://www.googleapis.com/auth/cloud-platform` で取得。必要 IAM ロールは `roles/aiplatform.user`（Vertex AI User）。
+- **レスポンス**: 標準 Messages API と同形。`content[0].text` を共通の `classifier::parse` に渡す。
+- **モデルID**: Vertex 上の ID は直 API と異なり、多くが `@YYYYMMDD` サフィックスを持つ。デフォルトは `claude-haiku-4-5@20251001`。サフィックスの有無はモデルごとに違うため、UI の自由入力で正確な文字列を渡す。
+
+### 12.3 認証実装（Rust）
+
+SA JSON → アクセストークン取得に `gcp_auth` クレート（`CustomServiceAccount::from_json`）を追加する。既存の `reqwest`（rustls-tls）と整合するよう rustls を使う。トークンはクレート側でキャッシュ・失効管理される。HTTP 実通信・トークン取得はユニットテストの対象外（ボディ組み立て・URL 生成・レスポンス抽出のみテスト）。
+
+### 12.4 データ設計
+
+秘密情報のみ Stronghold、それ以外は settings という既存の切り分けを踏襲する。
+
+**settings テーブル（平文, key-value）**
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `vertex_project_id` | （空） | GCP プロジェクト ID。リポジトリには置かず、ユーザーのローカル DB にのみ保存 |
+| `vertex_location` | `global` | リージョン。`global` はホスト名が特殊（`aiplatform.googleapis.com`、リージョン接頭辞なし）で料金も安いためデフォルト。他リージョンは `{location}-aiplatform.googleapis.com` |
+| `vertex_model` | `claude-haiku-4-5@20251001` | Vertex 上のモデル ID |
+
+**SecureStore（Stronghold, 暗号化）**
+
+| キー | 説明 |
+|---|---|
+| `vertex_sa_json` | サービスアカウント JSON キー全体（暗号化保存） |
+
+`llm_provider` は `ollama` / `claude` / `claude_vertex` / `openai` を取りうる。プロジェクト ID をリポジトリに書かない要件は、settings（ユーザーローカル DB、git 管理外）と SecureStore で完全に満たされる。ソース・設計書・コミットにプロジェクト ID を記載しない。
+
+### 12.5 ファクトリ
+
+`build_classifier_from_params` の match に `"claude_vertex"` を追加:
+
+```
+"claude_vertex" →
+  sa_json = 明示引数 or SecureStore("vertex_sa_json")
+    └─ None/空 → Err(MissingApiKey("claude_vertex"))
+  project_id = settings("vertex_project_id")  └─ 空 → Err(MissingApiKey)
+  location   = settings("vertex_location", "global")
+  model      = settings("vertex_model", "claude-haiku-4-5@20251001")
+  Ok(Box::new(ClaudeVertexClassifier::new(sa_json, project_id, location, model)?))
+```
+
+`claude`（Anthropic 直）と同じく**フォールバックしない**。SA JSON / project_id 未設定なら明示エラー。
+
+### 12.6 health_check
+
+`:rawPredict` に最小のダミーメッセージ（`max_tokens: 1`, `messages:[{role:user, content:"ping"}]`）を投げ、2xx なら成功。専用の軽量エンドポイントが無いため、実際に疎通・認証・権限をまとめて検証できるこの方式を採る。
+
+### 12.7 Tauri commands 拡張
+
+既存 `get/set/test_llm_settings` を拡張（コマンド追加はしない）:
+
+- `LlmSettings` に `vertex_project_id: String`, `vertex_location: String`, `vertex_model: String`, `vertex_sa_json_set: bool`（本体は返さない）を追加。
+- `set_llm_settings` / `test_llm_connection` に `vertex_project_id, vertex_location, vertex_model, vertex_sa_json: Option<String>` を追加。SA JSON が空文字なら既存を保持（`claude_api_key` と同じ挙動）。
+
+### 12.8 UI
+
+- ラジオに「Claude (GCP Vertex AI)」を追加。
+- `claude_vertex` 選択時: SA JSON 貼り付け欄（`textarea`, 登録済みなら `••••` プレースホルダ）／プロジェクト ID／リージョン／モデルの入力欄／クラウド警告バナー（送信先が Google Cloud (Vertex AI) である旨）。
+- 接続テストボタンは既存同様 `test_llm_connection` を現在の画面設定で呼ぶ。
+
+### 12.9 セキュリティ
+
+- SA JSON は Stronghold 暗号保存。settings（平文 DB）・リポジトリには置かない（agent.md セキュリティルール準拠）。
+- クラウド送信の警告文言を Vertex 用に出す（送信先が Anthropic ではなく Google Cloud (Vertex AI) 上の Claude であることを明示）。送信データ範囲は既存ポリシー（件名・送信者・本文冒頭300文字＋許可された案件コンテキスト）と同一。
+
+### 12.10 影響ファイル（追加分）
+
+**Rust**
+- `Cargo.toml`（`gcp_auth` 追加）
+- `classifier/claude_vertex.rs`（新規）
+- `classifier/mod.rs`（`claude_vertex` モジュール公開）
+- `classifier/factory.rs`（`claude_vertex` 分岐、引数追加）
+- `commands/settings_commands.rs`（vertex フィールド対応）
+- `models/settings.rs`（`LlmSettings` に vertex フィールド追加）
+
+**React**
+- `types/settings.ts`（`LlmProvider` に `claude_vertex`、`LlmSettings` に vertex フィールド）
+- `components/sidebar/LlmSettingsDialog.tsx`（Vertex フォーム追加）
+- `__tests__/LlmSettingsDialog.test.tsx`（Vertex 選択のテスト）
