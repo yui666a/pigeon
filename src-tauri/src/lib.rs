@@ -157,6 +157,9 @@ pub fn run() {
             commands::directory_commands::get_cloud_rules,
             commands::directory_commands::set_allow_cloud_context,
             commands::directory_commands::get_project_context,
+            commands::settings_commands::get_llm_settings,
+            commands::settings_commands::set_llm_settings,
+            commands::settings_commands::test_llm_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
