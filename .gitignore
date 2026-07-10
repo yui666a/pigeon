@@ -13,6 +13,11 @@ src-tauri/gen/
 .env
 .env.*
 
+# 秘密情報（GCP サービスアカウント JSON 等・絶対にコミットしない）
+secrets/
+*-sa.json
+*service-account*.json
+
 # OS
 .DS_Store
 Thumbs.db
