@@ -1,3 +1,4 @@
+pub mod claude;
 pub mod ollama;
 pub mod parse;
 pub mod prompt;
