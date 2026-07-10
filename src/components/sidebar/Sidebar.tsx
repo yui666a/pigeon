@@ -11,6 +11,7 @@ import { ProjectTree } from "./ProjectTree";
 import { ProjectForm } from "./ProjectForm";
 import { ScanIndicator } from "./ScanIndicator";
 import { SyncIndicator } from "./SyncIndicator";
+import { LlmSettingsDialog } from "./LlmSettingsDialog";
 import type { CreateAccountRequest } from "../../types/account";
 
 export function Sidebar() {
@@ -29,6 +30,7 @@ export function Sidebar() {
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
   const [showProjectForm, setShowProjectForm] = useState(false);
+  const [showLlmSettings, setShowLlmSettings] = useState(false);
   const searchBarRef = useRef<SearchBarHandle>(null);
 
   const handleSearch = (query: string) => {
@@ -107,12 +109,22 @@ export function Sidebar() {
     <aside className="flex h-full w-64 flex-col border-r bg-gray-50">
       <div className="flex items-center justify-between border-b px-4 py-3">
         <h1 className="text-lg font-bold">Pigeon</h1>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="text-sm text-blue-600 hover:underline"
-        >
-          {showForm ? "閉じる" : "+ 追加"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowLlmSettings(true)}
+            className="rounded p-1 text-gray-500 hover:bg-gray-100"
+            aria-label="LLM設定を開く"
+            title="LLM設定"
+          >
+            ⚙️
+          </button>
+          <button
+            onClick={() => setShowForm(!showForm)}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            {showForm ? "閉じる" : "+ 追加"}
+          </button>
+        </div>
       </div>
       {showForm && (
         <AccountForm
@@ -153,6 +165,9 @@ export function Sidebar() {
       )}
       <SyncIndicator />
       <ScanIndicator />
+      {showLlmSettings && (
+        <LlmSettingsDialog onClose={() => setShowLlmSettings(false)} />
+      )}
     </aside>
   );
 }
