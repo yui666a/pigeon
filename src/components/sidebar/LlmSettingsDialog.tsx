@@ -53,9 +53,18 @@ export function LlmSettingsDialog({ onClose }: Props) {
   };
 
   const handleTest = async () => {
+    if (!settings) return;
     setTestResult(null);
     try {
-      await invoke("test_llm_connection");
+      // 保存済み設定ではなく、いま画面で選んでいる設定でテストする。
+      // API キーは新規入力があればそれを、なければ保存済みキーをバックエンドが使う。
+      await invoke("test_llm_connection", {
+        provider: settings.provider,
+        ollamaEndpoint: settings.ollama_endpoint,
+        ollamaModel: settings.ollama_model,
+        claudeModel: settings.claude_model,
+        claudeApiKey: apiKeyInput === "" ? null : apiKeyInput,
+      });
       setTestResult("接続成功");
     } catch (e) {
       setTestResult(`接続失敗: ${String(e)}`);

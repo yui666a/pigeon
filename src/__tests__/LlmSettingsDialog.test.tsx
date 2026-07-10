@@ -44,12 +44,34 @@ describe("LlmSettingsDialog", () => {
     expect(screen.getByLabelText(/ChatGPT/)).toBeDisabled();
   });
 
-  it("接続テストボタンで test_llm_connection を呼ぶ", async () => {
+  it("接続テストは現在の画面設定を渡して test_llm_connection を呼ぶ", async () => {
     render(<LlmSettingsDialog onClose={() => {}} />);
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_llm_settings"));
     fireEvent.click(screen.getByRole("button", { name: "接続テスト" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("test_llm_connection"),
+      expect(invokeMock).toHaveBeenCalledWith(
+        "test_llm_connection",
+        expect.objectContaining({ provider: "ollama" }),
+      ),
+    );
+  });
+
+  it("Claudeに切り替えて未保存のまま接続テストすると provider:claude で検証する（保存済みollamaにならない）", async () => {
+    render(<LlmSettingsDialog onClose={() => {}} />);
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("get_llm_settings"));
+    // 保存ボタンを押さずにプロバイダだけ Claude に変更
+    fireEvent.click(screen.getByLabelText("Claude API"));
+    fireEvent.click(screen.getByRole("button", { name: "接続テスト" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "test_llm_connection",
+        expect.objectContaining({ provider: "claude" }),
+      ),
+    );
+    // set_llm_settings（保存）は呼ばれていない＝未保存のままテストしている
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "set_llm_settings",
+      expect.anything(),
     );
   });
 });

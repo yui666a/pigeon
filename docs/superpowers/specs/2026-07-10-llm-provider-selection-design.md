@@ -146,7 +146,7 @@ Pigeonの分類は「小さなJSON1個を返す分類・抽出タスク」であ
 |---|---|---|---|
 | `get_llm_settings` | なし | `LlmSettings` | プロバイダ・各モデル・「APIキー登録済みか」のbool。**キー本体は返さない** |
 | `set_llm_settings` | `provider, ollama_endpoint, ollama_model, claude_model, claude_api_key` | `Result<(), String>` | 設定を保存。`claude_api_key` が空文字なら既存キーを変更しない（未入力扱い） |
-| `test_llm_connection` | なし | `Result<(), String>` | 現在の保存済み設定でファクトリ構築 → `health_check()` を呼び成否を返す |
+| `test_llm_connection` | `provider, ollama_endpoint, ollama_model, claude_model, claude_api_key` | `Result<(), String>` | **画面の現在設定**（未保存でも可）でファクトリ構築 → `health_check()` を呼び成否を返す。保存済み設定には依存しない。`claude_api_key` が空/None なら SecureStore の保存済みキーにフォールバック |
 
 `LlmSettings`（`models` に定義、UIへ返す型）:
 

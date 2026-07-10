@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::classifier::factory::build_classifier;
+use crate::classifier::factory::build_classifier_from_params;
 use crate::db::settings;
 use crate::error::AppError;
 use crate::models::settings::LlmSettings;
@@ -83,15 +83,28 @@ pub fn set_llm_settings(
     )
 }
 
+/// 画面上の（まだ保存していない）設定で接続を検証する。
+/// 保存済み設定ではなく、引数で渡された現在の入力値でファクトリを構築する。
+/// `claude_api_key` が空/None のときは SecureStore の保存済みキーにフォールバックする
+/// （登録済みキーの再テストを可能にするため）。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn test_llm_connection(
-    db: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    provider: String,
+    ollama_endpoint: String,
+    ollama_model: String,
+    claude_model: String,
+    claude_api_key: Option<String>,
 ) -> Result<(), AppError> {
-    let classifier = {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        build_classifier(&conn, &secure_store.0)?
-    };
+    let classifier = build_classifier_from_params(
+        &provider,
+        &ollama_endpoint,
+        &ollama_model,
+        &claude_model,
+        claude_api_key.as_deref(),
+        &secure_store.0,
+    )?;
     classifier.health_check().await
 }
 
