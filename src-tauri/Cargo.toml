@@ -38,6 +38,7 @@ rand = "0.8"
 zeroize = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
+gcp_auth = "0.12.7"
 
 [dev-dependencies]
 tempfile = "3"
