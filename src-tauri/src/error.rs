@@ -60,6 +60,12 @@ pub enum AppError {
     #[error("Invalid LLM response: {0}")]
     InvalidLlmResponse(String),
 
+    #[error("API key not configured for provider: {0}")]
+    MissingApiKey(String),
+
+    #[error("Unsupported LLM provider: {0}")]
+    UnsupportedProvider(String),
+
     #[error("Internal lock error: {0}")]
     LockError(String),
 }
