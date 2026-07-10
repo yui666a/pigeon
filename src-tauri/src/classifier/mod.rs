@@ -1,4 +1,5 @@
 pub mod ollama;
+pub mod parse;
 pub mod prompt;
 
 use crate::error::AppError;
