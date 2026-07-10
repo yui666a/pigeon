@@ -3,16 +3,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::classifier::ollama::OllamaClassifier;
-use crate::classifier::LlmClassifier;
-use crate::db::{assignments, mails, projects, settings};
+use crate::classifier::factory::build_classifier;
+use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
 use crate::models::classifier::{
     ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary, CONFIDENCE_UNCERTAIN,
 };
 use crate::models::mail::Mail;
 use crate::models::project::{CreateProjectRequest, Project};
-use crate::state::DbState;
+use crate::state::{DbState, SecureStoreState};
 
 // ---------------------------------------------------------------------------
 // State types
@@ -43,22 +42,21 @@ impl ClassifyCancelFlag {
 pub async fn classify_mail(
     db: State<'_, DbState>,
     pending: State<'_, PendingClassifications>,
+    secure_store: State<'_, SecureStoreState>,
     mail_id: String,
 ) -> Result<ClassifyResponse, AppError> {
     // Load mail and settings while holding the lock briefly.
-    let (mail, project_summaries, corrections, endpoint, model) = {
+    let (mail, project_summaries, corrections, classifier) = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
         let mail = mails::get_mail_by_id(&conn, &mail_id)?;
         let project_summaries = projects::build_project_summaries(&conn, &mail.account_id, false)?;
         let corrections =
             assignments::get_recent_corrections(&conn, &mail.account_id, 20).unwrap_or_default();
-        let endpoint = settings::get_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        let model = settings::get_or_default(&conn, "ollama_model", "llama3.1:8b");
-        (mail, project_summaries, corrections, endpoint, model)
+        let classifier = build_classifier(&conn, &secure_store.0)?;
+        (mail, project_summaries, corrections, classifier)
     };
 
     let mail_summary = MailSummary::from_mail(&mail);
-    let classifier = OllamaClassifier::new(&endpoint, &model)?;
 
     // Health check
     classifier.health_check().await?;
@@ -98,6 +96,7 @@ pub async fn classify_unassigned(
     db: State<'_, DbState>,
     pending: State<'_, PendingClassifications>,
     cancel_flag: State<'_, ClassifyCancelFlag>,
+    secure_store: State<'_, SecureStoreState>,
     handle: AppHandle,
     account_id: String,
 ) -> Result<(), AppError> {
@@ -105,17 +104,14 @@ pub async fn classify_unassigned(
     cancel_flag.0.store(false, Ordering::SeqCst);
 
     // Load unclassified mails and settings
-    let (mails, corrections, endpoint, model) = {
+    let (mails, corrections, classifier) = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
         let mails = assignments::get_unclassified_mails(&conn, &account_id)?;
         let corrections =
             assignments::get_recent_corrections(&conn, &account_id, 20).unwrap_or_default();
-        let endpoint = settings::get_or_default(&conn, "ollama_endpoint", "http://localhost:11434");
-        let model = settings::get_or_default(&conn, "ollama_model", "llama3.1:8b");
-        (mails, corrections, endpoint, model)
+        let classifier = build_classifier(&conn, &secure_store.0)?;
+        (mails, corrections, classifier)
     };
-
-    let classifier = OllamaClassifier::new(&endpoint, &model)?;
 
     // Health check before starting the loop
     classifier.health_check().await?;

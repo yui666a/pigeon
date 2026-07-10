@@ -98,25 +98,20 @@ pub fn run() {
                     if targets.is_empty() {
                         return;
                     }
-                    let (endpoint, model) = {
+                    let secure_store = app_handle.state::<SecureStoreState>();
+                    let classifier = {
                         let conn = match db.0.lock() {
                             Ok(c) => c,
                             Err(_) => return,
                         };
-                        (
-                            db::settings::get_or_default(
-                                &conn, "ollama_endpoint", "http://localhost:11434",
-                            ),
-                            db::settings::get_or_default(&conn, "ollama_model", "llama3.1:8b"),
-                        )
-                    };
-                    let generator = match classifier::ollama::OllamaClassifier::new(&endpoint, &model) {
-                        Ok(g) => g,
-                        Err(_) => return,
+                        match classifier::factory::build_classifier(&conn, &secure_store.0) {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        }
                     };
                     for project_id in targets {
                         if let Err(e) = project_context::rescan_project(
-                            &db.0, &generator, &project_id, false,
+                            &db.0, classifier.as_ref(), &project_id, false,
                         )
                         .await
                         {
