@@ -1,7 +1,7 @@
 # LLMプロバイダ選択設定 設計書
 
 - 作成日: 2026-07-10
-- ステータス: 承認済み（実装前）
+- ステータス: 実装済み（Ollama + Claude）
 - 関連: `2026-04-12-pigeon-design.md`, `2026-04-13-phase2-ai-classification-design.md`, `2026-07-09-project-directory-context-design.md`
 
 ## 1. 目的
