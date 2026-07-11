@@ -19,7 +19,8 @@ Rules:
 - confidence is a float between 0.0 and 1.0
 - reason is a brief explanation in Japanese
 - When no existing project matches well, use \"create\" to propose a new one
-- Use \"unclassified\" only when the email content is too ambiguous to classify";
+- Use \"unclassified\" only when the email content is too ambiguous to classify
+- The sender address is a strong signal; prefer a project whose frequent senders match the email's From.";
 
 pub fn build_user_prompt(
     mail: &MailSummary,
@@ -54,6 +55,12 @@ pub fn build_user_prompt(
                 prompt.push_str(&format!(
                     "  Recent subjects: {}\n",
                     project.recent_subjects.join("; ")
+                ));
+            }
+            if !project.top_senders.is_empty() {
+                prompt.push_str(&format!(
+                    "  Frequent senders: {}\n",
+                    project.top_senders.join("; ")
                 ));
             }
             if let Some(context) = project.context.as_deref() {
@@ -102,6 +109,7 @@ mod tests {
             name: name.to_string(),
             description: Some(format!("Description for {}", name)),
             recent_subjects: vec!["Subject A".to_string(), "Subject B".to_string()],
+            top_senders: vec![],
             context: None,
         }
     }
@@ -175,6 +183,7 @@ mod tests {
             name: "No Desc Project".to_string(),
             description: None,
             recent_subjects: vec![],
+            top_senders: vec![],
             context: None,
         }];
         let prompt = build_user_prompt(&mail, &projects, &[]);
@@ -191,6 +200,7 @@ mod tests {
             name: "Empty Project".to_string(),
             description: Some("desc".to_string()),
             recent_subjects: vec![],
+            top_senders: vec![],
             context: None,
         }];
         let prompt = build_user_prompt(&mail, &projects, &[]);
@@ -222,6 +232,7 @@ mod tests {
             name: "春公演".to_string(),
             description: None,
             recent_subjects: vec![],
+            top_senders: vec![],
             context: Some("会場: 〇〇ホール\n重量制限に注意".to_string()),
         }];
         let prompt = build_user_prompt(&mail, &projects, &[]);
@@ -237,6 +248,7 @@ mod tests {
             name: "春公演".to_string(),
             description: None,
             recent_subjects: vec![],
+            top_senders: vec![],
             context: None,
         }];
         let prompt = build_user_prompt(&mail, &projects, &[]);
@@ -255,5 +267,45 @@ mod tests {
         assert!(prompt.contains("特殊文字テスト <>&\"'"));
         assert!(prompt.contains("日本語名前 <test@example.com>"));
         assert!(prompt.contains("本文プレビュー"));
+    }
+
+    #[test]
+    fn test_build_user_prompt_includes_frequent_senders() {
+        let mail = make_mail();
+        let projects = vec![ProjectSummary {
+            id: "p1".to_string(),
+            name: "Finance".to_string(),
+            description: None,
+            recent_subjects: vec![],
+            top_senders: vec![
+                "丸井 <marui@example.com>".to_string(),
+                "tanaka@example.com".to_string(),
+            ],
+            context: None,
+        }];
+        let prompt = build_user_prompt(&mail, &projects, &[]);
+        assert!(prompt.contains("Frequent senders:"));
+        assert!(prompt.contains("marui@example.com"));
+        assert!(prompt.contains("tanaka@example.com"));
+    }
+
+    #[test]
+    fn test_build_user_prompt_no_frequent_senders_line_when_empty() {
+        let mail = make_mail();
+        let projects = vec![ProjectSummary {
+            id: "p1".to_string(),
+            name: "Finance".to_string(),
+            description: None,
+            recent_subjects: vec![],
+            top_senders: vec![],
+            context: None,
+        }];
+        let prompt = build_user_prompt(&mail, &projects, &[]);
+        assert!(!prompt.contains("Frequent senders:"));
+    }
+
+    #[test]
+    fn test_system_prompt_mentions_sender_signal() {
+        assert!(SYSTEM_PROMPT.contains("sender"));
     }
 }
