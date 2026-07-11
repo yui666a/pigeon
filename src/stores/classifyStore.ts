@@ -1,150 +1,149 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { useErrorStore } from "./errorStore";
-import type {
-  ClassifyResponse,
-  ClassifyProgress,
-  ClassifySummary,
-} from "../types/classifier";
+import { useProjectStore } from "./projectStore";
+import type { ClassifyResponse } from "../types/classifier";
+import type { Project } from "../types/project";
+
+interface UnclassifiedMailRef {
+  id: string;
+}
+
+// classify_mail の戻り `result`（Rust ClassifyResult、#[serde(tag="action")]）のフラット形。
+// action ごとに project_id（assign）/ project_name・description（create）が付く。
+interface ClassifyResultRaw {
+  action: "assign" | "create" | "unclassified";
+  project_id?: string;
+  project_name?: string;
+  description?: string;
+  confidence: number;
+  reason: string;
+}
 
 interface ClassifyState {
   classifying: boolean;
-  classifyingAccountId: string | null;
   progress: { current: number; total: number } | null;
-  results: ClassifyResponse[];
-  summary: ClassifySummary | null;
+  pendingProposal: ClassifyResponse | null;
   error: string | null;
+  // 内部: 逐次ループの状態
+  _queue: UnclassifiedMailRef[];
+  _index: number;
+  _cancelled: boolean;
+
   classifyMail: (mailId: string) => Promise<void>;
   classifyAll: (accountId: string) => Promise<void>;
   cancelClassification: () => Promise<void>;
-  approveClassification: (mailId: string, projectId: string) => Promise<void>;
   approveNewProject: (
     mailId: string,
     projectName: string,
     description?: string,
   ) => Promise<void>;
   rejectClassification: (mailId: string) => Promise<void>;
-  initClassifyListeners: () => Promise<() => void>;
 }
 
-export const useClassifyStore = create<ClassifyState>((set, get) => ({
-  classifying: false,
-  classifyingAccountId: null,
-  progress: null,
-  results: [],
-  summary: null,
-  error: null,
-
-  classifyMail: async (mailId) => {
-    set({ classifying: true, error: null });
-    try {
-      const result = await invoke<ClassifyResponse>("classify_mail", {
-        mailId,
-      });
-      set({
-        results: [...get().results, result],
-        classifying: false,
-      });
-    } catch (e) {
-      set({ error: String(e), classifying: false });
-      useErrorStore.getState().addError(String(e));
+export const useClassifyStore = create<ClassifyState>((set, get) => {
+  // 次の1件を分類し、create でなければ自動で次へ進む
+  const classifyNext = async (): Promise<void> => {
+    const { _queue, _index, _cancelled } = get();
+    if (_cancelled || _index >= _queue.length) {
+      set({ classifying: false, progress: null, pendingProposal: null });
+      return;
     }
-  },
-
-  classifyAll: async (accountId) => {
-    set({ classifying: true, classifyingAccountId: accountId, progress: null, results: [], summary: null, error: null });
+    const mail = _queue[_index];
+    let res: ClassifyResponse;
     try {
-      await invoke("classify_unassigned", { accountId });
+      // classify_mail は Rust の ClassifyResponse = { mail_id, result: ClassifyResult }
+      // を返す（result の中に action/confidence/reason/project_id/project_name/description）。
+      // フロントの ClassifyResponse はフラットなので、ここで平坦化する。
+      const r = await invoke<{ mail_id: string; result: ClassifyResultRaw }>(
+        "classify_mail",
+        { mailId: mail.id },
+      );
+      res = { mail_id: r.mail_id, ...r.result };
     } catch (e) {
-      set({ error: String(e), classifying: false, classifyingAccountId: null, progress: null });
       useErrorStore.getState().addError(String(e));
-    }
-  },
-
-  cancelClassification: async () => {
-    try {
-      await invoke("cancel_classification");
       set({ classifying: false, progress: null });
-    } catch (e) {
-      set({ error: String(e) });
-      useErrorStore.getState().addError(String(e));
+      return;
     }
-  },
-
-  approveClassification: async (mailId, projectId) => {
-    try {
-      await invoke("approve_classification", { mailId, projectId });
-      set({
-        results: get().results.filter((r) => r.mail_id !== mailId),
-      });
-    } catch (e) {
-      set({ error: String(e) });
-      useErrorStore.getState().addError(String(e));
+    set({
+      _index: _index + 1,
+      progress: { current: _index + 1, total: _queue.length },
+    });
+    if (res.action === "create") {
+      set({ pendingProposal: res });
+      return; // 停止：承認/却下を待つ
     }
-  },
+    await classifyNext();
+  };
 
-  approveNewProject: async (mailId, projectName, description) => {
-    try {
-      await invoke("approve_new_project", {
-        mailId,
-        projectName,
-        description: description ?? null,
-      });
-      set({
-        results: get().results.filter((r) => r.mail_id !== mailId),
-      });
-    } catch (e) {
-      set({ error: String(e) });
-      useErrorStore.getState().addError(String(e));
-    }
-  },
+  return {
+    classifying: false,
+    progress: null,
+    pendingProposal: null,
+    error: null,
+    _queue: [],
+    _index: 0,
+    _cancelled: false,
 
-  rejectClassification: async (mailId) => {
-    try {
-      await invoke("reject_classification", { mailId });
-      set({
-        results: get().results.filter((r) => r.mail_id !== mailId),
-      });
-    } catch (e) {
-      set({ error: String(e) });
-      useErrorStore.getState().addError(String(e));
-    }
-  },
+    classifyMail: async (mailId) => {
+      try {
+        await invoke("classify_mail", { mailId });
+      } catch (e) {
+        set({ error: String(e) });
+        useErrorStore.getState().addError(String(e));
+      }
+    },
 
-  initClassifyListeners: async () => {
-    const unlistenProgress = await listen<ClassifyProgress>(
-      "classify-progress",
-      (event) => {
-        const payload = event.payload;
-        if (payload.result) {
-          set({
-            progress: { current: payload.current, total: payload.total },
-            results: [...get().results, payload.result],
-          });
-        } else {
-          set({
-            progress: { current: payload.current, total: payload.total },
-          });
-        }
-      },
-    );
-
-    const unlistenComplete = await listen<ClassifySummary>(
-      "classify-complete",
-      (event) => {
+    classifyAll: async (accountId) => {
+      try {
+        const mails = await invoke<UnclassifiedMailRef[]>(
+          "get_unclassified_mails",
+          { accountId },
+        );
         set({
-          summary: event.payload,
-          classifying: false,
-          classifyingAccountId: null,
-          progress: null,
+          classifying: true,
+          _queue: mails,
+          _index: 0,
+          _cancelled: false,
+          pendingProposal: null,
+          progress: { current: 0, total: mails.length },
+          error: null,
         });
-      },
-    );
+        await classifyNext();
+      } catch (e) {
+        set({ error: String(e), classifying: false, progress: null });
+        useErrorStore.getState().addError(String(e));
+      }
+    },
 
-    return () => {
-      unlistenProgress();
-      unlistenComplete();
-    };
-  },
-}));
+    cancelClassification: async () => {
+      set({ _cancelled: true, classifying: false, progress: null, pendingProposal: null });
+    },
+
+    approveNewProject: async (mailId, projectName, description) => {
+      try {
+        const project = await invoke<Project>("approve_new_project", {
+          mailId,
+          projectName,
+          description: description ?? null,
+        });
+        useProjectStore.getState().addProject(project);
+        set({ pendingProposal: null });
+        await classifyNext();
+      } catch (e) {
+        set({ error: String(e) });
+        useErrorStore.getState().addError(String(e));
+      }
+    },
+
+    rejectClassification: async (mailId) => {
+      try {
+        await invoke("reject_classification", { mailId });
+      } catch (e) {
+        useErrorStore.getState().addError(String(e));
+      }
+      set({ pendingProposal: null });
+      await classifyNext();
+    },
+  };
+});

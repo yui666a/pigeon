@@ -1,98 +1,139 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useClassifyStore } from "../../stores/classifyStore";
 
-const mockInvoke = vi.fn();
+const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: unknown[]) => mockInvoke(...args),
+  invoke: (...args: unknown[]) => invokeMock(...args),
 }));
+// listen はもう使わないが、他モジュールが読む可能性に備えてスタブ
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(() => Promise.resolve(() => {})),
+  listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-describe("classifyStore", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    useClassifyStore.setState({
-      classifying: false,
-      classifyingAccountId: null,
-      progress: null,
-      results: [],
-      summary: null,
-      error: null,
-    });
+import { useClassifyStore } from "../../stores/classifyStore";
+import { useProjectStore } from "../../stores/projectStore";
+
+const resetStore = () =>
+  useClassifyStore.setState({
+    classifying: false,
+    progress: null,
+    pendingProposal: null,
+    error: null,
   });
 
-  describe("classifyMail", () => {
-    it("appends result on success", async () => {
-      const result = { mail_id: "m1", action: "assign", confidence: 0.9, reason: "test" };
-      mockInvoke.mockResolvedValue(result);
+beforeEach(() => {
+  invokeMock.mockReset();
+  resetStore();
+  useProjectStore.setState({ projects: [] });
+});
 
-      await useClassifyStore.getState().classifyMail("m1");
+// classify_mail は Rust の ClassifyResponse = { mail_id, result: {...} } を返す。
+// テストのモックもこのネスト形に合わせる。
+const resp = (mailId: string, action: string, extra: object = {}) => ({
+  mail_id: mailId,
+  result: { action, confidence: 0.9, reason: "r", ...extra },
+});
 
-      expect(useClassifyStore.getState().results).toHaveLength(1);
-      expect(useClassifyStore.getState().results[0]).toEqual(result);
-      expect(useClassifyStore.getState().classifying).toBe(false);
+describe("classifyStore sequential flow", () => {
+  it("assign結果は自動で次のメールへ進む", async () => {
+    invokeMock.mockImplementation((cmd: string, args: { mailId?: string }) => {
+      if (cmd === "get_unclassified_mails")
+        return Promise.resolve([{ id: "m1" }, { id: "m2" }]);
+      if (cmd === "classify_mail")
+        return Promise.resolve(resp(args.mailId as string, "assign", { project_id: "p1" }));
+      return Promise.resolve();
     });
-
-    it("sets error on failure", async () => {
-      mockInvoke.mockRejectedValue("classify error");
-
-      await useClassifyStore.getState().classifyMail("m1");
-
-      expect(useClassifyStore.getState().error).toBe("classify error");
-      expect(useClassifyStore.getState().classifying).toBe(false);
-    });
+    await useClassifyStore.getState().classifyAll("acc1");
+    // 2件とも classify_mail が呼ばれ、停止していない
+    const calls = invokeMock.mock.calls.filter((c) => c[0] === "classify_mail");
+    expect(calls).toHaveLength(2);
+    expect(useClassifyStore.getState().pendingProposal).toBeNull();
+    expect(useClassifyStore.getState().classifying).toBe(false);
   });
 
-  describe("approveClassification", () => {
-    it("removes result from classifyStore.results", async () => {
-      useClassifyStore.setState({
-        results: [
-          { mail_id: "m1", action: "assign", confidence: 0.9, reason: "test" },
-          { mail_id: "m2", action: "assign", confidence: 0.8, reason: "test" },
-        ],
-      });
-      mockInvoke.mockResolvedValue(undefined);
-
-      await useClassifyStore.getState().approveClassification("m1", "proj1");
-
-      expect(useClassifyStore.getState().results).toHaveLength(1);
-      expect(useClassifyStore.getState().results[0].mail_id).toBe("m2");
+  it("create結果で停止し pendingProposal に1件セットする", async () => {
+    invokeMock.mockImplementation((cmd: string, args: { mailId?: string }) => {
+      if (cmd === "get_unclassified_mails")
+        return Promise.resolve([{ id: "m1" }, { id: "m2" }]);
+      if (cmd === "classify_mail")
+        return Promise.resolve(
+          resp(args.mailId as string, "create", { project_name: "New", description: "d" }),
+        );
+      return Promise.resolve();
     });
+    await useClassifyStore.getState().classifyAll("acc1");
+    // m1 で create → 停止。classify_mail は1回だけ。
+    const calls = invokeMock.mock.calls.filter((c) => c[0] === "classify_mail");
+    expect(calls).toHaveLength(1);
+    expect(useClassifyStore.getState().pendingProposal?.mail_id).toBe("m1");
+    expect(useClassifyStore.getState().classifying).toBe(true);
   });
 
-  describe("rejectClassification", () => {
-    it("removes result from classifyStore.results", async () => {
-      useClassifyStore.setState({
-        results: [{ mail_id: "m1", action: "assign", confidence: 0.5, reason: "test" }],
-      });
-      mockInvoke.mockResolvedValue(undefined);
-
-      await useClassifyStore.getState().rejectClassification("m1");
-
-      expect(useClassifyStore.getState().results).toHaveLength(0);
+  it("approveNewProject でプロジェクトを一覧追加し次へ進む", async () => {
+    let step = 0;
+    invokeMock.mockImplementation((cmd: string, args: { mailId?: string }) => {
+      if (cmd === "get_unclassified_mails")
+        return Promise.resolve([{ id: "m1" }, { id: "m2" }]);
+      if (cmd === "classify_mail") {
+        step++;
+        // m1 は create、m2 は assign
+        return Promise.resolve(
+          step === 1
+            ? resp("m1", "create", { project_name: "New" })
+            : resp("m2", "assign", { project_id: "np" }),
+        );
+      }
+      if (cmd === "approve_new_project")
+        return Promise.resolve({ id: "np", name: "New", account_id: "acc1", description: null, color: null });
+      return Promise.resolve();
     });
+    await useClassifyStore.getState().classifyAll("acc1");
+    expect(useClassifyStore.getState().pendingProposal?.mail_id).toBe("m1");
+
+    await useClassifyStore.getState().approveNewProject("m1", "New");
+    // 新プロジェクトが一覧に入った
+    expect(useProjectStore.getState().projects.map((p) => p.id)).toContain("np");
+    // pending クリア、m2 まで進んで完了
+    expect(useClassifyStore.getState().pendingProposal).toBeNull();
+    expect(useClassifyStore.getState().classifying).toBe(false);
   });
 
-  describe("classifyAll", () => {
-    it("sets classifying state with accountId", async () => {
-      mockInvoke.mockResolvedValue(undefined);
-
-      const promise = useClassifyStore.getState().classifyAll("acc1");
-
-      expect(useClassifyStore.getState().classifyingAccountId).toBe("acc1");
-
-      await promise;
+  it("rejectClassification で次へ進む（未分類のまま）", async () => {
+    let step = 0;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_unclassified_mails")
+        return Promise.resolve([{ id: "m1" }, { id: "m2" }]);
+      if (cmd === "classify_mail") {
+        step++;
+        return Promise.resolve(
+          step === 1 ? resp("m1", "create", { project_name: "New" }) : resp("m2", "unclassified"),
+        );
+      }
+      return Promise.resolve();
     });
+    await useClassifyStore.getState().classifyAll("acc1");
+    await useClassifyStore.getState().rejectClassification("m1");
+    expect(invokeMock.mock.calls.some((c) => c[0] === "reject_classification")).toBe(true);
+    expect(useClassifyStore.getState().pendingProposal).toBeNull();
+    expect(useClassifyStore.getState().classifying).toBe(false);
+  });
 
-    it("clears state on error", async () => {
-      mockInvoke.mockRejectedValue("ollama down");
-
-      await useClassifyStore.getState().classifyAll("acc1");
-
-      expect(useClassifyStore.getState().error).toBe("ollama down");
-      expect(useClassifyStore.getState().classifying).toBe(false);
-      expect(useClassifyStore.getState().classifyingAccountId).toBeNull();
+  it("cancelClassification 後は次を分類しない", async () => {
+    invokeMock.mockImplementation((cmd: string, args: { mailId?: string }) => {
+      if (cmd === "get_unclassified_mails")
+        return Promise.resolve([{ id: "m1" }, { id: "m2" }, { id: "m3" }]);
+      if (cmd === "classify_mail") {
+        // m1 を create にして停止させ、その隙にキャンセル
+        return Promise.resolve(resp(args.mailId as string, "create", { project_name: "N" }));
+      }
+      return Promise.resolve();
     });
+    await useClassifyStore.getState().classifyAll("acc1");
+    await useClassifyStore.getState().cancelClassification();
+    const before = invokeMock.mock.calls.filter((c) => c[0] === "classify_mail").length;
+    // reject して次へ進もうとしてもキャンセル済みなので進まない
+    await useClassifyStore.getState().rejectClassification("m1");
+    const after = invokeMock.mock.calls.filter((c) => c[0] === "classify_mail").length;
+    expect(after).toBe(before);
+    expect(useClassifyStore.getState().classifying).toBe(false);
   });
 });

@@ -8,13 +8,6 @@ export interface ClassifyResponse {
   reason: string;
 }
 
-export interface ClassifyProgress {
-  current: number;
-  total: number;
-  mail_id: string;
-  result: ClassifyResponse;
-}
-
 export interface ClassifySummary {
   total: number;
   assigned: number;
