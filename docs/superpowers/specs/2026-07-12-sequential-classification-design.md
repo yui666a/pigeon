@@ -1,7 +1,7 @@
 # 逐次分類（新規プロジェクト提案の1件ずつ承認）設計書
 
 - 作成日: 2026-07-12
-- ステータス: 承認済み（実装前）
+- ステータス: 実装済み
 - 関連: `2026-04-13-phase2-ai-classification-design.md`, `2026-07-11-classification-accuracy-improvement-design.md`
 
 ## 1. 目的
