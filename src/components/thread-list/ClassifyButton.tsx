@@ -20,7 +20,7 @@ export function ClassifyButton({ accountId }: ClassifyButtonProps) {
             <div
               className="h-full rounded-full bg-blue-500 transition-all"
               style={{
-                width: progress
+                width: progress && progress.total > 0
                   ? `${(progress.current / progress.total) * 100}%`
                   : "0%",
               }}
