@@ -1,7 +1,7 @@
 # 分類精度の改善 設計書
 
 - 作成日: 2026-07-11
-- ステータス: 承認済み（実装前）
+- ステータス: 実装済み
 - 関連: `2026-04-13-phase2-ai-classification-design.md`, `2026-07-09-project-directory-context-design.md`, `2026-07-10-llm-provider-selection-design.md`
 
 ## 1. 目的
