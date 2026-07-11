@@ -38,6 +38,7 @@ pub struct ProjectSummary {
     pub name: String,
     pub description: Option<String>,
     pub recent_subjects: Vec<String>,
+    pub top_senders: Vec<String>,
     pub context: Option<String>,
 }
 
