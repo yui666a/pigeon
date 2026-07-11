@@ -52,7 +52,6 @@ pub fn run() {
         .manage(OAuthStateStore::new())
         .manage(SyncLocks::new())
         .manage(commands::classify_commands::PendingClassifications::new())
-        .manage(commands::classify_commands::ClassifyCancelFlag::new())
         .setup(|app| {
             // Register deep link handler for OAuth callback
             #[cfg(not(target_os = "android"))]
@@ -139,8 +138,6 @@ pub fn run() {
             commands::project_commands::delete_project,
             commands::project_commands::merge_projects,
             commands::classify_commands::classify_mail,
-            commands::classify_commands::classify_unassigned,
-            commands::classify_commands::cancel_classification,
             commands::classify_commands::approve_classification,
             commands::classify_commands::approve_new_project,
             commands::classify_commands::reject_classification,
