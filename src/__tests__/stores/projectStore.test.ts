@@ -181,4 +181,53 @@ describe("projectStore", () => {
       });
     });
   });
+
+  describe("addProject", () => {
+    beforeEach(() => {
+      useProjectStore.setState({ projects: [] });
+    });
+
+    it("既存配列にプロジェクトを追加する", () => {
+      const project = {
+        id: "p1",
+        account_id: "acc1",
+        name: "Alpha",
+        description: null,
+        color: null,
+        is_archived: false,
+        created_at: "",
+        updated_at: "",
+      };
+      useProjectStore.getState().addProject(project);
+      expect(useProjectStore.getState().projects).toHaveLength(1);
+      expect(useProjectStore.getState().projects[0].id).toBe("p1");
+    });
+
+    it("同じIDは重複追加しない", () => {
+      const project1 = {
+        id: "p1",
+        account_id: "acc1",
+        name: "Alpha",
+        description: null,
+        color: null,
+        is_archived: false,
+        created_at: "",
+        updated_at: "",
+      };
+      const project2 = {
+        id: "p1",
+        account_id: "acc1",
+        name: "Alpha dup",
+        description: null,
+        color: null,
+        is_archived: false,
+        created_at: "",
+        updated_at: "",
+      };
+      useProjectStore.getState().addProject(project1);
+      useProjectStore.getState().addProject(project2);
+      expect(useProjectStore.getState().projects).toHaveLength(1);
+      expect(useProjectStore.getState().projects[0].name).toBe("Alpha");
+    });
+  });
 });

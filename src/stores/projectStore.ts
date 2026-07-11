@@ -28,6 +28,7 @@ interface ProjectState {
   archiveProject: (id: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   mergeProject: (sourceId: string, targetId: string) => Promise<number>;
+  addProject: (project: Project) => void;
   selectProject: (id: string | null) => void;
   fetchDirectory: (projectId: string) => Promise<void>;
   linkDirectory: (projectId: string, path: string) => Promise<void>;
@@ -155,6 +156,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       useErrorStore.getState().addError(String(e));
       throw e;
     }
+  },
+
+  addProject: (project) => {
+    if (get().projects.some((p) => p.id === project.id)) return;
+    set({ projects: [...get().projects, project] });
   },
 
   selectProject: (id) => set({ selectedProjectId: id }),
