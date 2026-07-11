@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useClassifyStore } from "../../stores/classifyStore";
-import { useProjectStore } from "../../stores/projectStore";
 import { useMailStore } from "../../stores/mailStore";
 import { ClassifyButton } from "./ClassifyButton";
 import { MailDragItem } from "./MailDragItem";
@@ -12,18 +11,13 @@ import { threadFromMail } from "../../utils/thread";
 
 export function UnclassifiedList() {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
-  const results = useClassifyStore((s) => s.results);
-  const summary = useClassifyStore((s) => s.summary);
+  const pendingProposal = useClassifyStore((s) => s.pendingProposal);
   const classifying = useClassifyStore((s) => s.classifying);
   const approveNewProjectStore = useClassifyStore((s) => s.approveNewProject);
   const rejectClassification = useClassifyStore(
     (s) => s.rejectClassification,
   );
   const removeUnclassifiedMail = useMailStore((s) => s.removeUnclassifiedMail);
-  const initClassifyListeners = useClassifyStore(
-    (s) => s.initClassifyListeners,
-  );
-  const fetchProjects = useProjectStore((s) => s.fetchProjects);
   const unclassifiedMails = useMailStore((s) => s.unclassifiedMails);
   const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
   const { selectThread, selectMail } = useMailStore();
@@ -41,18 +35,10 @@ export function UnclassifiedList() {
   }, [selectedAccountId, fetchUnclassified]);
 
   useEffect(() => {
-    const promise = initClassifyListeners();
-    return () => {
-      promise.then((unlisten) => unlisten());
-    };
-  }, [initClassifyListeners]);
-
-  useEffect(() => {
-    if (!classifying && summary && selectedAccountId) {
-      fetchProjects(selectedAccountId);
+    if (!classifying && selectedAccountId) {
       fetchUnclassified(selectedAccountId);
     }
-  }, [classifying, summary, selectedAccountId, fetchProjects, fetchUnclassified]);
+  }, [classifying, selectedAccountId, fetchUnclassified]);
 
   if (!selectedAccountId) return null;
 
@@ -60,8 +46,6 @@ export function UnclassifiedList() {
     await approveNewProjectStore(mailId, projectName, description);
     removeUnclassifiedMail(mailId);
   };
-
-  const createResults = results.filter((r) => r.action === "create");
 
   const handleMailClick = (mail: Mail) => {
     selectThread(threadFromMail(mail));
@@ -78,28 +62,17 @@ export function UnclassifiedList() {
 
       <ClassifyButton accountId={selectedAccountId} />
 
-      {summary && (
-        <div className="mx-4 mb-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
-          <span>合計: {summary.total}</span>
-          <span className="ml-2">分類済: {summary.assigned}</span>
-          <span className="ml-2">要確認: {summary.needs_review}</span>
-          <span className="ml-2">未分類: {summary.unclassified}</span>
-        </div>
-      )}
-
-      {createResults.length > 0 && (
+      {pendingProposal && pendingProposal.action === "create" && (
         <div className="space-y-2 px-4 pb-2">
-          {createResults.map((result) => (
-            <NewProjectProposal
-              key={result.mail_id}
-              mailId={result.mail_id}
-              suggestedName={result.project_name ?? ""}
-              suggestedDescription={result.description}
-              reason={result.reason}
-              onApprove={handleApproveNewProject}
-              onReject={rejectClassification}
-            />
-          ))}
+          <NewProjectProposal
+            key={pendingProposal.mail_id}
+            mailId={pendingProposal.mail_id}
+            suggestedName={pendingProposal.project_name ?? ""}
+            suggestedDescription={pendingProposal.description}
+            reason={pendingProposal.reason}
+            onApprove={handleApproveNewProject}
+            onReject={rejectClassification}
+          />
         </div>
       )}
 

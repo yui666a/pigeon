@@ -48,8 +48,7 @@ describe("UnclassifiedList paging", () => {
       syncProgress: null,
     });
     useClassifyStore.setState({
-      results: [],
-      summary: null,
+      pendingProposal: null,
       classifying: false,
     });
     useProjectStore.setState({
