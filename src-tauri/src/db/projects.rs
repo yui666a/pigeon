@@ -112,7 +112,8 @@ pub fn build_project_summaries(
     let projs = list_projects(conn, account_id)?;
     let mut summaries = Vec::with_capacity(projs.len());
     for p in projs {
-        let recent_subjects = assignments::get_recent_subjects(conn, &p.id, 5).unwrap_or_default();
+        let recent_subjects = assignments::get_recent_subjects(conn, &p.id, 10).unwrap_or_default();
+        let top_senders = assignments::get_top_senders(conn, &p.id, 5).unwrap_or_default();
         let context = crate::db::project_contexts::get_context(conn, &p.id)?
             .filter(|c| !for_cloud || c.allow_cloud_context)
             .and_then(|c| c.cached_context)
@@ -122,6 +123,7 @@ pub fn build_project_summaries(
             name: p.name,
             description: p.description,
             recent_subjects,
+            top_senders,
             context,
         });
     }
@@ -336,6 +338,24 @@ mod tests {
         crate::db::project_contexts::set_allow_cloud_context(&conn, &p.id, true).unwrap();
         let summaries = build_project_summaries(&conn, "acc1", true).unwrap();
         assert!(summaries[0].context.is_some());
+    }
+
+    #[test]
+    fn test_build_project_summaries_includes_top_senders() {
+        let conn = setup_db();
+        create_test_account(&conn, "acc1");
+        let p = insert_project(&conn, &sample_create_req("acc1")).unwrap();
+
+        let m1 = crate::test_helpers::make_mail("m1", "<m1@ex>", "Mail 1", "2026-04-13T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m1).unwrap();
+        assignments::assign_mail(&conn, "m1", &p.id, "ai", Some(0.9)).unwrap();
+
+        let summaries = build_project_summaries(&conn, "acc1", false).unwrap();
+        assert!(
+            !summaries[0].top_senders.is_empty(),
+            "割り当て済みメールの送信者がtop_sendersに含まれるはず"
+        );
+        assert_eq!(summaries[0].top_senders[0], "sender@example.com");
     }
 
     #[test]

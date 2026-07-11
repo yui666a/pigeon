@@ -136,7 +136,7 @@ export function LlmSettingsDialog({ onClose }: Props) {
           {settings.provider === "claude" && (
             <div className="space-y-2">
               <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                クラウドLLMを使用します。件名・送信者・本文冒頭300文字と、許可した案件コンテキストが
+                クラウドLLMを使用します。件名・送信者・本文冒頭1000文字と、許可した案件コンテキストが
                 Anthropic に送信されます。
               </p>
               <label className="block text-sm">
@@ -168,7 +168,7 @@ export function LlmSettingsDialog({ onClose }: Props) {
             settings.provider === "gemini_vertex") && (
             <div className="space-y-2">
               <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                クラウドLLMを使用します。件名・送信者・本文冒頭300文字と、許可した案件コンテキストが
+                クラウドLLMを使用します。件名・送信者・本文冒頭1000文字と、許可した案件コンテキストが
                 Google Cloud (Vertex AI) 上の
                 {settings.provider === "gemini_vertex" ? " Gemini" : " Claude"}{" "}
                 に送信されます。

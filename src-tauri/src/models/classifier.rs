@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 pub const CONFIDENCE_AUTO_ASSIGN: f64 = 0.7;
 pub const CONFIDENCE_UNCERTAIN: f64 = 0.4;
 
+/// 分類プロンプトに載せる本文プレビューの最大文字数。
+pub const BODY_PREVIEW_CHARS: usize = 1000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailSummary {
     pub subject: String,
@@ -18,7 +21,7 @@ impl MailSummary {
             .as_deref()
             .unwrap_or("")
             .chars()
-            .take(300)
+            .take(BODY_PREVIEW_CHARS)
             .collect();
         Self {
             subject: mail.subject.clone(),
@@ -35,6 +38,7 @@ pub struct ProjectSummary {
     pub name: String,
     pub description: Option<String>,
     pub recent_subjects: Vec<String>,
+    pub top_senders: Vec<String>,
     pub context: Option<String>,
 }
 
@@ -113,11 +117,19 @@ mod tests {
     }
 
     #[test]
-    fn test_from_mail_truncates_body_at_300_chars() {
-        let long_body = "a".repeat(500);
+    fn test_from_mail_truncates_body_at_1000_chars() {
+        let long_body = "a".repeat(1500);
         let mail = make_mail(Some(&long_body));
         let summary = MailSummary::from_mail(&mail);
-        assert_eq!(summary.body_preview.len(), 300);
+        assert_eq!(summary.body_preview.chars().count(), 1000);
+    }
+
+    #[test]
+    fn test_from_mail_body_under_limit_kept_whole() {
+        let body = "a".repeat(700);
+        let mail = make_mail(Some(&body));
+        let summary = MailSummary::from_mail(&mail);
+        assert_eq!(summary.body_preview.chars().count(), 700);
     }
 
     #[test]
@@ -129,9 +141,9 @@ mod tests {
 
     #[test]
     fn test_from_mail_multibyte_truncation() {
-        let japanese_body = "あ".repeat(500);
+        let japanese_body = "あ".repeat(1500);
         let mail = make_mail(Some(&japanese_body));
         let summary = MailSummary::from_mail(&mail);
-        assert_eq!(summary.body_preview.chars().count(), 300);
+        assert_eq!(summary.body_preview.chars().count(), 1000);
     }
 }
