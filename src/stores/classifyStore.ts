@@ -9,17 +9,6 @@ interface UnclassifiedMailRef {
   id: string;
 }
 
-// classify_mail の戻り `result`（Rust ClassifyResult、#[serde(tag="action")]）のフラット形。
-// action ごとに project_id（assign）/ project_name・description（create）が付く。
-interface ClassifyResultRaw {
-  action: "assign" | "create" | "unclassified";
-  project_id?: string;
-  project_name?: string;
-  description?: string;
-  confidence: number;
-  reason: string;
-}
-
 interface ClassifyState {
   classifying: boolean;
   progress: { current: number; total: number } | null;
@@ -52,14 +41,14 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
     const mail = _queue[_index];
     let res: ClassifyResponse;
     try {
-      // classify_mail は Rust の ClassifyResponse = { mail_id, result: ClassifyResult }
-      // を返す（result の中に action/confidence/reason/project_id/project_name/description）。
-      // フロントの ClassifyResponse はフラットなので、ここで平坦化する。
-      const r = await invoke<{ mail_id: string; result: ClassifyResultRaw }>(
-        "classify_mail",
-        { mailId: mail.id },
-      );
-      res = { mail_id: r.mail_id, ...r.result };
+      // classify_mail は Rust の ClassifyResponse を返す。mail_id と
+      // ClassifyResult が両方とも #[serde(flatten)] されているため、
+      // 実際のJSONは { mail_id, action, confidence, reason, ... } の
+      // 完全にフラットな形になる（result という入れ子は存在しない）。
+      const r = await invoke<ClassifyResponse>("classify_mail", {
+        mailId: mail.id,
+      });
+      res = r;
     } catch (e) {
       useErrorStore.getState().addError(String(e));
       set({ classifying: false, progress: null });

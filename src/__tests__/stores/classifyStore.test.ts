@@ -26,11 +26,16 @@ beforeEach(() => {
   useProjectStore.setState({ projects: [] });
 });
 
-// classify_mail は Rust の ClassifyResponse = { mail_id, result: {...} } を返す。
-// テストのモックもこのネスト形に合わせる。
+// classify_mail は Rust の ClassifyResponse を返す。mail_id と ClassifyResult が
+// 両方とも #[serde(flatten)] されているため、実際のJSONは
+// { mail_id, action, confidence, reason, ... } の完全にフラットな形になる。
+// テストのモックも実際のワイヤーフォーマットに合わせる。
 const resp = (mailId: string, action: string, extra: object = {}) => ({
   mail_id: mailId,
-  result: { action, confidence: 0.9, reason: "r", ...extra },
+  action,
+  confidence: 0.9,
+  reason: "r",
+  ...extra,
 });
 
 describe("classifyStore sequential flow", () => {
@@ -70,7 +75,7 @@ describe("classifyStore sequential flow", () => {
 
   it("approveNewProject でプロジェクトを一覧追加し次へ進む", async () => {
     let step = 0;
-    invokeMock.mockImplementation((cmd: string, args: { mailId?: string }) => {
+    invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_unclassified_mails")
         return Promise.resolve([{ id: "m1" }, { id: "m2" }]);
       if (cmd === "classify_mail") {
