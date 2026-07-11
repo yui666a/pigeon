@@ -126,6 +126,29 @@ pub fn get_recent_subjects(
     Ok(subjects)
 }
 
+/// 案件に割り当て済みメールの送信者(from_addr)を頻度降順で返す。
+/// 同数のときは from_addr 昇順で安定させる。分類プロンプトの手がかり用。
+pub fn get_top_senders(
+    conn: &Connection,
+    project_id: &str,
+    limit: u32,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT m.from_addr
+         FROM mails m
+         JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
+         WHERE mpa.project_id = ?1
+         GROUP BY m.from_addr
+         ORDER BY COUNT(*) DESC, m.from_addr ASC
+         LIMIT ?2",
+    )?;
+    let senders = stmt
+        .query_map(params![project_id, limit], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(senders)
+}
+
 /// Get assignment info for a mail: (project_id, assigned_by, confidence).
 pub fn get_assignment_info(
     conn: &Connection,
@@ -448,6 +471,62 @@ mod tests {
         // Limit 10 — should get all 3
         let all_subjects = get_recent_subjects(&conn, "proj1", 10).unwrap();
         assert_eq!(all_subjects.len(), 3);
+    }
+
+    // 指定送信者のメールを作って project に割り当てる（get_top_senders テスト用）。
+    fn assign_mail_from(conn: &Connection, id: &str, project_id: &str, from: &str) {
+        let mut mail = make_mail(id, "acc1", "subj", "2026-04-13T10:00:00");
+        mail.from_addr = from.to_string();
+        insert_mail(conn, &mail);
+        assign_mail(conn, id, project_id, "ai", Some(0.9)).unwrap();
+    }
+
+    #[test]
+    fn test_get_top_senders_orders_by_frequency() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "p1", "acc1", "P1");
+        assign_mail_from(&conn, "m1", "p1", "a@x.com");
+        assign_mail_from(&conn, "m2", "p1", "a@x.com");
+        assign_mail_from(&conn, "m3", "p1", "a@x.com");
+        assign_mail_from(&conn, "m4", "p1", "b@x.com");
+        assign_mail_from(&conn, "m5", "p1", "b@x.com");
+        assign_mail_from(&conn, "m6", "p1", "c@x.com");
+
+        let senders = get_top_senders(&conn, "p1", 5).unwrap();
+        assert_eq!(senders, vec!["a@x.com", "b@x.com", "c@x.com"]);
+    }
+
+    #[test]
+    fn test_get_top_senders_respects_limit() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "p1", "acc1", "P1");
+        assign_mail_from(&conn, "m1", "p1", "a@x.com");
+        assign_mail_from(&conn, "m2", "p1", "b@x.com");
+        assign_mail_from(&conn, "m3", "p1", "c@x.com");
+        let senders = get_top_senders(&conn, "p1", 2).unwrap();
+        assert_eq!(senders.len(), 2);
+    }
+
+    #[test]
+    fn test_get_top_senders_ties_broken_by_addr_asc() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "p1", "acc1", "P1");
+        // 全員1通ずつ（同数）→ from_addr 昇順で安定
+        assign_mail_from(&conn, "m1", "p1", "zoe@x.com");
+        assign_mail_from(&conn, "m2", "p1", "amy@x.com");
+        assign_mail_from(&conn, "m3", "p1", "mia@x.com");
+        let senders = get_top_senders(&conn, "p1", 5).unwrap();
+        assert_eq!(senders, vec!["amy@x.com", "mia@x.com", "zoe@x.com"]);
+    }
+
+    #[test]
+    fn test_get_top_senders_empty_for_unassigned_project() {
+        let conn = setup_db();
+        let senders = get_top_senders(&conn, "no-such-project", 5).unwrap();
+        assert!(senders.is_empty());
     }
 
     #[test]
