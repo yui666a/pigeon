@@ -32,8 +32,16 @@ impl BulkResult {
     }
 }
 
-/// 削除のサーバー反映方式（mail_commands::plan_delete と同じ判定。
-/// mail_commands.rs は他エージェントが編集中のため個別再実装する）
+// 以下の plan_delete / plan_archive は mail_commands.rs の同名関数と
+// 判定ロジックが完全に一致している必要がある（意図的な重複）。
+// Why not shared: 実装時点で mail_commands.rs は並行編集中の他ブランチ
+// （Sent フォルダ同期対応。Sent の LocalOnly 判定を変更中）が触っており、
+// 共通化すると衝突するため個別に複製した。sent-sync 側で判定ロジックが
+// 変わった場合はこちらも必ず追随させること。共通化はブランチ統合時に
+// リードがスタック順を決めて対応する（設計書
+// 2026-07-13-bulk-actions-design.md「v1の制限」参照）。
+
+/// 削除のサーバー反映方式（mail_commands::plan_delete と同じ判定）
 fn plan_delete(folder: &str) -> bool {
     folder != "Sent"
 }

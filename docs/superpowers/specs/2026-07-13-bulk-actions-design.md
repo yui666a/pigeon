@@ -126,3 +126,11 @@ UIに出さない。v1の割り切り）。
   数百件規模の一括操作は将来の性能改善対象
 - 部分分類（スレッドの一部メールだけを選択して移動）は不可。既存の D&D と
   同じ制約
+- **`bulk_commands.rs` の `plan_delete` / `plan_archive` は `mail_commands.rs`
+  の同名関数の判定ロジックを意図的に複製している**（実装時点で
+  `mail_commands.rs` を編集中の並行ブランチがあり、共通化すると衝突するため）。
+  Sent フォルダ同期対応（バックログ項目1）で `mail_commands.rs` 側の
+  LocalOnly 判定が変わった場合、`bulk_commands.rs` 側の複製が追随できず
+  乖離するリスクがある。両ブランチのマージ後、リードがスタック順を決めて
+  一箇所に共通化する（`mail_commands.rs` に `pub(crate)` で切り出し、
+  `bulk_commands.rs` から呼ぶ形が妥当）
