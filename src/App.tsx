@@ -6,6 +6,7 @@ import { SearchResults } from "./components/thread-list/SearchResults";
 import { MailView } from "./components/mail-view/MailView";
 import { DragOverlay } from "./components/common/DragOverlay";
 import { ErrorToast } from "./components/common/ErrorToast";
+import { ComposeModal } from "./components/compose/ComposeModal";
 import { useUiStore } from "./stores/uiStore";
 
 function App() {
@@ -28,6 +29,7 @@ function App() {
       </div>
       <DragOverlay />
       <ErrorToast />
+      <ComposeModal />
     </div>
   );
 }
