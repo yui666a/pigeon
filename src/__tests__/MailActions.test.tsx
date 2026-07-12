@@ -26,6 +26,7 @@ function makeMail(): Mail {
     uid: 1,
     flags: null,
     is_read: false,
+    is_flagged: false,
     fetched_at: "2026-07-10T10:00:00Z",
   };
 }
@@ -134,6 +135,34 @@ describe("MailActions", () => {
       expect(
         screen.queryByRole("button", { name: "アーカイブ解除" }),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("star/flag toggle", () => {
+    const toggleFlagged = vi.fn();
+
+    beforeEach(() => {
+      toggleFlagged.mockReset();
+      useMailStore.setState({ toggleFlagged });
+    });
+
+    it("shows an unflagged star (☆) for a mail without is_flagged", () => {
+      render(<MailActions mail={makeMail()} />);
+      expect(screen.getByRole("button", { name: "☆" })).toBeInTheDocument();
+    });
+
+    it("shows a flagged star (★) for a flagged mail", () => {
+      render(<MailActions mail={{ ...makeMail(), is_flagged: true }} />);
+      expect(screen.getByRole("button", { name: "★" })).toBeInTheDocument();
+    });
+
+    it("toggles the flag on click", () => {
+      const mail = makeMail();
+      render(<MailActions mail={mail} />);
+      fireEvent.click(screen.getByRole("button", { name: "☆" }));
+      expect(toggleFlagged).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "m1" }),
+      );
     });
   });
 
