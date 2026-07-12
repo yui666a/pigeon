@@ -98,6 +98,43 @@ few-shot例として使われる（`get_recent_corrections`）。スレッド追
 学習信号になる。`move_mail_to_project` が新規割り当て時にも記録するのは、そこがユーザーの
 明示的なD&D操作だからであり、本機能とは性質が異なる。
 
+### 4.5 却下（reject）の尊重 — 除外トゥームストーン
+
+**（レビュー指摘対応。2026-07-13 追記）**
+
+初版では `reject_classification` が `mail_project_assignments` を DELETE するだけで却下の
+痕跡を残さなかった。`auto_follow_threads` は一覧を開くたびに走るため、次のような**却下の
+サイレント復活**が起きる:
+
+1. ユーザーが m2 を却下（未分類へ戻す）
+2. 一覧を開く → スレッド仲間 m1 が単一案件に割り当て済み
+3. m2 がその案件へ自動追従で**再割り当て**される
+
+ユーザーの明示的な却下が自動処理で黙って取り消されるのは製品原則に反する。よって
+**却下を尊重するトゥームストーン方式**を採用する。
+
+- **`follow_exclusions(mail_id TEXT PRIMARY KEY REFERENCES mails(id) ON DELETE CASCADE)`**
+  を **migration v14** で追加（既存 `correction_log` は「訂正」用で「却下」を表現できず、
+  流用は誤った学習信号になるため専用テーブルにする。4.4 と同じ理由）
+- `reject_classification` は割り当て削除後に `follow_exclusions` へ INSERT（冪等）
+- `auto_follow_threads` は `follow_exclusions` にあるメールを追従対象から除外する
+- **手動割り当て（`move_mail_to_project`）成功時は除外行を DELETE** する。ユーザーが自ら
+  同じ案件へ入れ直す＝「却下の意思を撤回した」とみなし、以後はそのメールも追従対象に戻す。
+  手動割り当て自体は却下後も常に可能（除外は自動追従にのみ効く）
+- メール削除時は `ON DELETE CASCADE` で除外行も自動的に消える
+
+### 4.6 既知の挙動: pending な AI 提案との競合
+
+**（レビュー Minor。実装変更なし・記録のみ）**
+
+逐次分類（`PendingClassifications`）で m2 に対する AI 提案が保留中のときに、一覧取得経由で
+`auto_follow_threads` が m2 を先に追従割り当てすることがある。この場合、後から確定する AI 提案は
+`approve_classification` 経由で既存割り当てを上書きしうる（＝追従先と AI 提案先が異なれば AI 提案が
+勝つ）。スレッド構造による追従は「同一スレッド＝同一案件」という強い手がかりであり、AI 提案が
+それを上書きするのは望ましくない可能性はあるが、実利用では両者が同じ案件を指すことがほとんどで
+実害は小さい。v1 では現状の挙動（後勝ち）のまま許容し、必要になれば追従済みメールを AI 提案の
+対象から外す等の調整を将来行う。
+
 ## 5. スコープ外（v1）
 
 - 同期直後のリアルタイム追従（同期経路の変更が必要なため。一覧取得時判定で代替）
@@ -117,6 +154,13 @@ few-shot例として使われる（`get_recent_corrections`）。スレッド追
 - 無関係なスレッド（他のスレッドの割り当て） → 影響なし
 - 追従割り当て後、`correction_log` に記録が増えないこと
 - 追従割り当ての `assigned_by` が `"ai"`、`confidence` が `None` であること
+- **却下したメールは追従で復活しない**（reject → 再度 auto_follow で再割り当てされない）
+- **却下後も手動割り当て（`move_mail_to_project`）は可能**
+- **手動割り当てで除外トゥームストーンが解除される**（以後は追従の対象に戻る）
+
+`db::migrations` v14:
+- `follow_exclusions` テーブルが作成される
+- メール削除で除外行が `ON DELETE CASCADE` で消える
 
 `mails::get_all_mails_by_account`:
 - 複数フォルダ（INBOX/Sent/Archive）のメールを全て返す
