@@ -30,16 +30,15 @@ pub struct SaveDraftRequest {
     pub in_reply_to: Option<String>,
 }
 
-/// リクエストから Draft を構築する（新規なら id/created_at を採番、更新なら既存値を引き継ぐ）
-pub(crate) fn build_draft(req: &SaveDraftRequest, existing: Option<&Draft>) -> Draft {
+/// リクエストから Draft を構築する。id は既存下書きの更新ならそれを、
+/// 無ければ新規採番する。created_at は呼び出し時点の値を積むが、
+/// update_draft のSQLはこの列を更新しないため既存行の created_at は保たれる。
+pub(crate) fn build_draft(req: &SaveDraftRequest) -> Draft {
     let now = chrono::Utc::now().to_rfc3339();
     let id = req
         .id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let created_at = existing
-        .map(|d| d.created_at.clone())
-        .unwrap_or_else(|| now.clone());
     Draft {
         id,
         account_id: req.account_id.clone(),
@@ -49,7 +48,7 @@ pub(crate) fn build_draft(req: &SaveDraftRequest, existing: Option<&Draft>) -> D
         subject: req.subject.clone(),
         body_text: req.body_text.clone(),
         in_reply_to: req.in_reply_to.clone(),
-        created_at,
+        created_at: now.clone(),
         updated_at: now,
     }
 }
@@ -62,7 +61,7 @@ pub(crate) fn upsert_draft(conn: &Connection, req: &SaveDraftRequest) -> Result<
         None => false,
     };
 
-    let draft = build_draft(req, None);
+    let draft = build_draft(req);
     if already_exists {
         drafts::update_draft(conn, &draft)?;
     } else {
@@ -115,7 +114,7 @@ mod tests {
     #[test]
     fn test_build_draft_new_generates_id() {
         let req = make_request();
-        let draft = build_draft(&req, None);
+        let draft = build_draft(&req);
         assert!(!draft.id.is_empty());
         assert_eq!(draft.account_id, "acc1");
         assert_eq!(draft.created_at, draft.updated_at);
@@ -127,33 +126,33 @@ mod tests {
             id: Some("existing-id".into()),
             ..make_request()
         };
-        let draft = build_draft(&req, None);
+        let draft = build_draft(&req);
         assert_eq!(draft.id, "existing-id");
     }
 
     #[test]
-    fn test_build_draft_update_preserves_created_at() {
-        let existing = Draft {
-            id: "d1".into(),
-            account_id: "acc1".into(),
-            to_addr: "old@example.com".into(),
-            cc_addr: "".into(),
-            bcc_addr: "".into(),
-            subject: "旧".into(),
-            body_text: "旧本文".into(),
-            in_reply_to: None,
-            created_at: "2026-07-12T09:00:00Z".into(),
-            updated_at: "2026-07-12T09:00:00Z".into(),
-        };
-        let req = SaveDraftRequest {
-            id: Some("d1".into()),
+    fn test_upsert_draft_update_preserves_created_at_in_db() {
+        // build_draft は毎回 created_at に現在時刻を積むが、update_draft のSQLは
+        // created_at 列を更新しないため、DBに残る既存行の created_at は保たれる。
+        // この契約はDB越しでしか検証できないため upsert_draft を通して確認する。
+        let conn = crate::test_helpers::setup_db();
+        let first = upsert_draft(&conn, &make_request()).unwrap();
+        let original_created_at = first.created_at.clone();
+
+        let update_req = SaveDraftRequest {
+            id: Some(first.id.clone()),
             subject: "新".into(),
             ..make_request()
         };
-        let draft = build_draft(&req, Some(&existing));
-        assert_eq!(draft.created_at, "2026-07-12T09:00:00Z");
-        assert_eq!(draft.subject, "新");
-        assert_ne!(draft.updated_at, existing.updated_at);
+        upsert_draft(&conn, &update_req).unwrap();
+
+        let stored = drafts::get_drafts_by_account(&conn, "acc1")
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == first.id)
+            .unwrap();
+        assert_eq!(stored.created_at, original_created_at);
+        assert_eq!(stored.subject, "新");
     }
 
     #[test]
