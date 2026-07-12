@@ -102,6 +102,7 @@ mod tests {
             raw_size: None,
             uid: 1,
             flags: None,
+            is_read: false,
             fetched_at: "2026-04-13T00:00:00".into(),
         }
     }

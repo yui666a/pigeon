@@ -84,6 +84,7 @@ pub fn parse_mime(raw: &[u8], account_id: &str, folder: &str, uid: u32) -> Optio
         raw_size: Some(raw.len() as i64),
         uid,
         flags: None,
+        is_read: false,
         fetched_at: chrono::Utc::now().to_rfc3339(),
     })
 }

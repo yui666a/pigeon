@@ -187,6 +187,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 7 {
+        migrate_v7(conn)?;
+        version = 7;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -315,6 +321,15 @@ fn migrate_v6(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v7(conn: &Connection) -> Result<(), AppError> {
+    // 既読/未読の管理。正はサーバーの \Seen で、これはそのキャッシュ。
+    // 既存行は未読(0)で初期化し、次回同期のフラグ再同期で実際の状態に収束する
+    conn.execute_batch(
+        "ALTER TABLE mails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,11 +440,11 @@ mod tests {
         assert!(tables.contains(&"mail_project_assignments".to_string()));
         assert!(tables.contains(&"correction_log".to_string()));
 
-        // Verify schema version is 6 (latest)
+        // Verify schema version is 7 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -632,11 +647,11 @@ mod tests {
             .unwrap();
         assert_eq!(provider, "other");
 
-        // Schema version should be 6 (latest)
+        // Schema version should be 7 (latest)
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -655,11 +670,11 @@ mod tests {
             .unwrap();
         assert!(table_exists, "fts_mails table should exist after v4 migration");
 
-        // Schema version should be 6
+        // Schema version should be 7
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -829,7 +844,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -930,6 +945,76 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "only one primary directory per project");
+    }
+
+    #[test]
+    fn test_v7_adds_is_read_column_with_default_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        // is_read を指定しない INSERT はデフォルト 0（未読）になる
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+
+        let is_read: i32 = conn
+            .query_row("SELECT is_read FROM mails WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(is_read, 0, "is_read defaults to 0 (unread)");
+    }
+
+    #[test]
+    fn test_v7_existing_rows_become_unread() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // v6 までを適用した状態で既存メールを仕込む
+        get_schema_version(&conn).unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        set_schema_version(&conn, 6).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let is_read: i32 = conn
+            .query_row("SELECT is_read FROM mails WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(is_read, 0, "v7 適用で既存行は未読になる");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
     }
 
     #[test]
