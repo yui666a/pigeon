@@ -433,7 +433,7 @@ Tauriの `tauri-plugin-stronghold` またはOSネイティブAPIで保護。SQLi
 - 進捗バー表示
 - Claude API対応（オプション）
 - ~~添付ファイルの一覧表示・ダウンロード~~ → **実装済（PR #73）**。詳細は `2026-07-12-attachment-download-design.md` を参照
-- ~~キーボードショートカット~~ → **実装済（n/r/a/f: PR #71、e: PR #76、j/k・/: PR #79）**
+- ~~キーボードショートカット~~ → **実装済（n/r/a/f: PR #71、e: PR #76、j/k・/: PR #79、検索結果内j/k: 別PR）**
 - ~~OAuth 2.0認証対応~~ → **実装済（Phase 5 から前倒し）**。詳細は `2026-04-13-oauth-support-design.md` を参照
 
 ### Phase 5.5: メール操作・リアルタイム同期（Phase 6 から前倒しで実装済）
@@ -449,7 +449,6 @@ Tauriの `tauri-plugin-stronghold` またはOSネイティブAPIで保護。SQLi
 - テーマ切り替え（ダーク/ライト）
 - リッチテキストメールの送信（TipTap）・添付ファイルの送信
 - 下書き保存（Drafts同期）
-- j/k 等のナビゲーションショートカット
 
 ---
 
