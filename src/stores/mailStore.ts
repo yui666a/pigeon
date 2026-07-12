@@ -28,6 +28,8 @@ interface MailState {
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
   markMailRead: (mail: Mail) => void;
+  deleteMail: (mail: Mail) => Promise<void>;
+  archiveMail: (mail: Mail) => Promise<void>;
   fetchUnreadCounts: (accountId: string) => Promise<void>;
   fetchUnclassified: (accountId: string) => Promise<void>;
   moveMail: (mailId: string, projectId: string) => Promise<void>;
@@ -42,6 +44,33 @@ function markReadInMails(mails: Mail[], mailId: string): Mail[] {
 function markReadInThread(thread: Thread, mailId: string): Thread {
   if (!thread.mails.some((m) => m.id === mailId)) return thread;
   return { ...thread, mails: markReadInMails(thread.mails, mailId) };
+}
+
+/** スレッドからメールを除去する。空になったら null（スレッドごと除去） */
+function removeMailFromThread(thread: Thread, mailId: string): Thread | null {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  const mails = thread.mails.filter((m) => m.id !== mailId);
+  if (mails.length === 0) return null;
+  return {
+    ...thread,
+    mails,
+    mail_count: mails.length,
+    last_date: mails[mails.length - 1].date,
+  };
+}
+
+/** 削除・アーカイブ成功後に、表示用の全状態から該当メールを取り除く */
+function removeMailFromState(state: MailState, mailId: string): Partial<MailState> {
+  return {
+    threads: state.threads
+      .map((t) => removeMailFromThread(t, mailId))
+      .filter((t): t is Thread => t !== null),
+    selectedThread: state.selectedThread
+      ? removeMailFromThread(state.selectedThread, mailId)
+      : null,
+    selectedMail: state.selectedMail?.id === mailId ? null : state.selectedMail,
+    unclassifiedMails: state.unclassifiedMails.filter((m) => m.id !== mailId),
+  };
 }
 
 export const useMailStore = create<MailState>((set, get) => ({
@@ -128,6 +157,28 @@ export const useMailStore = create<MailState>((set, get) => ({
       .catch((e) => {
         console.error("mark_read failed:", e);
       });
+  },
+
+  // 削除は破壊的操作のため楽観更新しない: サーバー反映（invoke）が成功した
+  // 場合のみローカル状態から除去する。失敗時はエラー表示のみで状態は変えない
+  deleteMail: async (mail) => {
+    try {
+      await invoke("delete_mail", { accountId: mail.account_id, mailId: mail.id });
+      set((state) => removeMailFromState(state, mail.id));
+      void get().fetchUnreadCounts(mail.account_id);
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  archiveMail: async (mail) => {
+    try {
+      await invoke("archive_mail", { accountId: mail.account_id, mailId: mail.id });
+      set((state) => removeMailFromState(state, mail.id));
+      void get().fetchUnreadCounts(mail.account_id);
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
   },
 
   fetchUnreadCounts: async (accountId) => {

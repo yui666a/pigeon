@@ -28,8 +28,8 @@ function targetMail(): Mail | null {
 }
 
 /**
- * メール作成のキーボードショートカット（App直下で有効化する）。
- * n: 新規作成 / r: 返信 / a: 全員に返信 / f: 転送
+ * メール操作のキーボードショートカット（App直下で有効化する）。
+ * n: 新規作成 / r: 返信 / a: 全員に返信 / f: 転送 / e: アーカイブ
  */
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -42,6 +42,13 @@ export function useKeyboardShortcuts() {
       if (e.key === "n") {
         e.preventDefault();
         openCompose("new");
+        return;
+      }
+      if (e.key === "e") {
+        const mail = targetMail();
+        if (!mail) return;
+        e.preventDefault();
+        void useMailStore.getState().archiveMail(mail);
         return;
       }
       const mode = MAIL_SHORTCUTS[e.key];
