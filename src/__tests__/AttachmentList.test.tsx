@@ -33,7 +33,7 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
 describe("AttachmentList", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useErrorStore.setState({ errors: [] });
+    useErrorStore.setState({ toasts: [] });
   });
 
   it("最初は表示ボタンだけを描画する", () => {
@@ -121,7 +121,7 @@ describe("AttachmentList", () => {
     fireEvent.click(screen.getByRole("button", { name: /添付ファイルを表示/ }));
 
     await waitFor(() => {
-      expect(useErrorStore.getState().errors.length).toBeGreaterThan(0);
+      expect(useErrorStore.getState().toasts.length).toBeGreaterThan(0);
     });
     expect(
       screen.getByRole("button", { name: /添付ファイルを表示/ }),

@@ -1,28 +1,45 @@
 import { create } from "zustand";
 
-interface ErrorNotification {
+export type ToastKind = "error" | "success";
+
+export interface Toast {
   id: string;
+  kind: ToastKind;
   message: string;
   timestamp: number;
 }
 
-interface ErrorState {
-  errors: ErrorNotification[];
+interface ToastState {
+  toasts: Toast[];
   addError: (message: string) => void;
-  dismissError: (id: string) => void;
+  addSuccess: (message: string) => void;
+  dismissToast: (id: string) => void;
 }
 
-export const useErrorStore = create<ErrorState>((set, get) => ({
-  errors: [],
-  addError: (message) => {
+/** エラー・成功共通の自動消滅時間 */
+const AUTO_DISMISS_MS = 5000;
+
+/**
+ * アプリ全体の通知トースト（エラー・操作成功）を管理するストア。
+ * ToastContainer が描画し、各ストアが addError / addSuccess で発火する。
+ */
+export const useErrorStore = create<ToastState>((set, get) => {
+  const addToast = (kind: ToastKind, message: string) => {
     const id = crypto.randomUUID();
-    set({ errors: [...get().errors, { id, message, timestamp: Date.now() }] });
-    // Auto-dismiss after 5 seconds
+    set({
+      toasts: [...get().toasts, { id, kind, message, timestamp: Date.now() }],
+    });
     setTimeout(() => {
-      set({ errors: get().errors.filter((e) => e.id !== id) });
-    }, 5000);
-  },
-  dismissError: (id) => {
-    set({ errors: get().errors.filter((e) => e.id !== id) });
-  },
-}));
+      set({ toasts: get().toasts.filter((t) => t.id !== id) });
+    }, AUTO_DISMISS_MS);
+  };
+
+  return {
+    toasts: [],
+    addError: (message) => addToast("error", message),
+    addSuccess: (message) => addToast("success", message),
+    dismissToast: (id) => {
+      set({ toasts: get().toasts.filter((t) => t.id !== id) });
+    },
+  };
+});

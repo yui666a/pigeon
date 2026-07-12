@@ -69,7 +69,7 @@ describe("composeStore", () => {
       accounts: [makeAccount()],
       selectedAccountId: "acc1",
     });
-    useErrorStore.setState({ errors: [] });
+    useErrorStore.setState({ toasts: [] });
   });
 
   describe("openCompose", () => {
@@ -167,10 +167,10 @@ describe("composeStore", () => {
       expect(s.to).toBe("a@ex.com");
       expect(s.subject).toBe("S");
       expect(s.body).toBe("本文");
-      expect(useErrorStore.getState().errors).toHaveLength(1);
-      expect(useErrorStore.getState().errors[0].message).toContain(
-        "SMTP error",
-      );
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].kind).toBe("error");
+      expect(toasts[0].message).toContain("SMTP error");
     });
 
     it("does nothing when no account is selected", async () => {
