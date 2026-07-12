@@ -71,16 +71,21 @@ pub fn build_references(orig_references: Option<&str>, orig_message_id: &str) ->
 pub fn html_to_plain(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let bytes = html.as_bytes();
+    // '<' '>' は ASCII なのでバイト添字はUTF-8境界と一致する。テキスト区間は
+    // バイト単位で切らず &str スライスとして丸ごとコピーし、マルチバイトを壊さない
     let mut i = 0;
+    // 直前のタグ終端以降、まだ出力していないテキスト区間の開始位置
+    let mut text_start = 0;
     while i < bytes.len() {
         if bytes[i] == b'<' {
             // タグ終端 '>' を探す
             let Some(rel) = html[i..].find('>') else {
-                // 閉じない '<' は文字として扱う
-                out.push('<');
-                i += 1;
-                continue;
+                // 閉じない '<' 以降はすべてテキスト。ループ後にまとめて flush する
+                break;
             };
+            // '<' の手前までのテキスト区間をスライスコピー
+            out.push_str(&html[text_start..i]);
+
             let tag = html[i + 1..i + rel].trim();
             let tag_lower = tag.to_ascii_lowercase();
             let name = tag_lower
@@ -102,11 +107,14 @@ pub fn html_to_plain(html: &str) -> String {
                 out.push_str("- ");
             }
             i += rel + 1;
+            text_start = i;
         } else {
-            out.push(bytes[i] as char);
             i += 1;
         }
     }
+    // 末尾に残ったテキスト区間（閉じない '<' 以降を含む）を flush
+    out.push_str(&html[text_start..]);
+
     let decoded = decode_html_entities(&out);
     normalize_blank_lines(&decoded)
 }
@@ -477,6 +485,25 @@ mod tests {
             "bold & italic"
         );
         assert_eq!(html_to_plain("a&lt;b&gt;c&nbsp;d"), "a<b>c d");
+    }
+
+    #[test]
+    fn test_html_to_plain_preserves_multibyte_utf8() {
+        // 日本語（マルチバイトUTF-8）がバイト分割で文字化けしないこと
+        assert_eq!(html_to_plain("<p>こんにちは</p>"), "こんにちは");
+        assert_eq!(
+            html_to_plain("<p>日本語の<strong>本文</strong>です</p>"),
+            "日本語の本文です"
+        );
+        // 絵文字（4バイト）も壊れないこと
+        assert_eq!(html_to_plain("<p> hi 🕊️ bye</p>"), "hi 🕊️ bye");
+    }
+
+    #[test]
+    fn test_html_to_plain_unclosed_bracket_kept_as_text() {
+        // 閉じない '<' 以降は文字として残す（マルチバイトも壊さない）
+        assert_eq!(html_to_plain("a < b の話"), "a < b の話");
+        assert_eq!(html_to_plain("<p>x</p>y < z"), "x\ny < z");
     }
 
     #[test]
