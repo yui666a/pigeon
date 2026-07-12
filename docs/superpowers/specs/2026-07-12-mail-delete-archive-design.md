@@ -14,7 +14,16 @@
 
 ### 削除（delete_mail）
 
-1. サーバー: 対象フォルダを SELECT → `UID STORE <uid> +FLAGS.SILENT (\Deleted)` → EXPUNGE
+削除は「ゴミ箱への移動」を第一義とする。Gmail では `\Deleted` + EXPUNGE が
+「INBOX ラベル剥がし（=アーカイブ相当）」にしかならないため、ゴミ箱フォルダへの
+COPY を先に行うことで、**削除とアーカイブがメール1件ごとに選べる別操作**になる。
+
+1. サーバー: LIST `*` の応答から SPECIAL-USE (RFC 6154) の `\Trash` 属性を持つ
+   フォルダを探す（Gmail ならロケールに依らず `[Gmail]/ゴミ箱` 等が見つかる）
+   - **見つかった場合**: 対象フォルダを SELECT → `UID COPY <uid>` でゴミ箱へ →
+     `UID STORE <uid> +FLAGS.SILENT (\Deleted)` → EXPUNGE（= ゴミ箱へ移動）
+   - **見つからない場合**（SPECIAL-USE 非対応のセルフホスト等）: 従来どおり
+     `\Deleted` + EXPUNGE のみ（= 完全削除）
 2. 成功したらローカル DB から行を DELETE（`mail_project_assignments` /
    `mail_attachments` / `correction_log` は CASCADE、FTS はトリガーで削除）
 3. サーバー処理が失敗したらエラーを返し、ローカルは変更しない
