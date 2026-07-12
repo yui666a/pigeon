@@ -100,6 +100,7 @@ pub(crate) fn build_sent_record(
         flags: Some("\\Seen".into()),
         // 自分が送ったメールは常に既読
         is_read: true,
+        is_flagged: false,
         fetched_at: now,
     }
 }

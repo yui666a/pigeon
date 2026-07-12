@@ -17,6 +17,7 @@ export interface Mail {
   uid: number;
   flags: string | null;
   is_read: boolean;
+  is_flagged: boolean;
   fetched_at: string;
 }
 

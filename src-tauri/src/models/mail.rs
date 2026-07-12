@@ -20,6 +20,7 @@ pub struct Mail {
     pub uid: u32,
     pub flags: Option<String>,
     pub is_read: bool,
+    pub is_flagged: bool,
     pub fetched_at: String,
 }
 

@@ -142,6 +142,8 @@ pub struct FetchedMail {
     pub uid: u32,
     /// サーバー側で \Seen が付いているか
     pub is_read: bool,
+    /// サーバー側で \Flagged が付いているか
+    pub is_flagged: bool,
     /// サーバーフラグの文字列表現（例: "\Seen \Answered"）。フラグなしは None
     pub flags: Option<String>,
     pub body: Vec<u8>,
@@ -150,6 +152,11 @@ pub struct FetchedMail {
 /// FLAGS に \Seen が含まれるか
 pub(crate) fn contains_seen(flags: &[Flag<'_>]) -> bool {
     flags.iter().any(|f| *f == Flag::Seen)
+}
+
+/// FLAGS に \Flagged が含まれるか
+pub(crate) fn contains_flagged(flags: &[Flag<'_>]) -> bool {
+    flags.iter().any(|f| *f == Flag::Flagged)
 }
 
 /// FLAGS を DB 保存用の文字列にする（空なら None）
@@ -243,6 +250,7 @@ pub async fn fetch_mails_batched(
                     mails.push(FetchedMail {
                         uid,
                         is_read: contains_seen(&flags),
+                        is_flagged: contains_flagged(&flags),
                         flags: flags_to_string(&flags),
                         body: body.to_vec(),
                     });
@@ -255,12 +263,12 @@ pub async fn fetch_mails_batched(
     Ok(total)
 }
 
-/// フォルダ全体の uid → \Seen マップを取得する（FLAGS のみの軽量 FETCH）。
-/// 他クライアントで変更された既読状態をローカル DB に取り込むための再同期に使う。
-pub async fn fetch_seen_map(
+/// フォルダ全体の uid → (\Seen, \Flagged) マップを取得する（FLAGS のみの軽量 FETCH）。
+/// 他クライアントで変更された既読・スター状態をローカル DB に取り込むための再同期に使う。
+pub async fn fetch_flag_map(
     session: &mut ImapSession,
     folder: &str,
-) -> Result<HashMap<u32, bool>, AppError> {
+) -> Result<HashMap<u32, (bool, bool)>, AppError> {
     let mailbox = session
         .select(folder)
         .await
@@ -280,10 +288,38 @@ pub async fn fetch_seen_map(
         .filter_map(|m| {
             m.uid.map(|uid| {
                 let flags: Vec<Flag<'_>> = m.flags().collect();
-                (uid, contains_seen(&flags))
+                (uid, (contains_seen(&flags), contains_flagged(&flags)))
             })
         })
         .collect())
+}
+
+/// 指定 UID のメールに指定フラグ（例: "\\Seen"）を付与・除去する（STORE の共通処理）。
+/// mark_read / mark_unread / set_flagged のサーバー反映がすべてこの形なので集約する。
+async fn store_flag_delta(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    flag: &str,
+    add: bool,
+) -> Result<(), AppError> {
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+    let query = format!(
+        "{}FLAGS.SILENT ({})",
+        if add { "+" } else { "-" },
+        flag
+    );
+    let _updates: Vec<_> = session
+        .uid_store(uid.to_string(), &query)
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE stream failed: {}", e)))?;
+    Ok(())
 }
 
 /// 指定 UID のメールに \Seen フラグを付ける（既読のサーバー反映）。
@@ -292,18 +328,17 @@ pub async fn store_seen_flag(
     folder: &str,
     uid: u32,
 ) -> Result<(), AppError> {
-    session
-        .select(folder)
-        .await
-        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
-    let _updates: Vec<_> = session
-        .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Seen)")
-        .await
-        .map_err(|e| AppError::Imap(format!("UID STORE failed: {}", e)))?
-        .try_collect()
-        .await
-        .map_err(|e| AppError::Imap(format!("UID STORE stream failed: {}", e)))?;
-    Ok(())
+    store_flag_delta(session, folder, uid, "\\Seen", true).await
+}
+
+/// 指定 UID のメールの \Flagged を付与・除去する（スター/フラグのサーバー反映）。
+pub async fn store_flagged(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    flagged: bool,
+) -> Result<(), AppError> {
+    store_flag_delta(session, folder, uid, "\\Flagged", flagged).await
 }
 
 /// UID 指定で元メール（RFC822 全文）を1通取得する。
@@ -599,6 +634,14 @@ mod tests {
         assert!(contains_seen(&[Flag::Answered, Flag::Seen]));
         assert!(!contains_seen(&[Flag::Answered, Flag::Flagged]));
         assert!(!contains_seen(&[]));
+    }
+
+    #[test]
+    fn test_contains_flagged_detects_flagged_flag() {
+        use async_imap::types::Flag;
+        assert!(contains_flagged(&[Flag::Answered, Flag::Flagged]));
+        assert!(!contains_flagged(&[Flag::Answered, Flag::Seen]));
+        assert!(!contains_flagged(&[]));
     }
 
     #[test]

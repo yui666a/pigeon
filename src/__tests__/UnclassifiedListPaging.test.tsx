@@ -33,6 +33,7 @@ const mail = (i: number): Mail => ({
   uid: i,
   flags: null,
   is_read: false,
+  is_flagged: false,
   fetched_at: "2026-07-09T00:00:00Z",
 });
 

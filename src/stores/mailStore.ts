@@ -35,6 +35,7 @@ interface MailState {
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
   markMailRead: (mail: Mail) => void;
+  toggleFlagged: (mail: Mail) => Promise<void>;
   deleteMail: (mail: Mail) => Promise<void>;
   archiveMail: (mail: Mail) => Promise<void>;
   unarchiveMail: (mail: Mail) => Promise<void>;
@@ -68,6 +69,37 @@ function removeMailFromThread(thread: Thread, mailId: string): Thread | null {
     mails,
     mail_count: mails.length,
     last_date: mails[mails.length - 1].date,
+  };
+}
+
+function setFlaggedInMails(mails: Mail[], mailId: string, flagged: boolean): Mail[] {
+  return mails.map((m) => (m.id === mailId ? { ...m, is_flagged: flagged } : m));
+}
+
+function setFlaggedInThread(thread: Thread, mailId: string, flagged: boolean): Thread {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  return { ...thread, mails: setFlaggedInMails(thread.mails, mailId, flagged) };
+}
+
+/** スター/フラグを表示用の全状態へ反映する（toggleFlagged の楽観更新・失敗時のロールバック共用） */
+function setFlaggedInState(
+  state: MailState,
+  mailId: string,
+  flagged: boolean,
+): Partial<MailState> {
+  return {
+    threads: state.threads.map((t) => setFlaggedInThread(t, mailId, flagged)),
+    selectedThread: state.selectedThread
+      ? setFlaggedInThread(state.selectedThread, mailId, flagged)
+      : null,
+    selectedMail:
+      state.selectedMail?.id === mailId
+        ? { ...state.selectedMail, is_flagged: flagged }
+        : state.selectedMail,
+    unclassifiedMails: setFlaggedInMails(state.unclassifiedMails, mailId, flagged),
+    unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+      setFlaggedInThread(t, mailId, flagged),
+    ),
   };
 }
 
@@ -206,6 +238,24 @@ export const useMailStore = create<MailState>((set, get) => ({
       .catch((e) => {
         console.error("mark_read failed:", e);
       });
+  },
+
+  // スター/フラグは既読と同様に楽観更新するが、既読と違い頻繁にトグルされ
+  // 誤操作の是正もしやすいため、失敗時はロールバックしてエラー表示する
+  // （既読の「サーバー失敗はログのみ」より一段階ユーザーに見える形にする）
+  toggleFlagged: async (mail) => {
+    const next = !mail.is_flagged;
+    set((state) => setFlaggedInState(state, mail.id, next));
+    try {
+      await invoke("set_flagged", {
+        accountId: mail.account_id,
+        mailId: mail.id,
+        flagged: next,
+      });
+    } catch (e) {
+      set((state) => setFlaggedInState(state, mail.id, !next));
+      useErrorStore.getState().addError(String(e));
+    }
   },
 
   // 削除は破壊的操作のため楽観更新しない: サーバー反映（invoke）が成功した

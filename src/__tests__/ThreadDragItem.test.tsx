@@ -26,6 +26,7 @@ const mail = (id: string, isRead: boolean): Mail => ({
   uid: 1,
   flags: null,
   is_read: isRead,
+  is_flagged: false,
   fetched_at: "2026-07-12T00:00:00Z",
 });
 

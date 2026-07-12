@@ -25,6 +25,7 @@ function makeMail(id: string, overrides: Partial<Mail> = {}): Mail {
     uid: 1,
     flags: null,
     is_read: false,
+    is_flagged: false,
     fetched_at: "2026-07-12T00:00:00",
     ...overrides,
   };
@@ -498,6 +499,61 @@ describe("mailStore", () => {
       expect(s.threads).toHaveLength(1);
       expect(s.selectedThread?.mails).toHaveLength(1);
       // 失敗時は成功トーストを出さない（エラートーストのみ）
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].kind).toBe("error");
+    });
+  });
+
+  describe("toggleFlagged", () => {
+    it("optimistically flips is_flagged and invokes set_flagged", async () => {
+      const m1 = makeMail("m1", { is_flagged: false });
+      const thread = makeThread([m1]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().toggleFlagged(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("set_flagged", {
+        accountId: "acc1",
+        mailId: "m1",
+        flagged: true,
+      });
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].is_flagged).toBe(true);
+      expect(s.selectedThread?.mails[0].is_flagged).toBe(true);
+      expect(s.selectedMail?.is_flagged).toBe(true);
+      expect(s.unclassifiedMails[0].is_flagged).toBe(true);
+    });
+
+    it("toggles back to false when already flagged", async () => {
+      const m1 = makeMail("m1", { is_flagged: true });
+      useMailStore.setState({ selectedMail: m1 });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().toggleFlagged(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("set_flagged", {
+        accountId: "acc1",
+        mailId: "m1",
+        flagged: false,
+      });
+      expect(useMailStore.getState().selectedMail?.is_flagged).toBe(false);
+    });
+
+    it("reverts local state when the server call fails", async () => {
+      const m1 = makeMail("m1", { is_flagged: false });
+      useMailStore.setState({ selectedMail: m1 });
+      mockInvoke.mockRejectedValue("IMAP error: STORE failed");
+
+      await useMailStore.getState().toggleFlagged(m1);
+
+      expect(useMailStore.getState().selectedMail?.is_flagged).toBe(false);
       const toasts = useErrorStore.getState().toasts;
       expect(toasts).toHaveLength(1);
       expect(toasts[0].kind).toBe("error");

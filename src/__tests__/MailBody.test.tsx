@@ -19,7 +19,8 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
     cc_addr: null, subject: "件名",
     body_text: "本文テキスト", body_html: null,
     date: "2026-07-12T10:00:00+09:00", has_attachments: false,
-    raw_size: null, uid: 1, flags: null, is_read: false, fetched_at: "2026-07-12T00:00:00",
+    raw_size: null, uid: 1, flags: null, is_read: false, is_flagged: false,
+    fetched_at: "2026-07-12T00:00:00",
     ...overrides,
   };
 }
