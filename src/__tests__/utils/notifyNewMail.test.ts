@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   notifyNewMail,
   isNotificationEnabled,
+  isSubjectPreviewEnabled,
+  buildNotificationBody,
   NOTIFY_NEW_MAIL_KEY,
+  NOTIFY_SUBJECT_PREVIEW_KEY,
 } from "../../utils/notifyNewMail";
 
 const mockIsPermissionGranted = vi.fn();
@@ -71,6 +74,29 @@ describe("notifyNewMail", () => {
 
     expect(mockSendNotification).not.toHaveBeenCalled();
   });
+
+  it("shows count only when subjects are given but preview is disabled (default)", async () => {
+    mockIsPermissionGranted.mockResolvedValue(true);
+
+    await notifyNewMail(2, ["件名A", "件名B"]);
+
+    expect(mockSendNotification).toHaveBeenCalledWith({
+      title: "Pigeon",
+      body: "2件の新着メールを受信しました",
+    });
+  });
+
+  it("shows subject preview when subjects are given and preview is enabled", async () => {
+    mockIsPermissionGranted.mockResolvedValue(true);
+    localStorage.setItem(NOTIFY_SUBJECT_PREVIEW_KEY, "true");
+
+    await notifyNewMail(2, ["件名A", "件名B"]);
+
+    expect(mockSendNotification).toHaveBeenCalledWith({
+      title: "Pigeon",
+      body: "件名A\n件名B",
+    });
+  });
 });
 
 describe("isNotificationEnabled", () => {
@@ -90,5 +116,59 @@ describe("isNotificationEnabled", () => {
   it("is enabled for any other value", () => {
     localStorage.setItem(NOTIFY_NEW_MAIL_KEY, "true");
     expect(isNotificationEnabled()).toBe(true);
+  });
+});
+
+describe("isSubjectPreviewEnabled", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("is disabled by default (no localStorage key) — privacy-first default", () => {
+    expect(isSubjectPreviewEnabled()).toBe(false);
+  });
+
+  it("is enabled only when the key is exactly 'true'", () => {
+    localStorage.setItem(NOTIFY_SUBJECT_PREVIEW_KEY, "true");
+    expect(isSubjectPreviewEnabled()).toBe(true);
+  });
+
+  it("is disabled for any other value", () => {
+    localStorage.setItem(NOTIFY_SUBJECT_PREVIEW_KEY, "1");
+    expect(isSubjectPreviewEnabled()).toBe(false);
+  });
+});
+
+describe("buildNotificationBody", () => {
+  it("shows count only when preview is disabled", () => {
+    expect(buildNotificationBody(5, ["A", "B"], false)).toBe(
+      "5件の新着メールを受信しました",
+    );
+  });
+
+  it("shows count only when there are no subjects, even if preview is enabled", () => {
+    expect(buildNotificationBody(3, [], true)).toBe(
+      "3件の新着メールを受信しました",
+    );
+  });
+
+  it("shows all subjects when count is within the preview limit", () => {
+    expect(buildNotificationBody(2, ["件名A", "件名B"], true)).toBe(
+      "件名A\n件名B",
+    );
+  });
+
+  it("shows up to 3 subjects plus a remaining-count suffix", () => {
+    const subjects = ["件名A", "件名B", "件名C", "件名D", "件名E"];
+    expect(buildNotificationBody(5, subjects, true)).toBe(
+      "件名A\n件名B\n件名C\n他2件",
+    );
+  });
+
+  it("omits the remaining-count suffix when subjects exactly cover count", () => {
+    const subjects = ["件名A", "件名B", "件名C"];
+    expect(buildNotificationBody(3, subjects, true)).toBe(
+      "件名A\n件名B\n件名C",
+    );
   });
 });
