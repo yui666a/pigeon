@@ -193,6 +193,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 8 {
+        migrate_v8(conn)?;
+        version = 8;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -330,6 +336,25 @@ fn migrate_v7(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v8(conn: &Connection) -> Result<(), AppError> {
+    // 添付ファイル（オンデマンド取得・ローカルキャッシュ）
+    // 詳細: docs/superpowers/specs/2026-07-12-attachment-download-design.md
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS attachments (
+            id          TEXT PRIMARY KEY,
+            mail_id     TEXT NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+            filename    TEXT NOT NULL,
+            mime_type   TEXT NOT NULL,
+            size        INTEGER,
+            file_path   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_attachments_mail ON attachments(mail_id);
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,7 +469,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -651,7 +676,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -674,7 +699,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -844,7 +869,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -1014,7 +1039,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -1108,5 +1133,57 @@ mod tests {
             })
             .unwrap();
         assert_eq!(assignments, 1, "割り当ては失われない");
+    }
+
+    #[test]
+    fn test_migrate_v8_creates_attachments_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='attachments'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists, "attachments テーブルが作成される");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 8);
+    }
+
+    #[test]
+    fn test_attachments_cascade_on_mail_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'T', 't@e.com', 'imap.e.com', 'smtp.e.com', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, mail_id, filename, mime_type, size, file_path)
+             VALUES ('att1', 'm1', 'a.pdf', 'application/pdf', 10, '/tmp/a.pdf')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", []).unwrap();
+
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "メール削除で添付レコードもCASCADE削除される");
     }
 }
