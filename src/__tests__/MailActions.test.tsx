@@ -166,6 +166,30 @@ describe("MailActions", () => {
     });
   });
 
+  describe("mark as unread", () => {
+    const markMailUnread = vi.fn();
+
+    beforeEach(() => {
+      markMailUnread.mockReset();
+      useMailStore.setState({ markMailUnread });
+    });
+
+    it("renders the mark-unread button", () => {
+      render(<MailActions mail={makeMail()} />);
+      expect(
+        screen.getByRole("button", { name: "未読にする" }),
+      ).toBeInTheDocument();
+    });
+
+    it("marks the mail unread on click", () => {
+      render(<MailActions mail={makeMail()} />);
+      fireEvent.click(screen.getByRole("button", { name: "未読にする" }));
+      expect(markMailUnread).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "m1" }),
+      );
+    });
+  });
+
   describe("unarchive (folder='Archive')", () => {
     const unarchiveMail = vi.fn();
     const archiveMail = vi.fn();

@@ -185,6 +185,22 @@ pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppE
     Ok((folder, uid))
 }
 
+/// メールを未読に戻し、サーバー反映に必要な (folder, uid) を返す（mark_read の逆）。
+pub fn mark_unread(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
+    let (folder, uid): (String, u32) = conn
+        .query_row(
+            "SELECT folder, uid FROM mails WHERE id = ?1",
+            params![mail_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
+    conn.execute(
+        "UPDATE mails SET is_read = 0 WHERE id = ?1",
+        params![mail_id],
+    )?;
+    Ok((folder, uid))
+}
+
 /// メールのスター/フラグを設定し、サーバー反映に必要な (folder, uid) を返す。
 pub fn set_flagged(
     conn: &Connection,
@@ -522,6 +538,29 @@ mod tests {
     fn test_mark_read_missing_mail_returns_not_found() {
         let conn = setup_db();
         let result = mark_read(&conn, "nonexistent");
+        assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
+
+    #[test]
+    fn test_mark_unread_updates_row_and_returns_folder_uid() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        mail.uid = 42;
+        mail.is_read = true;
+        insert_mail(&conn, &mail).unwrap();
+
+        let (folder, uid) = mark_unread(&conn, "m1").unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(uid, 42);
+
+        let stored = get_mail_by_id(&conn, "m1").unwrap();
+        assert!(!stored.is_read);
+    }
+
+    #[test]
+    fn test_mark_unread_missing_mail_returns_not_found() {
+        let conn = setup_db();
+        let result = mark_unread(&conn, "nonexistent");
         assert!(matches!(result, Err(AppError::MailNotFound(_))));
     }
 

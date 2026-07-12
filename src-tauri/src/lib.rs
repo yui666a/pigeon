@@ -166,6 +166,7 @@ pub fn run() {
             commands::mail_commands::get_threads_by_project,
             commands::mail_commands::mark_read,
             commands::flag_commands::set_flagged,
+            commands::flag_commands::mark_unread,
             commands::mail_commands::get_unread_counts,
             commands::mail_commands::get_recent_unread_subjects,
             commands::project_commands::create_project,

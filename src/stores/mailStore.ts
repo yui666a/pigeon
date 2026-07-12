@@ -36,6 +36,7 @@ interface MailState {
   selectMail: (mail: Mail | null) => void;
   markMailRead: (mail: Mail) => void;
   toggleFlagged: (mail: Mail) => Promise<void>;
+  markMailUnread: (mail: Mail) => Promise<void>;
   deleteMail: (mail: Mail) => Promise<void>;
   archiveMail: (mail: Mail) => Promise<void>;
   unarchiveMail: (mail: Mail) => Promise<void>;
@@ -101,6 +102,15 @@ function setFlaggedInState(
       setFlaggedInThread(t, mailId, flagged),
     ),
   };
+}
+
+function markUnreadInMails(mails: Mail[], mailId: string): Mail[] {
+  return mails.map((m) => (m.id === mailId ? { ...m, is_read: false } : m));
+}
+
+function markUnreadInThread(thread: Thread, mailId: string): Thread {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  return { ...thread, mails: markUnreadInMails(thread.mails, mailId) };
 }
 
 function setFolderInMails(mails: Mail[], mailId: string, folder: string): Mail[] {
@@ -254,6 +264,40 @@ export const useMailStore = create<MailState>((set, get) => ({
       });
     } catch (e) {
       set((state) => setFlaggedInState(state, mail.id, !next));
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  // 未読に戻す。mark_read の逆で DB は即時更新・サーバー反映はベストエフォート
+  // だが、未読化した本文を表示したままだと selectMail の自動既読化で即座に
+  // 既読へ戻ってしまうため、成功時は選択を解除する（設計書「自動既読化との干渉回避」）
+  markMailUnread: async (mail) => {
+    set((state) => ({
+      threads: state.threads.map((t) => markUnreadInThread(t, mail.id)),
+      selectedThread: state.selectedThread
+        ? markUnreadInThread(state.selectedThread, mail.id)
+        : state.selectedThread,
+      unclassifiedMails: markUnreadInMails(state.unclassifiedMails, mail.id),
+      unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+        markUnreadInThread(t, mail.id),
+      ),
+    }));
+    try {
+      await invoke("mark_unread", { accountId: mail.account_id, mailId: mail.id });
+      set({ selectedMail: null });
+      void get().fetchUnreadCounts(mail.account_id);
+    } catch (e) {
+      // ロールバック: 既読状態に戻す
+      set((state) => ({
+        threads: state.threads.map((t) => markReadInThread(t, mail.id)),
+        selectedThread: state.selectedThread
+          ? markReadInThread(state.selectedThread, mail.id)
+          : state.selectedThread,
+        unclassifiedMails: markReadInMails(state.unclassifiedMails, mail.id),
+        unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+          markReadInThread(t, mail.id),
+        ),
+      }));
       useErrorStore.getState().addError(String(e));
     }
   },

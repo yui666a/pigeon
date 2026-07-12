@@ -12,6 +12,7 @@ export function MailActions({ mail }: MailActionsProps) {
   const unarchiveMail = useMailStore((s) => s.unarchiveMail);
   const deleteMail = useMailStore((s) => s.deleteMail);
   const toggleFlagged = useMailStore((s) => s.toggleFlagged);
+  const markMailUnread = useMailStore((s) => s.markMailUnread);
 
   const isArchived = mail.folder === "Archive";
 
@@ -71,6 +72,9 @@ export function MailActions({ mail }: MailActionsProps) {
         aria-label={mail.is_flagged ? "★" : "☆"}
       >
         {mail.is_flagged ? "★" : "☆"}
+      </button>
+      <button className={buttonClass} onClick={() => void markMailUnread(mail)}>
+        未読にする
       </button>
     </div>
   );
