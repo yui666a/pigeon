@@ -1,9 +1,10 @@
 import { render, fireEvent, screen } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { SEARCH_INPUT_ID } from "../components/sidebar/SearchBar";
 import { useMailStore } from "../stores/mailStore";
 import { useComposeStore } from "../stores/composeStore";
-import type { Mail } from "../types/mail";
+import type { Mail, Thread } from "../types/mail";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve()),
@@ -36,9 +37,25 @@ function makeMail(id: string): Mail {
   };
 }
 
+function makeThread(threadId: string, mails: Mail[]): Thread {
+  return {
+    thread_id: threadId,
+    subject: "S",
+    last_date: mails[mails.length - 1].date,
+    mail_count: mails.length,
+    from_addrs: [],
+    mails,
+  };
+}
+
 function Harness() {
   useKeyboardShortcuts();
-  return <input aria-label="field" />;
+  return (
+    <div>
+      <input aria-label="field" />
+      <input id={SEARCH_INPUT_ID} aria-label="search" />
+    </div>
+  );
 }
 
 describe("useKeyboardShortcuts: e = archive", () => {
@@ -120,5 +137,205 @@ describe("useKeyboardShortcuts: e = archive", () => {
     fireEvent.keyDown(window, { key: "e", metaKey: true });
 
     expect(archiveMail).not.toHaveBeenCalled();
+  });
+});
+
+describe("useKeyboardShortcuts: j/k = mail navigation", () => {
+  const selectMail = vi.fn();
+  const selectThread = vi.fn();
+
+  beforeEach(() => {
+    selectMail.mockReset();
+    selectThread.mockReset();
+    useComposeStore.setState({ isOpen: false });
+    useMailStore.setState({
+      selectedMail: null,
+      selectedThread: null,
+      threads: [],
+      selectMail,
+      selectThread,
+    });
+  });
+
+  it("selects the next mail in the thread on 'j'", () => {
+    const mails = [makeMail("m1"), makeMail("m2"), makeMail("m3")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[1],
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(selectMail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "m3" }),
+    );
+  });
+
+  it("selects the previous mail in the thread on 'k'", () => {
+    const mails = [makeMail("m1"), makeMail("m2"), makeMail("m3")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[1],
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "k" });
+
+    expect(selectMail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "m1" }),
+    );
+  });
+
+  it("stops at the last mail (no wrap) on 'j'", () => {
+    const mails = [makeMail("m1"), makeMail("m2")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[1],
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("stops at the first mail (no wrap) on 'k'", () => {
+    const mails = [makeMail("m1"), makeMail("m2")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[0],
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "k" });
+
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("treats the displayed latest mail as current when no mail is selected", () => {
+    // スレッド選択直後は末尾（最新）メールが表示されている
+    const mails = [makeMail("m1"), makeMail("m2")];
+    useMailStore.setState({ selectedThread: makeThread("t1", mails) });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "k" });
+    expect(selectMail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "m1" }),
+    );
+
+    selectMail.mockReset();
+    fireEvent.keyDown(window, { key: "j" });
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("selects the first thread on 'j' when no thread is selected", () => {
+    const threads = [
+      makeThread("t1", [makeMail("m1")]),
+      makeThread("t2", [makeMail("m2")]),
+    ];
+    useMailStore.setState({ threads });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(selectThread).toHaveBeenCalledWith(
+      expect.objectContaining({ thread_id: "t1" }),
+    );
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("does nothing on 'k' when no thread is selected (no previous)", () => {
+    useMailStore.setState({ threads: [makeThread("t1", [makeMail("m1")])] });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "k" });
+
+    expect(selectThread).not.toHaveBeenCalled();
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when there are no threads at all", () => {
+    render(<Harness />);
+    fireEvent.keyDown(window, { key: "j" });
+    expect(selectThread).not.toHaveBeenCalled();
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("does nothing while typing in a text input", () => {
+    const mails = [makeMail("m1"), makeMail("m2")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[0],
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(screen.getByLabelText("field"), { key: "j" });
+
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("does nothing while compose is open", () => {
+    const mails = [makeMail("m1"), makeMail("m2")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[0],
+    });
+    useComposeStore.setState({ isOpen: true });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when a modifier key is held", () => {
+    const mails = [makeMail("m1"), makeMail("m2")];
+    useMailStore.setState({
+      selectedThread: makeThread("t1", mails),
+      selectedMail: mails[0],
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+
+    expect(selectMail).not.toHaveBeenCalled();
+  });
+});
+
+describe("useKeyboardShortcuts: / = focus search", () => {
+  beforeEach(() => {
+    useComposeStore.setState({ isOpen: false });
+    useMailStore.setState({ selectedMail: null, selectedThread: null });
+  });
+
+  it("focuses the search input and prevents default on '/'", () => {
+    render(<Harness />);
+
+    // fireEvent は preventDefault されると false を返す
+    const notPrevented = fireEvent.keyDown(window, { key: "/" });
+
+    expect(notPrevented).toBe(false);
+    expect(screen.getByLabelText("search")).toHaveFocus();
+  });
+
+  it("does nothing while typing in another text input", () => {
+    render(<Harness />);
+    const field = screen.getByLabelText("field");
+    field.focus();
+
+    const notPrevented = fireEvent.keyDown(field, { key: "/" });
+
+    expect(notPrevented).toBe(true);
+    expect(field).toHaveFocus();
+  });
+
+  it("does nothing while compose is open", () => {
+    useComposeStore.setState({ isOpen: true });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "/" });
+
+    expect(screen.getByLabelText("search")).not.toHaveFocus();
   });
 });
