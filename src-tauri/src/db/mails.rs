@@ -107,6 +107,23 @@ pub fn get_mails_by_account(
     Ok(mails)
 }
 
+/// アカウントの全フォルダのメールを返す（スレッド追従の判定用）。
+/// スレッド判定にはSent/Archive等、INBOX以外のメールもリンクの手がかりとして必要
+pub fn get_all_mails_by_account(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<Mail>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM mails WHERE account_id = ?1 ORDER BY date DESC",
+        MAIL_COLUMNS
+    ))?;
+    let mails = stmt
+        .query_map(params![account_id], row_to_mail)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(mails)
+}
+
 pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<u32, AppError> {
     let uid: u32 = conn
         .query_row(
@@ -349,6 +366,45 @@ mod tests {
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].subject, "Hello");
+    }
+
+    #[test]
+    fn test_get_all_mails_by_account_spans_folders() {
+        // スレッド追従の判定にはINBOX以外（Sent/Archive）のメールも
+        // スレッドの手がかりとして必要なため、フォルダ横断で取得できること
+        let conn = setup_db();
+        let inbox = make_mail("m1", "<msg1@example.com>", "Inbox Mail", "2026-04-13T10:00:00");
+        let mut sent = make_mail("m2", "<msg2@example.com>", "Sent Mail", "2026-04-13T11:00:00");
+        sent.folder = "Sent".into();
+        let mut archived =
+            make_mail("m3", "<msg3@example.com>", "Archived Mail", "2026-04-13T09:00:00");
+        archived.folder = "Archive".into();
+        insert_mail(&conn, &inbox).unwrap();
+        insert_mail(&conn, &sent).unwrap();
+        insert_mail(&conn, &archived).unwrap();
+
+        let mails = get_all_mails_by_account(&conn, "acc1").unwrap();
+        assert_eq!(mails.len(), 3);
+    }
+
+    #[test]
+    fn test_get_all_mails_by_account_excludes_other_accounts() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        let mine = make_mail("m1", "<msg1@example.com>", "Mine", "2026-04-13T10:00:00");
+        let mut theirs = make_mail("m2", "<msg2@example.com>", "Theirs", "2026-04-13T10:00:00");
+        theirs.account_id = "acc2".into();
+        insert_mail(&conn, &mine).unwrap();
+        insert_mail(&conn, &theirs).unwrap();
+
+        let mails = get_all_mails_by_account(&conn, "acc1").unwrap();
+        assert_eq!(mails.len(), 1);
+        assert_eq!(mails[0].id, "m1");
     }
 
     #[test]

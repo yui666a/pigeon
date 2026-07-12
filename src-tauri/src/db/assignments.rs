@@ -1,7 +1,8 @@
-use crate::db::mails::{row_to_mail, MAIL_COLUMNS_PREFIXED};
+use crate::db::mails::{self, row_to_mail, MAIL_COLUMNS_PREFIXED};
 use crate::error::AppError;
 use crate::models::mail::Mail;
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 
 /// INSERT OR REPLACE a mail-to-project assignment.
 pub fn assign_mail(
@@ -241,6 +242,53 @@ pub fn move_mail_to_project(
         }
     }
     Ok(())
+}
+
+/// スレッド追従の自動分類: 未分類メールのスレッド仲間が単一の案件に割り当て済みなら、
+/// その案件へ自動的に追従割り当てする。スレッド仲間が複数の異なる案件に割り当てられている
+/// 場合は曖昧なので追従しない。
+///
+/// 判定は `mails::build_threads` と同じロジック（In-Reply-To/References + 件名フォールバック）
+/// をアカウント全フォルダのメールに対して適用する。設計:
+/// docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md
+///
+/// `assigned_by` は "ai"、`confidence` は None を使う（AIの意味的分類ではなく構造的な
+/// 推論のため、確信度スコアを持たないことで区別する）。ユーザーの訂正判断を経由しない
+/// 機械的な追従のため `correction_log` には記録しない（誤った学習信号になるのを避ける）。
+///
+/// 戻り値は追従割り当てしたメール数。
+pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize, AppError> {
+    let all_mails = mails::get_all_mails_by_account(conn, account_id)?;
+    let threads = mails::build_threads(&all_mails);
+
+    let mut followed = 0;
+    for thread in &threads {
+        let assigned_projects: HashSet<String> = thread
+            .mails
+            .iter()
+            .filter_map(|m| get_assignment_info(conn, &m.id).ok().flatten())
+            .map(|(project_id, _, _)| project_id)
+            .collect();
+
+        // ちょうど1件の案件に統一されているスレッドのみ追従する。
+        // 0件（誰も割り当てられていない）や複数件（曖昧）は対象外
+        if assigned_projects.len() != 1 {
+            continue;
+        }
+        let target_project = match assigned_projects.into_iter().next() {
+            Some(p) => p,
+            None => continue,
+        };
+
+        for mail in &thread.mails {
+            if get_assignment_info(conn, &mail.id)?.is_some() {
+                continue;
+            }
+            assign_mail(conn, &mail.id, &target_project, "ai", None)?;
+            followed += 1;
+        }
+    }
+    Ok(followed)
 }
 
 #[cfg(test)]
@@ -706,5 +754,146 @@ mod tests {
 
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert!(corrections.is_empty());
+    }
+
+    // --- auto_follow_threads flow ---
+
+    #[test]
+    fn test_auto_follow_assigns_reply_to_threadmates_project() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+
+        // m1 is already assigned; m2 (a reply) is unclassified
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        let followed = auto_follow_threads(&conn, "acc1").unwrap();
+        assert_eq!(followed, 1);
+
+        let info = get_assignment_info(&conn, "m2").unwrap().unwrap();
+        assert_eq!(info.0, "proj1");
+    }
+
+    #[test]
+    fn test_auto_follow_skips_thread_split_across_multiple_projects() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        create_project(&conn, "proj2", "acc1", "Project Beta");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        let mut m3 = make_mail("m3", "acc1", "Re: Test", "2026-04-13T12:00:00");
+        m3.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        insert_mail(&conn, &m3);
+
+        // Threadmates disagree on the project — ambiguous, m3 should stay unclassified
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+        assign_mail(&conn, "m2", "proj2", "user", Some(1.0)).unwrap();
+
+        let followed = auto_follow_threads(&conn, "acc1").unwrap();
+        assert_eq!(followed, 0);
+
+        let info = get_assignment_info(&conn, "m3").unwrap();
+        assert!(info.is_none(), "曖昧なスレッドは未分類のまま");
+    }
+
+    #[test]
+    fn test_auto_follow_noop_when_no_threadmate_assigned() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+
+        let followed = auto_follow_threads(&conn, "acc1").unwrap();
+        assert_eq!(followed, 0);
+        assert!(get_assignment_info(&conn, "m1").unwrap().is_none());
+        assert!(get_assignment_info(&conn, "m2").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_auto_follow_does_not_affect_unrelated_threads() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        // Unrelated thread, unassigned throughout
+        let m3 = make_mail("m3", "acc1", "Totally Unrelated", "2026-04-13T09:00:00");
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        insert_mail(&conn, &m3);
+
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        let followed = auto_follow_threads(&conn, "acc1").unwrap();
+        assert_eq!(followed, 1);
+        assert!(
+            get_assignment_info(&conn, "m3").unwrap().is_none(),
+            "無関係なスレッドは影響を受けない"
+        );
+    }
+
+    #[test]
+    fn test_auto_follow_does_not_write_correction_log() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        auto_follow_threads(&conn, "acc1").unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
+        assert!(
+            corrections.is_empty(),
+            "スレッド追従はユーザー訂正ではないのでcorrection_logに書かない"
+        );
+    }
+
+    #[test]
+    fn test_auto_follow_uses_ai_assigned_by_with_no_confidence() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        auto_follow_threads(&conn, "acc1").unwrap();
+
+        let info = get_assignment_info(&conn, "m2").unwrap().unwrap();
+        assert_eq!(info.1, "ai");
+        assert!(info.2.is_none(), "AI分類の確信度スコアと区別するためNone");
     }
 }
