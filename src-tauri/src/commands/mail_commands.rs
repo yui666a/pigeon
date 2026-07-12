@@ -47,7 +47,7 @@ pub async fn sync_account(
 /// Resolve IMAP credentials for the given account.
 /// For Google accounts, handles OAuth token refresh if needed.
 /// Returns (username, credential) suitable for `imap_client::connect`.
-async fn resolve_imap_credentials(
+pub(crate) async fn resolve_imap_credentials(
     account: &Account,
     secure_store: &crate::secure_store::SecureStore,
 ) -> Result<(AuthType, String, String), AppError> {

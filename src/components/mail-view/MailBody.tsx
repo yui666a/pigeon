@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import type { Mail } from "../../types/mail";
+import { AttachmentList } from "./AttachmentList";
 
 interface MailBodyProps {
   mail: Mail;
@@ -15,6 +16,9 @@ export function MailBody({ mail }: MailBodyProps) {
         />
       ) : (
         <pre className="whitespace-pre-wrap text-sm">{mail.body_text}</pre>
+      )}
+      {mail.has_attachments && (
+        <AttachmentList key={mail.id} mailId={mail.id} />
       )}
     </div>
   );

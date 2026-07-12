@@ -18,6 +18,15 @@ pub enum AppError {
     #[error("Mail not found: {0}")]
     MailNotFound(String),
 
+    #[error("Attachment not found: {0}")]
+    AttachmentNotFound(String),
+
+    #[error("Attachment cache missing: {0}")]
+    AttachmentCacheMissing(String),
+
+    #[error("File IO error: {0}")]
+    FileIo(String),
+
     #[error("OAuth error: {0}")]
     OAuth(String),
 

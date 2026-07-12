@@ -1,7 +1,40 @@
-use mail_parser::MessageParser;
+use mail_parser::{MessageParser, MimeHeaders};
 use uuid::Uuid;
 
 use crate::models::mail::Mail;
+
+/// MIMEから抽出した添付ファイル（DB登録前の生データ）
+#[derive(Debug, Clone)]
+pub struct ExtractedAttachment {
+    pub filename: Option<String>,
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+/// 元メールのバイト列から添付ファイルを抽出する純関数。
+/// mail-parser が添付と判定したパート（本文以外のパート）を返す。
+pub fn extract_attachments(raw: &[u8]) -> Vec<ExtractedAttachment> {
+    let Some(message) = MessageParser::default().parse(raw) else {
+        return Vec::new();
+    };
+    message
+        .attachments()
+        .map(|part| {
+            let mime_type = part
+                .content_type()
+                .map(|ct| match ct.subtype() {
+                    Some(sub) => format!("{}/{}", ct.ctype(), sub),
+                    None => ct.ctype().to_string(),
+                })
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            ExtractedAttachment {
+                filename: part.attachment_name().map(|s| s.to_string()),
+                mime_type,
+                data: part.contents().to_vec(),
+            }
+        })
+        .collect()
+}
 
 pub fn parse_mime(
     raw: &[u8],
@@ -252,5 +285,92 @@ mod tests {
     fn test_parse_empty_bytes() {
         let result = parse_mime(b"", "acc1", "INBOX", 1, false, None);
         let _ = result;
+    }
+
+    const MULTIPART_EMAIL_WITH_ATTACHMENTS: &[u8] = b"From: sender@example.com\r\n\
+        To: recipient@example.com\r\n\
+        Subject: With Attachments\r\n\
+        Message-ID: <att@example.com>\r\n\
+        Date: Sun, 12 Jul 2026 10:00:00 +0900\r\n\
+        MIME-Version: 1.0\r\n\
+        Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+        \r\n\
+        --BOUNDARY\r\n\
+        Content-Type: text/plain\r\n\
+        \r\n\
+        Please find attached.\r\n\
+        --BOUNDARY\r\n\
+        Content-Type: application/pdf; name=\"report.pdf\"\r\n\
+        Content-Disposition: attachment; filename=\"report.pdf\"\r\n\
+        Content-Transfer-Encoding: base64\r\n\
+        \r\n\
+        JVBERi0xLjQK\r\n\
+        --BOUNDARY\r\n\
+        Content-Type: image/png; name=\"pic.png\"\r\n\
+        Content-Disposition: attachment; filename=\"pic.png\"\r\n\
+        Content-Transfer-Encoding: base64\r\n\
+        \r\n\
+        iVBORw0KGgo=\r\n\
+        --BOUNDARY--\r\n";
+
+    const ATTACHMENT_WITHOUT_FILENAME: &[u8] = b"From: sender@example.com\r\n\
+        To: recipient@example.com\r\n\
+        Subject: Nameless\r\n\
+        Message-ID: <nameless@example.com>\r\n\
+        Date: Sun, 12 Jul 2026 10:00:00 +0900\r\n\
+        MIME-Version: 1.0\r\n\
+        Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+        \r\n\
+        --BOUNDARY\r\n\
+        Content-Type: text/plain\r\n\
+        \r\n\
+        Body.\r\n\
+        --BOUNDARY\r\n\
+        Content-Type: application/octet-stream\r\n\
+        Content-Disposition: attachment\r\n\
+        Content-Transfer-Encoding: base64\r\n\
+        \r\n\
+        AAECAw==\r\n\
+        --BOUNDARY--\r\n";
+
+    #[test]
+    fn test_extract_attachments_multipart() {
+        let attachments = extract_attachments(MULTIPART_EMAIL_WITH_ATTACHMENTS);
+        assert_eq!(attachments.len(), 2);
+
+        assert_eq!(attachments[0].filename.as_deref(), Some("report.pdf"));
+        assert_eq!(attachments[0].mime_type, "application/pdf");
+        assert_eq!(attachments[0].data, b"%PDF-1.4\n");
+
+        assert_eq!(attachments[1].filename.as_deref(), Some("pic.png"));
+        assert_eq!(attachments[1].mime_type, "image/png");
+        assert_eq!(attachments[1].data, b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn test_extract_attachments_marks_has_attachments() {
+        // 同期時の has_attachments フラグと抽出結果が整合すること
+        let mail = parse_mime(MULTIPART_EMAIL_WITH_ATTACHMENTS, "acc1", "INBOX", 1, false, None).unwrap();
+        assert!(mail.has_attachments);
+    }
+
+    #[test]
+    fn test_extract_attachments_none_for_plain_email() {
+        assert!(extract_attachments(SIMPLE_EMAIL).is_empty());
+    }
+
+    #[test]
+    fn test_extract_attachments_without_filename() {
+        let attachments = extract_attachments(ATTACHMENT_WITHOUT_FILENAME);
+        assert_eq!(attachments.len(), 1);
+        assert!(attachments[0].filename.is_none());
+        assert_eq!(attachments[0].mime_type, "application/octet-stream");
+        assert_eq!(attachments[0].data, [0u8, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_extract_attachments_invalid_bytes() {
+        assert!(extract_attachments(b"").is_empty());
+        assert!(extract_attachments(b"garbage").is_empty());
     }
 }

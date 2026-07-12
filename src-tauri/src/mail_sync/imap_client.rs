@@ -306,6 +306,34 @@ pub async fn store_seen_flag(
     Ok(())
 }
 
+/// UID 指定で元メール（RFC822 全文）を1通取得する。
+/// 添付ファイルのオンデマンド取得（attachment-download 設計）で使用する。
+pub async fn fetch_mail_raw(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<Vec<u8>, AppError> {
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+
+    let messages: Vec<_> = session
+        .uid_fetch(uid.to_string(), "(UID RFC822)")
+        .await
+        .map_err(|e| AppError::Imap(format!("Mail fetch failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("Mail fetch stream failed: {}", e)))?;
+
+    messages
+        .iter()
+        .find(|m| m.uid == Some(uid))
+        .and_then(|m| m.body())
+        .map(|b| b.to_vec())
+        .ok_or_else(|| AppError::Imap(format!("Mail not found on server (uid={})", uid)))
+}
+
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
     let folders: Vec<_> = session
         .list(None, Some("*"))

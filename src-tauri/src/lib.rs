@@ -123,6 +123,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::attachment_commands::list_attachments,
+            commands::attachment_commands::save_attachment,
             commands::account_commands::create_account,
             commands::account_commands::get_accounts,
             commands::account_commands::remove_account,
