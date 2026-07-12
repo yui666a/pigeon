@@ -3,11 +3,10 @@ import { useAccountStore } from "../../stores/accountStore";
 import { useClassifyStore } from "../../stores/classifyStore";
 import { useMailStore } from "../../stores/mailStore";
 import { ClassifyButton } from "./ClassifyButton";
-import { MailDragItem } from "./MailDragItem";
+import { ThreadDragItem } from "./ThreadDragItem";
 import { NewProjectProposal } from "../common/NewProjectProposal";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
-import type { Mail } from "../../types/mail";
-import { threadFromMail } from "../../utils/thread";
+import type { Thread } from "../../types/mail";
 
 export function UnclassifiedList() {
   const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
@@ -19,14 +18,15 @@ export function UnclassifiedList() {
   );
   const removeUnclassifiedMail = useMailStore((s) => s.removeUnclassifiedMail);
   const unclassifiedMails = useMailStore((s) => s.unclassifiedMails);
+  const unclassifiedThreads = useMailStore((s) => s.unclassifiedThreads);
   const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
-  const { selectThread, selectMail } = useMailStore();
+  const { selectThread } = useMailStore();
   const {
-    visible: visibleMails,
+    visible: visibleThreads,
     hasMore,
     remaining,
     showMore,
-  } = useDisplayLimit(unclassifiedMails, selectedAccountId);
+  } = useDisplayLimit(unclassifiedThreads, selectedAccountId);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -47,9 +47,9 @@ export function UnclassifiedList() {
     removeUnclassifiedMail(mailId);
   };
 
-  const handleMailClick = (mail: Mail) => {
-    selectThread(threadFromMail(mail));
-    selectMail(mail);
+  const handleThreadClick = (thread: Thread) => {
+    // 実スレッドを渡すことで MailView にスレッド内タブが表示される
+    selectThread(thread);
   };
 
   return (
@@ -76,13 +76,13 @@ export function UnclassifiedList() {
         </div>
       )}
 
-      {unclassifiedMails.length > 0 && (
+      {unclassifiedThreads.length > 0 && (
         <div className="max-h-48 overflow-y-auto">
-          {visibleMails.map((mail) => (
-            <MailDragItem
-              key={mail.id}
-              mail={mail}
-              onClick={() => handleMailClick(mail)}
+          {visibleThreads.map((thread) => (
+            <ThreadDragItem
+              key={thread.thread_id}
+              thread={thread}
+              onClick={() => handleThreadClick(thread)}
             />
           ))}
           {hasMore && (

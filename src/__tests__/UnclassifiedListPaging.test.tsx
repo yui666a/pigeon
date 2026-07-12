@@ -5,7 +5,7 @@ import { useAccountStore } from "../stores/accountStore";
 import { useMailStore } from "../stores/mailStore";
 import { useClassifyStore } from "../stores/classifyStore";
 import { useProjectStore } from "../stores/projectStore";
-import type { Mail } from "../types/mail";
+import type { Mail, Thread } from "../types/mail";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve([])),
@@ -36,11 +36,22 @@ const mail = (i: number): Mail => ({
   fetched_at: "2026-07-09T00:00:00Z",
 });
 
+const threadOf = (m: Mail): Thread => ({
+  thread_id: m.message_id,
+  subject: m.subject,
+  last_date: m.date,
+  mail_count: 1,
+  from_addrs: [m.from_addr],
+  mails: [m],
+});
+
 describe("UnclassifiedList paging", () => {
   beforeEach(() => {
     useAccountStore.setState({ selectedAccountId: "acc1" });
+    const mails = Array.from({ length: 250 }, (_, i) => mail(i));
     useMailStore.setState({
-      unclassifiedMails: Array.from({ length: 250 }, (_, i) => mail(i)),
+      unclassifiedMails: mails,
+      unclassifiedThreads: mails.map(threadOf),
       threads: [],
       syncing: false,
       needsReauth: false,

@@ -164,6 +164,18 @@ pub fn get_unclassified_mails(
     Ok(assignments::get_unclassified_mails(&conn, &account_id)?)
 }
 
+/// 未分類メールをスレッド単位で返す（未分類一覧のスレッド表示用）。
+/// 分類の実体はメール単位のまま（スレッドのD&Dは全メールIDを渡す）
+#[tauri::command]
+pub fn get_unclassified_threads(
+    db: State<DbState>,
+    account_id: String,
+) -> Result<Vec<crate::models::mail::Thread>, AppError> {
+    let conn = db.0.lock().map_err(AppError::lock_err)?;
+    let mails = assignments::get_unclassified_mails(&conn, &account_id)?;
+    Ok(crate::db::mails::build_threads(&mails))
+}
+
 /// Move a mail to a different project (used by D&D and context menu).
 #[tauri::command]
 pub fn move_mail(db: State<DbState>, mail_id: String, project_id: String) -> Result<(), AppError> {
@@ -310,6 +322,63 @@ mod tests {
 
         let unclassified = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
         assert_eq!(unclassified.len(), 2);
+    }
+
+    #[test]
+    fn test_get_unclassified_mails_excludes_sent_and_archive() {
+        // 自分の送信済み・アーカイブ済みは分類対象にしない（INBOXのみ）
+        let conn = setup_db();
+        insert_test_mail(&conn, "m1", "Inbox Mail");
+        let mut sent = crate::test_helpers::make_mail(
+            "m2",
+            "<sent@pigeon.local>",
+            "Re: Inbox Mail",
+            "2026-07-12T10:00:00",
+        );
+        sent.folder = "Sent".into();
+        crate::db::mails::insert_mail(&conn, &sent).unwrap();
+        let mut archived = crate::test_helpers::make_mail(
+            "m3",
+            "<archived@ex.com>",
+            "Old Mail",
+            "2026-07-11T10:00:00",
+        );
+        archived.folder = "Archive".into();
+        crate::db::mails::insert_mail(&conn, &archived).unwrap();
+
+        let unclassified = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
+        assert_eq!(unclassified.len(), 1);
+        assert_eq!(unclassified[0].id, "m1");
+    }
+
+    #[test]
+    fn test_get_unclassified_threads_groups_replies() {
+        // 返信の連鎖（References）が1スレッドにまとまること
+        let conn = setup_db();
+        let m1 = crate::test_helpers::make_mail(
+            "m1",
+            "<t1@ex.com>",
+            "Re: Test",
+            "2026-07-12T10:00:00",
+        );
+        let mut m2 = crate::test_helpers::make_mail(
+            "m2",
+            "<t3@ex.com>",
+            "Re: Test",
+            "2026-07-12T11:00:00",
+        );
+        // 中間のメール（自分の返信 <t2> は Sent にあり未分類一覧には無い）を
+        // 飛び越えて References で繋がるケース
+        m2.references = Some("<t1@ex.com> <t2@pigeon.local>".into());
+        crate::db::mails::insert_mail(&conn, &m1).unwrap();
+        crate::db::mails::insert_mail(&conn, &m2).unwrap();
+        insert_test_mail(&conn, "m3", "Unrelated");
+
+        let mails = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
+        let threads = crate::db::mails::build_threads(&mails);
+        assert_eq!(threads.len(), 2);
+        let re_test = threads.iter().find(|t| t.mail_count == 2).unwrap();
+        assert_eq!(re_test.mails.len(), 2);
     }
 
     #[test]
