@@ -9,7 +9,10 @@ interface MailActionsProps {
 export function MailActions({ mail }: MailActionsProps) {
   const openCompose = useComposeStore((s) => s.openCompose);
   const archiveMail = useMailStore((s) => s.archiveMail);
+  const unarchiveMail = useMailStore((s) => s.unarchiveMail);
   const deleteMail = useMailStore((s) => s.deleteMail);
+
+  const isArchived = mail.folder === "Archive";
 
   const buttonClass =
     "rounded border px-3 py-1 text-sm text-gray-700 hover:bg-gray-100";
@@ -44,9 +47,18 @@ export function MailActions({ mail }: MailActionsProps) {
       >
         転送
       </button>
-      <button className={buttonClass} onClick={() => void archiveMail(mail)}>
-        アーカイブ
-      </button>
+      {isArchived ? (
+        <button
+          className={buttonClass}
+          onClick={() => void unarchiveMail(mail)}
+        >
+          アーカイブ解除
+        </button>
+      ) : (
+        <button className={buttonClass} onClick={() => void archiveMail(mail)}>
+          アーカイブ
+        </button>
+      )}
       <button className={deleteButtonClass} onClick={handleDelete}>
         削除
       </button>

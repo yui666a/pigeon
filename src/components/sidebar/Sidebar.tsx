@@ -12,6 +12,7 @@ import { ProjectForm } from "./ProjectForm";
 import { ScanIndicator } from "./ScanIndicator";
 import { SyncIndicator } from "./SyncIndicator";
 import { LlmSettingsDialog } from "./LlmSettingsDialog";
+import { NotificationToggle } from "./NotificationToggle";
 import type { CreateAccountRequest } from "../../types/account";
 
 export function Sidebar() {
@@ -153,6 +154,9 @@ export function Sidebar() {
         >
           ✉ 新規作成
         </button>
+      </div>
+      <div className="border-t">
+        <NotificationToggle />
       </div>
       <SyncIndicator />
       <ScanIndicator />

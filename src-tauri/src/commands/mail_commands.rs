@@ -376,6 +376,35 @@ pub async fn archive_mail(
     mails::update_folder(&conn, &mail_id, "Archive")
 }
 
+/// メールをアーカイブ解除する（folder を 'INBOX' に戻す）。
+/// v1 ではローカル更新のみ: アーカイブ時に COPY 先の UID（COPYUID）を保存して
+/// おらずサーバー上のメールを特定できないため、サーバー反映は行わない
+/// （設計書「アーカイブ解除」参照。サーバー側はアーカイブ済みのまま残る）。
+#[tauri::command]
+pub fn unarchive_mail(
+    state: State<DbState>,
+    account_id: String,
+    mail_id: String,
+) -> Result<(), AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    unarchive_mail_inner(&conn, &account_id, &mail_id)
+}
+
+fn unarchive_mail_inner(
+    conn: &rusqlite::Connection,
+    account_id: &str,
+    mail_id: &str,
+) -> Result<(), AppError> {
+    let (_account, mail) = load_mail_context(conn, account_id, mail_id)?;
+    if mail.folder != "Archive" {
+        return Err(AppError::Validation(format!(
+            "アーカイブ済みでないメールは解除できません (folder: {})",
+            mail.folder
+        )));
+    }
+    mails::update_folder(conn, mail_id, "INBOX")
+}
+
 /// プロジェクト毎 + 未分類の未読件数を返す（INBOX のみ対象）。
 #[tauri::command]
 pub fn get_unread_counts(
@@ -481,6 +510,52 @@ mod tests {
     fn test_load_mail_context_missing_mail() {
         let conn = setup_db();
         let result = load_mail_context(&conn, "acc1", "missing");
+        assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
+
+    #[test]
+    fn test_unarchive_moves_archived_mail_back_to_inbox() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-07-12T10:00:00");
+        mail.folder = "Archive".into();
+        mails::insert_mail(&conn, &mail).unwrap();
+
+        unarchive_mail_inner(&conn, "acc1", "m1").unwrap();
+
+        let updated = mails::get_mail_by_id(&conn, "m1").unwrap();
+        assert_eq!(updated.folder, "INBOX");
+    }
+
+    #[test]
+    fn test_unarchive_rejects_non_archived_mail() {
+        // INBOX のメールに対する解除は誤操作なので Validation エラー
+        let conn = setup_db();
+        let mail = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-07-12T10:00:00");
+        mails::insert_mail(&conn, &mail).unwrap();
+
+        let result = unarchive_mail_inner(&conn, "acc1", "m1");
+        assert!(matches!(result, Err(AppError::Validation(_))));
+
+        // ローカル状態は変更されない
+        let unchanged = mails::get_mail_by_id(&conn, "m1").unwrap();
+        assert_eq!(unchanged.folder, "INBOX");
+    }
+
+    #[test]
+    fn test_unarchive_missing_account() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-07-12T10:00:00");
+        mail.folder = "Archive".into();
+        mails::insert_mail(&conn, &mail).unwrap();
+
+        let result = unarchive_mail_inner(&conn, "missing", "m1");
+        assert!(matches!(result, Err(AppError::AccountNotFound(_))));
+    }
+
+    #[test]
+    fn test_unarchive_missing_mail() {
+        let conn = setup_db();
+        let result = unarchive_mail_inner(&conn, "acc1", "missing");
         assert!(matches!(result, Err(AppError::MailNotFound(_))));
     }
 

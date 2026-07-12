@@ -178,6 +178,7 @@ pub fn run() {
             commands::classify_commands::reject_classification,
             commands::classify_commands::move_mail,
             commands::classify_commands::get_unclassified_mails,
+            commands::classify_commands::get_unclassified_threads,
             commands::classify_commands::get_mails_by_project,
             commands::search_commands::search_mails,
             commands::send_commands::send_mail,
@@ -195,6 +196,7 @@ pub fn run() {
             commands::settings_commands::test_llm_connection,
             commands::mail_commands::delete_mail,
             commands::mail_commands::archive_mail,
+            commands::mail_commands::unarchive_mail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

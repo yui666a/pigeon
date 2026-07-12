@@ -72,6 +72,7 @@ describe("mailStore", () => {
       syncing: false,
       needsReauth: false,
       unclassifiedMails: [],
+      unclassifiedThreads: [],
       error: null,
       syncProgress: null,
       unreadCounts: { by_project: {}, unclassified: 0 },
@@ -277,14 +278,19 @@ describe("mailStore", () => {
   });
 
   describe("fetchUnclassified", () => {
-    it("sets unclassifiedMails on success", async () => {
-      const mails = [{ id: "m1", subject: "Test" }];
-      mockInvoke.mockResolvedValue(mails);
+    it("sets unclassifiedThreads and flattened unclassifiedMails on success", async () => {
+      const m1 = { id: "m1", subject: "Re: Test" };
+      const m2 = { id: "m2", subject: "Re: Test" };
+      const threads = [
+        { thread_id: "t1", subject: "Re: Test", last_date: "", mail_count: 2, from_addrs: [], mails: [m1, m2] },
+      ];
+      mockInvoke.mockResolvedValue(threads);
 
       await useMailStore.getState().fetchUnclassified("acc1");
 
-      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", { accountId: "acc1" });
-      expect(useMailStore.getState().unclassifiedMails).toEqual(mails);
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", { accountId: "acc1" });
+      expect(useMailStore.getState().unclassifiedThreads).toEqual(threads);
+      expect(useMailStore.getState().unclassifiedMails).toEqual([m1, m2]);
     });
 
     it("sets error on failure", async () => {
@@ -498,6 +504,66 @@ describe("mailStore", () => {
     });
   });
 
+  describe("unarchiveMail", () => {
+    it("invokes unarchive_mail and updates folder to INBOX in all state on success", async () => {
+      const m1 = makeMail("m1", { folder: "Archive" });
+      const m2 = makeMail("m2", { folder: "Archive" });
+      const thread = makeThread([m1, m2]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().unarchiveMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("unarchive_mail", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      const s = useMailStore.getState();
+      // 除去ではなく folder のローカル更新（案件ビュー・検索に表示され続ける）
+      expect(s.threads[0].mails.map((m) => m.folder)).toEqual([
+        "INBOX",
+        "Archive",
+      ]);
+      expect(s.selectedThread?.mails[0].folder).toBe("INBOX");
+      expect(s.selectedMail?.folder).toBe("INBOX");
+      expect(s.unclassifiedMails[0].folder).toBe("INBOX");
+    });
+
+    it("refreshes unread counts after success", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      const m1 = makeMail("m1", { folder: "Archive" });
+      useMailStore.setState({ threads: [makeThread([m1])] });
+
+      await useMailStore.getState().unarchiveMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
+    it("keeps local state unchanged when the backend fails", async () => {
+      const m1 = makeMail("m1", { folder: "Archive" });
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedMail: m1 });
+      mockInvoke.mockRejectedValue("Validation error: not archived");
+
+      await useMailStore.getState().unarchiveMail(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].folder).toBe("Archive");
+      expect(s.selectedMail?.folder).toBe("Archive");
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "get_unread_counts",
+        expect.anything(),
+      );
+    });
+  });
+
   describe("sync progress", () => {
     it("updates syncProgress on sync-progress events", async () => {
       await useMailStore.getState().initSyncListener();
@@ -523,7 +589,7 @@ describe("mailStore", () => {
         accountId: "acc1",
         folder: "INBOX",
       });
-      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", {
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
       });
 
@@ -548,7 +614,7 @@ describe("mailStore", () => {
         accountId: "acc1",
         folder: "INBOX",
       });
-      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", {
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
       });
     });
@@ -562,7 +628,7 @@ describe("mailStore", () => {
       syncProgressHandler!({ payload: { account_id: "acc1", done: 500, total: 1200 } });
 
       expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
-      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_mails", {
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
       });
     });
@@ -576,7 +642,7 @@ describe("mailStore", () => {
       syncProgressHandler!({ payload: { account_id: "acc1", done: 500, total: 1200 } });
 
       expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
-      expect(mockInvoke).not.toHaveBeenCalledWith("get_unclassified_mails", expect.anything());
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_unclassified_threads", expect.anything());
     });
 
     it("clears syncProgress when syncAccount finishes", async () => {
