@@ -102,6 +102,8 @@ pub(crate) fn build_sent_record(
         is_read: true,
         is_flagged: false,
         fetched_at: now,
+        // 送信時の uid は get_max_uid+1 の推定値。Sent 同期で後追い確定するまで未確定
+        uid_confirmed: false,
     }
 }
 

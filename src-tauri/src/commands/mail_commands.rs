@@ -102,6 +102,131 @@ pub(crate) async fn resolve_imap_credentials(
     }
 }
 
+/// フォルダ取り込み時の DB 反映方式。
+/// INBOX は素朴な INSERT OR IGNORE、Sent は message_id マージ（二重行防止・
+/// 送信時ローカル行の uid 確定）を使う。
+#[derive(Clone, Copy)]
+enum MergeStrategy {
+    /// UNIQUE(account, folder, uid) で重複を無視して挿入する
+    InsertOrIgnore,
+    /// message_id で既存行があれば uid を更新、無ければ挿入する（Sent 同期）
+    UpsertByMessageId,
+}
+
+/// 1フォルダ分を差分取得し、logical_folder でローカル DB に取り込む。
+/// server_folder はサーバー上の実フォルダ名（Gmail の Sent 等はロケール依存）、
+/// logical_folder はローカル DB 上の正規化名（"INBOX" / "Sent"）。
+/// 取り込んだ新規件数を返す。進捗コールバックはバッチごとに呼ぶ。
+#[allow(clippy::too_many_arguments)]
+async fn sync_folder_into(
+    state: &DbState,
+    session: &mut imap_client::ImapSession,
+    account_id: &str,
+    server_folder: &str,
+    logical_folder: &str,
+    since_uid: u32,
+    initial_limit: u32,
+    strategy: MergeStrategy,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<u32, AppError> {
+    let mut count = 0u32;
+    imap_client::fetch_mails_batched(
+        session,
+        server_folder,
+        since_uid,
+        initial_limit,
+        |batch, progress| {
+            // バッチ単位でロックを取り、挿入してから進捗を通知する
+            {
+                let conn = state.0.lock().map_err(AppError::lock_err)?;
+                for fetched in batch {
+                    if let Some(mail) = mime_parser::parse_mime(
+                        &fetched.body,
+                        account_id,
+                        logical_folder,
+                        fetched.uid,
+                        fetched.is_read,
+                        fetched.is_flagged,
+                        fetched.flags,
+                    ) {
+                        let inserted = match strategy {
+                            MergeStrategy::InsertOrIgnore => mails::insert_mail(&conn, &mail)?,
+                            MergeStrategy::UpsertByMessageId => {
+                                mails::upsert_sent_mail(&conn, &mail)?
+                            }
+                        };
+                        // 既存行の無視・uid 更新のみは新規取り込みに数えない
+                        if inserted {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            on_progress(progress.done, progress.total);
+            Ok(())
+        },
+    )
+    .await?;
+    Ok(count)
+}
+
+/// Sent フォルダをベストエフォートで同期する。
+/// サーバー実フォルダは \Sent SPECIAL-USE で探し、無ければ settings の sent_folder。
+/// ローカルは logical folder "Sent" に正規化し、message_id マージで取り込む
+/// （送信時ローカル行の uid 確定・他クライアント送信の取り込み）。
+/// 失敗は警告ログのみ（INBOX 同期の成功を覆さない）。取り込んだ新規件数を返す。
+async fn sync_sent_folder(
+    state: &DbState,
+    session: &mut imap_client::ImapSession,
+    account_id: &str,
+    initial_limit: u32,
+) -> u32 {
+    let sent_since = {
+        let conn = match state.0.lock() {
+            Ok(c) => c,
+            Err(_) => return 0,
+        };
+        // 送信時の推定 uid（uid_confirmed=0）を watermark に含めるとサーバー行が
+        // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）
+        mails::get_max_confirmed_uid(&conn, account_id, "Sent").unwrap_or(0)
+    };
+
+    let server_folder = match imap_client::find_sent_folder(session).await {
+        Ok(Some(name)) => name,
+        Ok(None) => {
+            let conn = match state.0.lock() {
+                Ok(c) => c,
+                Err(_) => return 0,
+            };
+            crate::db::settings::get_or_default(&conn, "sent_folder", "Sent")
+        }
+        Err(e) => {
+            eprintln!("[warn] Sent folder discovery failed: {}", e);
+            return 0;
+        }
+    };
+
+    match sync_folder_into(
+        state,
+        session,
+        account_id,
+        &server_folder,
+        "Sent",
+        sent_since,
+        initial_limit,
+        MergeStrategy::UpsertByMessageId,
+        |_, _| {},
+    )
+    .await
+    {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[warn] Sent folder sync failed: {}", e);
+            0
+        }
+    }
+}
+
 async fn sync_account_inner(
     state: &DbState,
     secure_store: &crate::secure_store::SecureStore,
@@ -128,38 +253,19 @@ async fn sync_account_inner(
     )
     .await?;
 
-    let mut count = 0u32;
-    let fetch_result = imap_client::fetch_mails_batched(
+    let fetch_result = sync_folder_into(
+        state,
         &mut session,
+        account_id,
+        "INBOX",
         "INBOX",
         max_uid,
         initial_limit,
-        |batch, progress| {
-            // バッチ単位でロックを取り、挿入してから進捗を通知する
-            {
-                let conn = state.0.lock().map_err(AppError::lock_err)?;
-                for fetched in batch {
-                    if let Some(mail) = mime_parser::parse_mime(
-                        &fetched.body,
-                        account_id,
-                        "INBOX",
-                        fetched.uid,
-                        fetched.is_read,
-                        fetched.is_flagged,
-                        fetched.flags,
-                    ) {
-                        // 既存行（UNIQUE 重複）は挿入されないため件数に含めない
-                        if mails::insert_mail(&conn, &mail)? {
-                            count += 1;
-                        }
-                    }
-                }
-            }
-            on_progress(progress.done, progress.total);
-            Ok(())
-        },
+        MergeStrategy::InsertOrIgnore,
+        &mut on_progress,
     )
     .await;
+    let mut count = *fetch_result.as_ref().unwrap_or(&0);
 
     // フラグ再同期: 既知メールの既読状態・スター状態をサーバーに合わせる
     // （他クライアントでの変更の取り込み。設計書「フラグ変更→ローカルDB更新」）。
@@ -178,6 +284,10 @@ async fn sync_account_inner(
             }
             Err(e) => eprintln!("[warn] flag-state resync failed: {}", e),
         }
+
+        // Sent フォルダの同期（ベストエフォート）。送信時ローカル行の uid 確定と
+        // 他クライアント送信の取り込み。失敗しても INBOX 同期の成功は覆さない
+        count += sync_sent_folder(state, &mut session, account_id, initial_limit).await;
     }
 
     if let Err(e) = session.logout().await {
@@ -254,7 +364,10 @@ enum DeletePlan {
     /// サーバー側は \Trash フォルダがあればゴミ箱へ移動、なければ完全削除
     /// （imap_client::delete_message_remote 参照）
     Server,
-    /// ローカル行の削除のみ（Sent は uid が APPEND 時の推定値のため。v1 制限）
+    /// ローカル行の削除のみ。Sent フォルダ同期（2026-07-12-sent-sync-uidplus-design.md）
+    /// により送信後の Sent 行の uid は後追いで確定するが、同期前の送信直後の行は
+    /// 推定 uid のままで、確定済みかをローカル行から判定する手段が現状ない。
+    /// 破壊的操作での誤爆を避けるため Sent は安全側で LocalOnly を維持する（v1 制限）。
     LocalOnly,
 }
 
@@ -273,7 +386,8 @@ enum ArchivePlan {
     DeleteOnly,
     /// archive_folder へ UID COPY してから \Deleted + EXPUNGE（一般 IMAP）
     CopyThenDelete(String),
-    /// ローカルの folder 更新のみ（Sent。v1 制限）
+    /// ローカルの folder 更新のみ（Sent。DeletePlan::LocalOnly と同じ理由で
+    /// uid 確定状態の判定手段が未整備のため安全側で維持。v1 制限）
     LocalOnly,
 }
 

@@ -205,6 +205,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 10 {
+        migrate_v10(conn)?;
+        version = 10;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -373,6 +379,24 @@ fn migrate_v9(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v10(conn: &Connection) -> Result<(), AppError> {
+    // uid がサーバー実 UID として確定しているか（Sent 同期の watermark 用）。
+    // 詳細: docs/superpowers/specs/2026-07-12-sent-sync-uidplus-design.md
+    //
+    // 既定は 1（確定）。INBOX 等サーバーから取得した行の uid はサーバー実 UID なので確定。
+    // 一方、送信時にローカル保存する Sent 行の uid は get_max_uid+1 の推定値であり未確定。
+    // 本マイグレーション以前は Sent 同期が存在しなかったため、既存の folder='Sent' 行は
+    // すべて送信時の推定 uid とみなして 0（未確定）で埋め戻す。
+    conn.execute_batch(
+        "ALTER TABLE mails ADD COLUMN uid_confirmed INTEGER NOT NULL DEFAULT 1;",
+    )?;
+    conn.execute(
+        "UPDATE mails SET uid_confirmed = 0 WHERE folder = 'Sent'",
+        [],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,7 +511,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -694,7 +718,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -717,7 +741,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -887,7 +911,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -1057,7 +1081,96 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
+    }
+
+    #[test]
+    fn test_v10_adds_uid_confirmed_defaulting_to_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        // uid_confirmed を指定しない INSERT はデフォルト 1（確定）になる
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+
+        let confirmed: i32 = conn
+            .query_row("SELECT uid_confirmed FROM mails WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(confirmed, 1, "uid_confirmed defaults to 1 (confirmed)");
+    }
+
+    #[test]
+    fn test_v10_backfills_existing_sent_rows_as_unconfirmed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // v8 までを適用した状態（Sent 同期が存在しなかった時代）で既存メールを仕込む
+        get_schema_version(&conn).unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        set_schema_version(&conn, 8).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        // INBOX 行（サーバー実 uid）と Sent 行（送信時の推定 uid）
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('inbox1', 'acc1', 'INBOX', '<a@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('sent1', 'acc1', 'Sent', '<b@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let inbox_confirmed: i32 = conn
+            .query_row(
+                "SELECT uid_confirmed FROM mails WHERE id = 'inbox1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let sent_confirmed: i32 = conn
+            .query_row(
+                "SELECT uid_confirmed FROM mails WHERE id = 'sent1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inbox_confirmed, 1, "INBOX 既存行は確定のまま");
+        assert_eq!(sent_confirmed, 0, "Sent 既存行は推定 uid として未確定に埋め戻す");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -1170,7 +1283,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -1290,6 +1403,6 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 }

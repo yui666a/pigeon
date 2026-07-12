@@ -306,6 +306,7 @@ mod tests {
             is_read: false,
             is_flagged: false,
             fetched_at: "2026-04-13T00:00:00".into(),
+            uid_confirmed: true,
         }
     }
 
