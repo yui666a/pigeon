@@ -44,6 +44,62 @@ pub async fn sync_account(
     result
 }
 
+/// backfill-progress イベントの payload。sync-progress とは別イベントにしている
+/// （同一アカウントで通常同期とバックフィルの進捗が同時に UI へ届くと区別できないため）。
+#[derive(Clone, serde::Serialize)]
+struct BackfillProgressEvent {
+    account_id: String,
+    done: usize,
+    total: usize,
+}
+
+/// backfill_account の戻り値。exhausted が true なら、これ以上サーバーに
+/// 遡れる古いメールがないことをフロントに伝える（ボタン無効化の判定に使う）。
+#[derive(Clone, serde::Serialize)]
+pub struct BackfillOutcome {
+    pub fetched: u32,
+    pub exhausted: bool,
+}
+
+/// ローカル最古メール（INBOX）より古いメールを、新しい→古いの順に最大 limit 件
+/// 遡ってサーバーから取得する（バックログ項目8）。SyncLocks は通常同期と共有し、
+/// 同一アカウントの同期・バックフィルが同時に走ることを防ぐ。
+#[tauri::command]
+pub async fn backfill_account(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    sync_locks: State<'_, SyncLocks>,
+    account_id: String,
+    limit: u32,
+) -> Result<BackfillOutcome, AppError> {
+    if !sync_locks.try_begin(&account_id) {
+        return Ok(BackfillOutcome {
+            fetched: 0,
+            exhausted: false,
+        });
+    }
+    let result = backfill_account_inner(
+        &state,
+        &secure_store.0,
+        &account_id,
+        limit,
+        |done, total| {
+            let _ = app.emit(
+                "backfill-progress",
+                BackfillProgressEvent {
+                    account_id: account_id.clone(),
+                    done,
+                    total,
+                },
+            );
+        },
+    )
+    .await;
+    sync_locks.finish(&account_id);
+    result
+}
+
 /// Resolve credentials for the given account (IMAP / SMTP 共用).
 /// For Google accounts, handles OAuth token refresh if needed.
 /// Returns (auth_type, username, credential) suitable for
@@ -295,6 +351,104 @@ async fn sync_account_inner(
     }
     fetch_result?;
     Ok(count)
+}
+
+/// ローカル最古 UID 未満のメールを、新しい→古いの順に limit 件まで遡って取り込む
+/// （バックフィル）。sync_folder_into と異なり取得方向が逆
+/// （imap_client::fetch_mails_backfill_batched を使う）。Sent は対象外（v1 制限、
+/// 設計書 2026-07-13-mail-backfill-design.md）。
+async fn backfill_folder_into(
+    state: &DbState,
+    session: &mut imap_client::ImapSession,
+    account_id: &str,
+    min_uid_exclusive: u32,
+    limit: u32,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<imap_client::BackfillResult, AppError> {
+    let mut fetched = 0u32;
+    let result = imap_client::fetch_mails_backfill_batched(
+        session,
+        "INBOX",
+        min_uid_exclusive,
+        limit,
+        |batch, progress| {
+            {
+                let conn = state.0.lock().map_err(AppError::lock_err)?;
+                for m in batch {
+                    if let Some(mail) = mime_parser::parse_mime(
+                        &m.body, account_id, "INBOX", m.uid, m.is_read, m.flags,
+                    ) {
+                        if mails::insert_mail(&conn, &mail)? {
+                            fetched += 1;
+                        }
+                    }
+                }
+            }
+            on_progress(progress.done, progress.total);
+            Ok(())
+        },
+    )
+    .await?;
+    Ok(imap_client::BackfillResult {
+        fetched: fetched as usize,
+        exhausted: result.exhausted,
+    })
+}
+
+async fn backfill_account_inner(
+    state: &DbState,
+    secure_store: &crate::secure_store::SecureStore,
+    account_id: &str,
+    limit: u32,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<BackfillOutcome, AppError> {
+    let (account, min_uid) = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        let account = accounts::get_account(&conn, account_id)?;
+        let min_uid = mails::get_min_uid(&conn, account_id, "INBOX")?;
+        (account, min_uid)
+    };
+
+    // min_uid=0 はローカルにメールが1件もない（通常の初回同期に任せる範囲）。
+    // バックフィルの対象がそもそも存在しないため、接続せずに終える
+    if min_uid == 0 {
+        return Ok(BackfillOutcome {
+            fetched: 0,
+            exhausted: true,
+        });
+    }
+
+    let (auth_type, username, credential) =
+        resolve_imap_credentials(&account, secure_store).await?;
+
+    let mut session = imap_client::connect(
+        &account.imap_host,
+        account.imap_port,
+        &auth_type,
+        &username,
+        &credential,
+    )
+    .await?;
+
+    let result = backfill_folder_into(
+        state,
+        &mut session,
+        account_id,
+        min_uid,
+        limit,
+        &mut on_progress,
+    )
+    .await;
+
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed: {}", e);
+    }
+
+    let result = result?;
+    Ok(BackfillOutcome {
+        fetched: result.fetched as u32,
+        exhausted: result.exhausted,
+    })
 }
 
 /// メールを既読にする。DB は即時更新し、IMAP への \Seen 反映は
