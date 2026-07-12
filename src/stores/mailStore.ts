@@ -24,6 +24,8 @@ interface MailState {
   syncing: boolean;
   needsReauth: boolean;
   unclassifiedMails: Mail[];
+  /** 未分類メールのスレッド表示用（unclassifiedMails と同一内容のスレッド版） */
+  unclassifiedThreads: Thread[];
   error: string | null;
   syncProgress: SyncProgress | null;
   unreadCounts: UnreadCounts;
@@ -76,6 +78,9 @@ function removeMailFromState(state: MailState, mailId: string): Partial<MailStat
       : null,
     selectedMail: state.selectedMail?.id === mailId ? null : state.selectedMail,
     unclassifiedMails: state.unclassifiedMails.filter((m) => m.id !== mailId),
+    unclassifiedThreads: state.unclassifiedThreads
+      .map((t) => removeMailFromThread(t, mailId))
+      .filter((t): t is Thread => t !== null),
   };
 }
 
@@ -86,6 +91,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   syncing: false,
   needsReauth: false,
   unclassifiedMails: [],
+  unclassifiedThreads: [],
   error: null,
   syncProgress: null,
   unreadCounts: { by_project: {}, unclassified: 0 },
@@ -157,6 +163,9 @@ export const useMailStore = create<MailState>((set, get) => ({
           ? { ...state.selectedMail, is_read: true }
           : state.selectedMail,
       unclassifiedMails: markReadInMails(state.unclassifiedMails, mail.id),
+      unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+        markReadInThread(t, mail.id),
+      ),
     }));
     invoke("mark_read", { accountId: mail.account_id, mailId: mail.id })
       .then(() => get().fetchUnreadCounts(mail.account_id))
@@ -206,10 +215,14 @@ export const useMailStore = create<MailState>((set, get) => ({
 
   fetchUnclassified: async (accountId) => {
     try {
-      const mails = await invoke<Mail[]>("get_unclassified_mails", {
+      // スレッド単位で取得し、メール一覧はフラット化して両方の状態を一致させる
+      const threads = await invoke<Thread[]>("get_unclassified_threads", {
         accountId,
       });
-      set({ unclassifiedMails: mails });
+      set({
+        unclassifiedThreads: threads,
+        unclassifiedMails: threads.flatMap((t) => t.mails),
+      });
     } catch (e) {
       set({ error: String(e) });
       useErrorStore.getState().addError(String(e));
@@ -219,9 +232,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   moveMail: async (mailId, projectId) => {
     try {
       await invoke("move_mail", { mailId, projectId });
-      set({
-        unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
-      });
+      get().removeUnclassifiedMail(mailId);
     } catch (e) {
       set({ error: String(e) });
       useErrorStore.getState().addError(String(e));
@@ -229,9 +240,12 @@ export const useMailStore = create<MailState>((set, get) => ({
   },
 
   removeUnclassifiedMail: (mailId) => {
-    set({
-      unclassifiedMails: get().unclassifiedMails.filter((m) => m.id !== mailId),
-    });
+    set((state) => ({
+      unclassifiedMails: state.unclassifiedMails.filter((m) => m.id !== mailId),
+      unclassifiedThreads: state.unclassifiedThreads
+        .map((t) => removeMailFromThread(t, mailId))
+        .filter((t): t is Thread => t !== null),
+    }));
   },
 
   initSyncListener: async () => {

@@ -74,11 +74,13 @@ pub fn reject_classification(conn: &Connection, mail_id: &str) -> Result<(), App
 }
 
 /// Get mails that have no project assignment for a given account.
+/// 分類対象は受信メールのみ（INBOX）。自分の送信済み（Sent）や
+/// アーカイブ済み（Archive）を未分類として扱わない
 pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec<Mail>, AppError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM mails m
              LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
-             WHERE mpa.mail_id IS NULL AND m.account_id = ?1
+             WHERE mpa.mail_id IS NULL AND m.account_id = ?1 AND m.folder = 'INBOX'
              ORDER BY m.date DESC",
         MAIL_COLUMNS_PREFIXED
     ))?;
