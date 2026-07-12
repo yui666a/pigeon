@@ -380,7 +380,8 @@ export const useMailStore = create<MailState>((set, get) => ({
   },
 }));
 
-/** 一括操作の結果をトーストで要約表示する */
+/** 一括操作の結果をトーストで要約表示する。失敗が1件でも混在する場合は
+ * 成功件数を含めてもエラートーストにする（一部失敗を成功扱いに見せない） */
 function reportBulkResult(result: BulkResult, actionLabel: string): void {
   const { succeeded, failed } = result;
   if (failed.length === 0) {
@@ -391,7 +392,7 @@ function reportBulkResult(result: BulkResult, actionLabel: string): void {
   if (succeeded.length > 0) {
     useErrorStore
       .getState()
-      .addSuccess(`${actionLabel}しました（${succeeded.length}件、失敗 ${failed.length}件）`);
+      .addError(`${actionLabel}しました（${succeeded.length}件、失敗 ${failed.length}件）`);
   } else {
     useErrorStore.getState().addError(`${actionLabel}に失敗しました（${failed.length}件）`);
   }

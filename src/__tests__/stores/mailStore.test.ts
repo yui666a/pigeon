@@ -766,6 +766,19 @@ describe("mailStore", () => {
       expect(useErrorStore.getState().toasts.some((t) => t.kind === "error")).toBe(true);
     });
 
+    it("shows an error toast (not success) on partial failure", async () => {
+      mockInvoke.mockResolvedValue({
+        succeeded: ["m1"],
+        failed: [["m2", "boom"]],
+      });
+
+      await useMailStore.getState().bulkDeleteMails("acc1", ["m1", "m2"]);
+
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === "error")).toBe(true);
+      expect(toasts.some((t) => t.kind === "success")).toBe(false);
+    });
+
     it("returns null and shows error toast when invoke rejects", async () => {
       mockInvoke.mockRejectedValue("bulk delete error");
 
