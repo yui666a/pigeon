@@ -1,6 +1,8 @@
+use async_imap::types::Flag;
 use async_imap::Session;
 use async_native_tls::TlsStream;
 use futures::TryStreamExt;
+use std::collections::HashMap;
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
@@ -135,6 +137,43 @@ pub struct SyncProgress {
     pub total: usize,
 }
 
+/// バッチ FETCH で得た1通分の生データ
+pub struct FetchedMail {
+    pub uid: u32,
+    /// サーバー側で \Seen が付いているか
+    pub is_read: bool,
+    /// サーバーフラグの文字列表現（例: "\Seen \Answered"）。フラグなしは None
+    pub flags: Option<String>,
+    pub body: Vec<u8>,
+}
+
+/// FLAGS に \Seen が含まれるか
+pub(crate) fn contains_seen(flags: &[Flag<'_>]) -> bool {
+    flags.iter().any(|f| *f == Flag::Seen)
+}
+
+/// FLAGS を DB 保存用の文字列にする（空なら None）
+pub(crate) fn flags_to_string(flags: &[Flag<'_>]) -> Option<String> {
+    if flags.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = flags.iter().map(flag_name).collect();
+    Some(names.join(" "))
+}
+
+fn flag_name(flag: &Flag<'_>) -> String {
+    match flag {
+        Flag::Seen => "\\Seen".into(),
+        Flag::Answered => "\\Answered".into(),
+        Flag::Flagged => "\\Flagged".into(),
+        Flag::Deleted => "\\Deleted".into(),
+        Flag::Draft => "\\Draft".into(),
+        Flag::Recent => "\\Recent".into(),
+        Flag::MayCreate => "\\*".into(),
+        Flag::Custom(s) => s.to_string(),
+    }
+}
+
 /// since_uid より新しいメールを、UID一覧の軽量取得 → SYNC_BATCH_SIZE 件ずつの
 /// バッチ FETCH で取り込む。バッチごとに on_batch(そのバッチの生メール, 進捗) を呼ぶ。
 /// 古い順（UID昇順）に処理するため、途中で中断しても DB の max_uid が再開点になる。
@@ -144,7 +183,7 @@ pub async fn fetch_mails_batched(
     folder: &str,
     since_uid: u32,
     initial_limit: u32,
-    mut on_batch: impl FnMut(Vec<(u32, Vec<u8>)>, SyncProgress) -> Result<(), AppError>,
+    mut on_batch: impl FnMut(Vec<FetchedMail>, SyncProgress) -> Result<(), AppError>,
 ) -> Result<usize, AppError> {
     let mailbox = session
         .select(folder)
@@ -189,7 +228,7 @@ pub async fn fetch_mails_batched(
     let mut done = 0usize;
     for batch in batches {
         let messages: Vec<_> = session
-            .uid_fetch(&uid_set(&batch), "(UID RFC822)")
+            .uid_fetch(&uid_set(&batch), "(UID FLAGS RFC822)")
             .await
             .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
             .try_collect()
@@ -200,7 +239,13 @@ pub async fn fetch_mails_batched(
         for msg in &messages {
             if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
                 if uid > since_uid {
-                    mails.push((uid, body.to_vec()));
+                    let flags: Vec<Flag<'_>> = msg.flags().collect();
+                    mails.push(FetchedMail {
+                        uid,
+                        is_read: contains_seen(&flags),
+                        flags: flags_to_string(&flags),
+                        body: body.to_vec(),
+                    });
                 }
             }
         }
@@ -208,6 +253,57 @@ pub async fn fetch_mails_batched(
         on_batch(mails, SyncProgress { done, total })?;
     }
     Ok(total)
+}
+
+/// フォルダ全体の uid → \Seen マップを取得する（FLAGS のみの軽量 FETCH）。
+/// 他クライアントで変更された既読状態をローカル DB に取り込むための再同期に使う。
+pub async fn fetch_seen_map(
+    session: &mut ImapSession,
+    folder: &str,
+) -> Result<HashMap<u32, bool>, AppError> {
+    let mailbox = session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+    if mailbox.exists == 0 {
+        return Ok(HashMap::new());
+    }
+    let messages: Vec<_> = session
+        .uid_fetch("1:*", "(FLAGS)")
+        .await
+        .map_err(|e| AppError::Imap(format!("FLAGS fetch failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("FLAGS stream failed: {}", e)))?;
+    Ok(messages
+        .iter()
+        .filter_map(|m| {
+            m.uid.map(|uid| {
+                let flags: Vec<Flag<'_>> = m.flags().collect();
+                (uid, contains_seen(&flags))
+            })
+        })
+        .collect())
+}
+
+/// 指定 UID のメールに \Seen フラグを付ける（既読のサーバー反映）。
+pub async fn store_seen_flag(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+    let _updates: Vec<_> = session
+        .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Seen)")
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE stream failed: {}", e)))?;
+    Ok(())
 }
 
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
@@ -279,5 +375,31 @@ mod tests {
     fn test_uid_set_joins_with_commas() {
         assert_eq!(uid_set(&[101, 102, 105]), "101,102,105");
         assert_eq!(uid_set(&[7]), "7");
+    }
+
+    #[test]
+    fn test_contains_seen_detects_seen_flag() {
+        use async_imap::types::Flag;
+        assert!(contains_seen(&[Flag::Answered, Flag::Seen]));
+        assert!(!contains_seen(&[Flag::Answered, Flag::Flagged]));
+        assert!(!contains_seen(&[]));
+    }
+
+    #[test]
+    fn test_flags_to_string_formats_system_flags() {
+        use async_imap::types::Flag;
+        assert_eq!(
+            flags_to_string(&[Flag::Seen, Flag::Answered]),
+            Some("\\Seen \\Answered".to_string())
+        );
+        assert_eq!(
+            flags_to_string(&[Flag::Custom("$Important".into())]),
+            Some("$Important".to_string())
+        );
+    }
+
+    #[test]
+    fn test_flags_to_string_empty_is_none() {
+        assert_eq!(flags_to_string(&[]), None);
     }
 }

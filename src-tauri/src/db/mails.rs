@@ -1,6 +1,6 @@
 use crate::db::assignments;
 use crate::error::AppError;
-use crate::models::mail::{Mail, Thread};
+use crate::models::mail::{Mail, Thread, UnreadCounts};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
@@ -8,13 +8,17 @@ use std::collections::HashMap;
 /// Must match the field order expected by `row_to_mail`.
 pub const MAIL_COLUMNS: &str = "id, account_id, folder, message_id, in_reply_to, \"references\",
      from_addr, to_addr, cc_addr, subject, body_text, body_html,
-     date, has_attachments, raw_size, uid, flags, fetched_at";
+     date, has_attachments, raw_size, uid, flags, is_read, fetched_at";
+
+/// Number of columns in MAIL_COLUMNS / MAIL_COLUMNS_PREFIXED.
+/// JOIN クエリで追加カラムを読む際のオフセットとして使う。
+pub const MAIL_COLUMN_COUNT: usize = 19;
 
 /// Column list with `m.` table prefix for JOIN queries.
 pub const MAIL_COLUMNS_PREFIXED: &str =
     "m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
      m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
-     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.fetched_at";
+     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.is_read, m.fetched_at";
 
 /// Map a rusqlite Row to a Mail struct. Column order must match `MAIL_COLUMNS`.
 pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
@@ -36,7 +40,8 @@ pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
         raw_size: row.get(14)?,
         uid: row.get(15)?,
         flags: row.get(16)?,
-        fetched_at: row.get(17)?,
+        is_read: row.get(17)?,
+        fetched_at: row.get(18)?,
     })
 }
 
@@ -59,8 +64,8 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
         "INSERT OR IGNORE INTO mails
          (id, account_id, folder, message_id, in_reply_to, \"references\",
           from_addr, to_addr, cc_addr, subject, body_text, body_html,
-          date, has_attachments, raw_size, uid, flags, fetched_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+          date, has_attachments, raw_size, uid, flags, is_read, fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             mail.id,
             mail.account_id,
@@ -79,6 +84,7 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
             mail.raw_size,
             mail.uid,
             mail.flags,
+            mail.is_read,
             mail.fetched_at,
         ],
     )?;
@@ -110,6 +116,75 @@ pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<
         )
         .unwrap_or(0);
     Ok(uid)
+}
+
+/// サーバーから取得した uid → \Seen マップで既知メールの is_read を一括更新する。
+/// 状態が変わる行のみ UPDATE し、更新した行数を返す（フラグ再同期用）。
+pub fn update_read_flags(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+    seen_by_uid: &HashMap<u32, bool>,
+) -> Result<usize, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let mut updated = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "UPDATE mails SET is_read = ?1
+             WHERE account_id = ?2 AND folder = ?3 AND uid = ?4 AND is_read != ?1",
+        )?;
+        for (uid, is_seen) in seen_by_uid {
+            updated += stmt.execute(params![is_seen, account_id, folder, uid])?;
+        }
+    }
+    tx.commit()?;
+    Ok(updated)
+}
+
+/// メールを既読にし、サーバー反映に必要な (folder, uid) を返す。
+pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
+    let (folder, uid): (String, u32) = conn
+        .query_row(
+            "SELECT folder, uid FROM mails WHERE id = ?1",
+            params![mail_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
+    conn.execute(
+        "UPDATE mails SET is_read = 1 WHERE id = ?1",
+        params![mail_id],
+    )?;
+    Ok((folder, uid))
+}
+
+/// プロジェクト毎 + 未分類の未読件数を集計する（INBOX のみ対象）。
+pub fn get_unread_counts(conn: &Connection, account_id: &str) -> Result<UnreadCounts, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT mpa.project_id, COUNT(*) FROM mails m
+         JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
+         WHERE m.account_id = ?1 AND m.folder = 'INBOX' AND m.is_read = 0
+         GROUP BY mpa.project_id",
+    )?;
+    let by_project: HashMap<String, u32> = stmt
+        .query_map(params![account_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let unclassified: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM mails m
+         LEFT JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
+         WHERE mpa.mail_id IS NULL AND m.account_id = ?1
+           AND m.folder = 'INBOX' AND m.is_read = 0",
+        params![account_id],
+        |row| row.get(0),
+    )?;
+
+    Ok(UnreadCounts {
+        by_project,
+        unclassified,
+    })
 }
 
 pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
@@ -268,6 +343,129 @@ mod tests {
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].id, "m1", "既存行が残る（REPLACEで消さない）");
         assert_eq!(mails[0].subject, "Original");
+    }
+
+    #[test]
+    fn test_insert_mail_persists_is_read() {
+        let conn = setup_db();
+        let mut read_mail = make_mail("m1", "<msg1@example.com>", "Read", "2026-07-12T10:00:00");
+        read_mail.is_read = true;
+        let unread_mail = make_mail("m2", "<msg2@example.com>", "Unread", "2026-07-12T11:00:00");
+        insert_mail(&conn, &read_mail).unwrap();
+        insert_mail(&conn, &unread_mail).unwrap();
+
+        let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+        let read = mails.iter().find(|m| m.id == "m1").unwrap();
+        let unread = mails.iter().find(|m| m.id == "m2").unwrap();
+        assert!(read.is_read);
+        assert!(!unread.is_read);
+    }
+
+    #[test]
+    fn test_update_read_flags_syncs_server_state() {
+        let conn = setup_db();
+        let mut m1 = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        m1.uid = 101;
+        let mut m2 = make_mail("m2", "<msg2@example.com>", "B", "2026-07-12T11:00:00");
+        m2.uid = 102;
+        m2.is_read = true;
+        insert_mail(&conn, &m1).unwrap();
+        insert_mail(&conn, &m2).unwrap();
+
+        // サーバー側: uid=101 は既読、uid=102 は未読（他クライアントでの変更を模擬）
+        let seen: HashMap<u32, bool> = [(101, true), (102, false)].into_iter().collect();
+        let updated = update_read_flags(&conn, "acc1", "INBOX", &seen).unwrap();
+        assert_eq!(updated, 2);
+
+        let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+        assert!(mails.iter().find(|m| m.id == "m1").unwrap().is_read);
+        assert!(!mails.iter().find(|m| m.id == "m2").unwrap().is_read);
+    }
+
+    #[test]
+    fn test_update_read_flags_skips_unchanged_and_unknown_uids() {
+        let conn = setup_db();
+        let mut m1 = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        m1.uid = 101;
+        m1.is_read = true;
+        insert_mail(&conn, &m1).unwrap();
+
+        // uid=101 は既に既読なので変更なし。uid=999 は DB に存在しない
+        let seen: HashMap<u32, bool> = [(101, true), (999, true)].into_iter().collect();
+        let updated = update_read_flags(&conn, "acc1", "INBOX", &seen).unwrap();
+        assert_eq!(updated, 0, "変更のない行・未知の uid は更新されない");
+    }
+
+    #[test]
+    fn test_mark_read_updates_row_and_returns_folder_uid() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        mail.uid = 42;
+        insert_mail(&conn, &mail).unwrap();
+
+        let (folder, uid) = mark_read(&conn, "m1").unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(uid, 42);
+
+        let stored = get_mail_by_id(&conn, "m1").unwrap();
+        assert!(stored.is_read);
+    }
+
+    #[test]
+    fn test_mark_read_missing_mail_returns_not_found() {
+        let conn = setup_db();
+        let result = mark_read(&conn, "nonexistent");
+        assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
+
+    #[test]
+    fn test_get_unread_counts_groups_by_project_and_unclassified() {
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+
+        // 案件に未読2・既読1、未分類に未読1、Sent（対象外）に未読1
+        let mut mails_data = vec![
+            ("m1", false, Some(proj.id.clone()), "INBOX"),
+            ("m2", false, Some(proj.id.clone()), "INBOX"),
+            ("m3", true, Some(proj.id.clone()), "INBOX"),
+            ("m4", false, None, "INBOX"),
+            ("m5", false, None, "Sent"),
+        ];
+        for (id, is_read, project_id, folder) in mails_data.drain(..) {
+            let mut mail = make_mail(
+                id,
+                &format!("<{}@example.com>", id),
+                "S",
+                "2026-07-12T10:00:00",
+            );
+            mail.is_read = is_read;
+            mail.folder = folder.into();
+            insert_mail(&conn, &mail).unwrap();
+            if let Some(pid) = project_id {
+                assignments::assign_mail(&conn, id, &pid, "user", None).unwrap();
+            }
+        }
+
+        let counts = get_unread_counts(&conn, "acc1").unwrap();
+        assert_eq!(counts.by_project.get(&proj.id), Some(&2));
+        assert_eq!(counts.unclassified, 1, "Sent の未読は数えない");
+    }
+
+    #[test]
+    fn test_get_unread_counts_empty() {
+        let conn = setup_db();
+        let counts = get_unread_counts(&conn, "acc1").unwrap();
+        assert!(counts.by_project.is_empty());
+        assert_eq!(counts.unclassified, 0);
     }
 
     #[test]

@@ -17,6 +17,7 @@ export const ThreadItem = memo(function ThreadItem({
   const dateStr = formatShortDate(thread.last_date);
   const mailIds = thread.mails.map((m) => m.id);
   const { onMouseDown } = useMailDrag(mailIds, thread.subject, onClick);
+  const hasUnread = thread.mails.some((m) => !m.is_read);
 
   return (
     <div
@@ -24,7 +25,11 @@ export const ThreadItem = memo(function ThreadItem({
       className={`w-full cursor-pointer border-b px-4 py-3 text-left hover:bg-gray-50 ${selected ? "bg-blue-50" : ""}`}
     >
       <div className="flex items-center justify-between">
-        <span className="truncate text-sm font-medium">{thread.subject}</span>
+        <span
+          className={`truncate text-sm ${hasUnread ? "font-bold text-gray-900" : "font-medium"}`}
+        >
+          {thread.subject}
+        </span>
         <span className="ml-2 shrink-0 text-xs text-gray-400">{dateStr}</span>
       </div>
       <div className="mt-1 flex items-center justify-between">

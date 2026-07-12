@@ -1,4 +1,4 @@
-use crate::db::mails::{row_to_mail, MAIL_COLUMNS_PREFIXED};
+use crate::db::mails::{row_to_mail, MAIL_COLUMNS_PREFIXED, MAIL_COLUMN_COUNT};
 use crate::error::AppError;
 use crate::models::mail::SearchResult;
 use rusqlite::{params, Connection};
@@ -82,9 +82,9 @@ fn search_fts(
     let results = stmt
         .query_map(params![safe_query, account_id, limit], |row| {
             let mail = row_to_mail(row)?;
-            let project_id: Option<String> = row.get(18)?;
-            let project_name: Option<String> = row.get(19)?;
-            let snippet: String = row.get(20)?;
+            let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
+            let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
+            let snippet: String = row.get(MAIL_COLUMN_COUNT + 2)?;
             Ok(SearchResult {
                 mail,
                 project_id,
@@ -123,8 +123,8 @@ fn search_like(
     let results = stmt
         .query_map(params![account_id, like_pattern, limit], |row| {
             let mail = row_to_mail(row)?;
-            let project_id: Option<String> = row.get(18)?;
-            let project_name: Option<String> = row.get(19)?;
+            let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
+            let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
             Ok(SearchResult {
                 mail: mail.clone(),
                 project_id,

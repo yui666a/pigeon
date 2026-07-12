@@ -12,6 +12,7 @@ interface ProjectListItemProps {
   onDrop: (projectId: string) => void;
   directory?: ProjectDirectory | null;
   scanning?: boolean;
+  unreadCount?: number;
 }
 
 export const ProjectListItem = memo(function ProjectListItem({
@@ -22,6 +23,7 @@ export const ProjectListItem = memo(function ProjectListItem({
   onDrop,
   directory,
   scanning,
+  unreadCount,
 }: ProjectListItemProps) {
   const {
     renamingProjectId,
@@ -87,24 +89,34 @@ export const ProjectListItem = memo(function ProjectListItem({
             style={{ backgroundColor: project.color ?? "#6b7280" }}
           />
           <span className="truncate">{project.name}</span>
-          {scanning ? (
-            <span className="ml-auto flex-shrink-0 animate-pulse text-xs" title="スキャン中">
-              ⏳
-            </span>
-          ) : directory ? (
-            directory.status === "ok" ? (
-              <span className="ml-auto flex-shrink-0 text-xs" title={directory.path}>
-                📁
-              </span>
-            ) : (
+          <span className="ml-auto flex flex-shrink-0 items-center gap-1">
+            {typeof unreadCount === "number" && unreadCount > 0 && (
               <span
-                className="ml-auto flex-shrink-0 text-xs text-amber-500"
-                title={`フォルダにアクセスできません（${directory.status}）: ${directory.path}`}
+                className="rounded-full bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-600"
+                title={`未読 ${unreadCount} 件`}
               >
-                ⚠📁
+                {unreadCount}
               </span>
-            )
-          ) : null}
+            )}
+            {scanning ? (
+              <span className="animate-pulse text-xs" title="スキャン中">
+                ⏳
+              </span>
+            ) : directory ? (
+              directory.status === "ok" ? (
+                <span className="text-xs" title={directory.path}>
+                  📁
+                </span>
+              ) : (
+                <span
+                  className="text-xs text-amber-500"
+                  title={`フォルダにアクセスできません（${directory.status}）: ${directory.path}`}
+                >
+                  ⚠📁
+                </span>
+              )
+            ) : null}
+          </span>
         </div>
       </button>
     </li>

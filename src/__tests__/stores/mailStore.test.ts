@@ -2,6 +2,43 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useMailStore } from "../../stores/mailStore";
 import { useAccountStore } from "../../stores/accountStore";
 import { useUiStore } from "../../stores/uiStore";
+import type { Mail, Thread } from "../../types/mail";
+
+function makeMail(id: string, overrides: Partial<Mail> = {}): Mail {
+  return {
+    id,
+    account_id: "acc1",
+    folder: "INBOX",
+    message_id: `<${id}@example.com>`,
+    in_reply_to: null,
+    references: null,
+    from_addr: "sender@example.com",
+    to_addr: "me@example.com",
+    cc_addr: null,
+    subject: "Subject",
+    body_text: "body",
+    body_html: null,
+    date: "2026-07-12T10:00:00",
+    has_attachments: false,
+    raw_size: null,
+    uid: 1,
+    flags: null,
+    is_read: false,
+    fetched_at: "2026-07-12T00:00:00",
+    ...overrides,
+  };
+}
+
+function makeThread(mails: Mail[]): Thread {
+  return {
+    thread_id: mails[0]?.message_id ?? "t1",
+    subject: mails[0]?.subject ?? "Subject",
+    last_date: mails[mails.length - 1]?.date ?? "",
+    mail_count: mails.length,
+    from_addrs: [],
+    mails,
+  };
+}
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -29,6 +66,7 @@ describe("mailStore", () => {
       unclassifiedMails: [],
       error: null,
       syncProgress: null,
+      unreadCounts: { by_project: {}, unclassified: 0 },
     });
     useAccountStore.setState({ selectedAccountId: "acc1" });
     useUiStore.setState({ viewMode: "threads" });
@@ -86,6 +124,20 @@ describe("mailStore", () => {
       expect(useMailStore.getState().syncing).toBe(false);
     });
 
+    it("refreshes unread counts after successful sync", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "sync_account"
+          ? Promise.resolve(5)
+          : Promise.resolve({ by_project: {}, unclassified: 0 }),
+      );
+
+      await useMailStore.getState().syncAccount("acc1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
     it("does not set needsReauth on other errors", async () => {
       mockInvoke.mockRejectedValue("IMAP connection failed");
 
@@ -113,10 +165,105 @@ describe("mailStore", () => {
   });
 
   describe("selectMail", () => {
-    it("sets selectedMail", () => {
-      const mail = { id: "m1", subject: "Test" } as never;
+    it("sets selectedMail without marking when already read", () => {
+      const mail = makeMail("m1", { is_read: true });
       useMailStore.getState().selectMail(mail);
       expect(useMailStore.getState().selectedMail).toEqual(mail);
+      expect(mockInvoke).not.toHaveBeenCalledWith("mark_read", expect.anything());
+    });
+
+    it("marks unread mail as read and invokes mark_read", () => {
+      mockInvoke.mockResolvedValue(undefined);
+      const mail = makeMail("m1");
+      useMailStore.setState({ unclassifiedMails: [mail] });
+
+      useMailStore.getState().selectMail(mail);
+
+      expect(mockInvoke).toHaveBeenCalledWith("mark_read", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      expect(useMailStore.getState().selectedMail?.is_read).toBe(true);
+      expect(useMailStore.getState().unclassifiedMails[0].is_read).toBe(true);
+    });
+
+    it("updates is_read inside threads too", () => {
+      mockInvoke.mockResolvedValue(undefined);
+      const mail = makeMail("m1");
+      const thread = makeThread([mail]);
+      useMailStore.setState({ threads: [thread], selectedThread: thread });
+
+      useMailStore.getState().selectMail(mail);
+
+      expect(useMailStore.getState().threads[0].mails[0].is_read).toBe(true);
+      expect(useMailStore.getState().selectedThread?.mails[0].is_read).toBe(true);
+    });
+
+    it("keeps local read state even when mark_read fails", async () => {
+      mockInvoke.mockRejectedValue("imap down");
+      const mail = makeMail("m1");
+
+      useMailStore.getState().selectMail(mail);
+      await Promise.resolve();
+
+      expect(useMailStore.getState().selectedMail?.is_read).toBe(true);
+    });
+  });
+
+  describe("selectThread marks displayed mail as read", () => {
+    it("marks the last mail of the thread (the displayed one)", () => {
+      mockInvoke.mockResolvedValue(undefined);
+      const m1 = makeMail("m1", { is_read: true });
+      const m2 = makeMail("m2");
+      const thread = makeThread([m1, m2]);
+      useMailStore.setState({ threads: [thread] });
+
+      useMailStore.getState().selectThread(thread);
+
+      expect(mockInvoke).toHaveBeenCalledWith("mark_read", {
+        accountId: "acc1",
+        mailId: "m2",
+      });
+      expect(useMailStore.getState().selectedThread?.mails[1].is_read).toBe(true);
+      expect(useMailStore.getState().threads[0].mails[1].is_read).toBe(true);
+    });
+
+    it("does not invoke mark_read when displayed mail is already read", () => {
+      const thread = makeThread([makeMail("m1", { is_read: true })]);
+      useMailStore.getState().selectThread(thread);
+      expect(mockInvoke).not.toHaveBeenCalledWith("mark_read", expect.anything());
+    });
+
+    it("handles empty thread and null safely", () => {
+      useMailStore.getState().selectThread(makeThread([]));
+      useMailStore.getState().selectThread(null);
+      expect(mockInvoke).not.toHaveBeenCalledWith("mark_read", expect.anything());
+    });
+  });
+
+  describe("fetchUnreadCounts", () => {
+    it("stores unread counts on success", async () => {
+      const counts = { by_project: { p1: 3 }, unclassified: 2 };
+      mockInvoke.mockResolvedValue(counts);
+
+      await useMailStore.getState().fetchUnreadCounts("acc1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+      expect(useMailStore.getState().unreadCounts).toEqual(counts);
+    });
+
+    it("keeps previous counts on failure", async () => {
+      useMailStore.setState({ unreadCounts: { by_project: { p1: 1 }, unclassified: 0 } });
+      mockInvoke.mockRejectedValue("boom");
+
+      await useMailStore.getState().fetchUnreadCounts("acc1");
+
+      expect(useMailStore.getState().unreadCounts).toEqual({
+        by_project: { p1: 1 },
+        unclassified: 0,
+      });
     });
   });
 

@@ -16,7 +16,15 @@ export interface Mail {
   raw_size: number | null;
   uid: number;
   flags: string | null;
+  is_read: boolean;
   fetched_at: string;
+}
+
+export interface UnreadCounts {
+  /** project_id → 未読件数 */
+  by_project: Record<string, number>;
+  /** 未分類メールの未読件数 */
+  unclassified: number;
 }
 
 export interface SearchResult {

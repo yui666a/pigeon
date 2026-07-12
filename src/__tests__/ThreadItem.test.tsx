@@ -1,7 +1,32 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { ThreadItem } from "../components/thread-list/ThreadItem";
-import type { Thread } from "../types/mail";
+import type { Mail, Thread } from "../types/mail";
+
+function makeMail(id: string, overrides: Partial<Mail> = {}): Mail {
+  return {
+    id,
+    account_id: "acc1",
+    folder: "INBOX",
+    message_id: `<${id}@example.com>`,
+    in_reply_to: null,
+    references: null,
+    from_addr: "alice@example.com",
+    to_addr: "me@example.com",
+    cc_addr: null,
+    subject: "テストスレッド",
+    body_text: "body",
+    body_html: null,
+    date: "2026-04-13T10:00:00+09:00",
+    has_attachments: false,
+    raw_size: null,
+    uid: 1,
+    flags: null,
+    is_read: true,
+    fetched_at: "2026-04-13T00:00:00",
+    ...overrides,
+  };
+}
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -41,6 +66,22 @@ describe("ThreadItem", () => {
     const { container } = render(<ThreadItem thread={makeThread()} selected={true} onClick={vi.fn()} />);
     const item = container.firstElementChild!;
     expect(item.className).toContain("bg-blue-50");
+  });
+
+  it("renders subject in bold when thread has unread mail", () => {
+    const thread = makeThread({
+      mails: [makeMail("m1"), makeMail("m2", { is_read: false })],
+    });
+    render(<ThreadItem thread={thread} selected={false} onClick={vi.fn()} />);
+    expect(screen.getByText("テストスレッド").className).toContain("font-bold");
+  });
+
+  it("renders subject with normal weight when all mails are read", () => {
+    const thread = makeThread({ mails: [makeMail("m1"), makeMail("m2")] });
+    render(<ThreadItem thread={thread} selected={false} onClick={vi.fn()} />);
+    const subject = screen.getByText("テストスレッド");
+    expect(subject.className).not.toContain("font-bold");
+    expect(subject.className).toContain("font-medium");
   });
 
   it("calls onClick when clicked", () => {

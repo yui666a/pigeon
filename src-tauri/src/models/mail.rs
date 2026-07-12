@@ -19,7 +19,17 @@ pub struct Mail {
     pub raw_size: Option<i64>,
     pub uid: u32,
     pub flags: Option<String>,
+    pub is_read: bool,
     pub fetched_at: String,
+}
+
+/// アカウント内の未読件数の集計（folder='INBOX' のみ対象）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnreadCounts {
+    /// project_id → 未読件数
+    pub by_project: std::collections::HashMap<String, u32>,
+    /// 未分類メールの未読件数
+    pub unclassified: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
