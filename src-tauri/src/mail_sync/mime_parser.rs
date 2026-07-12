@@ -432,4 +432,14 @@ mod tests {
         let attachments = extract_attachments(MULTIPART_EMAIL_WITH_ATTACHMENTS);
         assert!(attachments.iter().all(|a| a.content_id.is_none()));
     }
+
+    #[test]
+    fn test_parse_mime_inline_only_image_counts_as_attachment() {
+        // get_inline_images / MailBody は has_attachments==false のとき機能をスキップする。
+        // Content-Disposition: inline のパートしか持たないメールで mail-parser の
+        // attachment_count() が 0 のままだと、cid画像のみのメールで機能が丸ごと
+        // 無効化される（レビュー指摘 I-1）。これを固定する
+        let mail = parse_mime(EMAIL_WITH_INLINE_IMAGE, "acc1", "INBOX", 1, false, None).unwrap();
+        assert!(mail.has_attachments);
+    }
 }
