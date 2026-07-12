@@ -4,12 +4,23 @@
 use std::time::Duration;
 
 use lettre::message::header::ContentType;
-use lettre::message::{Mailbox, Message};
+use lettre::message::{Attachment, Mailbox, Message, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
 use crate::error::AppError;
 use crate::models::account::AuthType;
+
+/// 添付ファイル合計サイズの上限（25MB, Gmail 準拠）
+pub const MAX_TOTAL_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+
+/// 送信する添付ファイル。パスではなく読み込み済みのバイト列を持つ純データ
+#[derive(Debug, Clone)]
+pub struct OutgoingAttachment {
+    pub filename: String,
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
 
 /// 送信メッセージの構築入力。lettre型に依存しない純データ
 #[derive(Debug, Clone)]
@@ -21,6 +32,11 @@ pub struct OutgoingMail {
     pub bcc: Vec<String>,
     pub subject: String,
     pub body_text: String,
+    /// リッチ本文の HTML。Some なら multipart/alternative で送る。
+    /// None ならプレーンのみ（後方互換）
+    pub body_html: Option<String>,
+    /// 添付ファイル（読み込み済み）。空なら添付なし
+    pub attachments: Vec<OutgoingAttachment>,
     /// `<uuid@pigeon.local>` 形式。ローカルDBに保存する message_id と一致させる
     pub message_id: String,
     pub in_reply_to: Option<String>,
@@ -47,6 +63,139 @@ pub fn build_references(orig_references: Option<&str>, orig_message_id: &str) ->
         }
         _ => orig_message_id.to_string(),
     }
+}
+
+/// TipTap が生成した HTML から plain text フォールバックを生成する。
+/// 送信対象は自前の TipTap 出力に限定されるため、厳密な HTML パーサは使わず
+/// タグ境界ベースで走査する（設計書 2026-07-13-rich-compose-design.md）。
+pub fn html_to_plain(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let bytes = html.as_bytes();
+    // '<' '>' は ASCII なのでバイト添字はUTF-8境界と一致する。テキスト区間は
+    // バイト単位で切らず &str スライスとして丸ごとコピーし、マルチバイトを壊さない
+    let mut i = 0;
+    // 直前のタグ終端以降、まだ出力していないテキスト区間の開始位置
+    let mut text_start = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            // タグ終端 '>' を探す
+            let Some(rel) = html[i..].find('>') else {
+                // 閉じない '<' 以降はすべてテキスト。ループ後にまとめて flush する
+                break;
+            };
+            // '<' の手前までのテキスト区間をスライスコピー
+            out.push_str(&html[text_start..i]);
+
+            let tag = html[i + 1..i + rel].trim();
+            let tag_lower = tag.to_ascii_lowercase();
+            let name = tag_lower
+                .trim_start_matches('/')
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .unwrap_or("");
+            if name == "br" {
+                out.push('\n');
+            } else if tag_lower.starts_with('/')
+                && matches!(
+                    name,
+                    "p" | "div" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
+                )
+            {
+                out.push('\n');
+            } else if name == "li" {
+                // 開始タグの li は行頭のリストマーカー
+                out.push_str("- ");
+            }
+            i += rel + 1;
+            text_start = i;
+        } else {
+            i += 1;
+        }
+    }
+    // 末尾に残ったテキスト区間（閉じない '<' 以降を含む）を flush
+    out.push_str(&html[text_start..]);
+
+    let decoded = decode_html_entities(&out);
+    normalize_blank_lines(&decoded)
+}
+
+/// 最小限の HTML エンティティをデコードする
+fn decode_html_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ")
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        // &amp; は最後（他のエンティティに含まれる & を誤変換しないため）
+        .replace("&amp;", "&")
+}
+
+/// 連続する空行を最大2行（＝空行1つ）に圧縮し、各行末の空白と全体の前後空白を除去する
+fn normalize_blank_lines(s: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut blank_run = 0;
+    for line in s.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim().is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 {
+                lines.push("");
+            }
+        } else {
+            blank_run = 0;
+            lines.push(trimmed);
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
+/// ファイル名の拡張子から Content-Type を素朴に推定する（不明は octet-stream）
+pub fn guess_content_type(filename: &str) -> String {
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let ct = match ext.as_str() {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "txt" | "log" | "md" => "text/plain",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        "gz" => "application/gzip",
+        "doc" => "application/msword",
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        }
+        _ => "application/octet-stream",
+    };
+    ct.to_string()
+}
+
+/// 添付ファイル合計サイズが上限以内か検証する。超過時は Validation エラー
+pub fn validate_attachment_size(attachments: &[OutgoingAttachment]) -> Result<(), AppError> {
+    let total: usize = attachments.iter().map(|a| a.data.len()).sum();
+    if total > MAX_TOTAL_ATTACHMENT_BYTES {
+        return Err(AppError::Validation(format!(
+            "添付ファイルの合計サイズが上限({}MB)を超えています: {:.1}MB",
+            MAX_TOTAL_ATTACHMENT_BYTES / (1024 * 1024),
+            total as f64 / (1024.0 * 1024.0),
+        )));
+    }
+    Ok(())
 }
 
 /// メールアドレス文字列を lettre Mailbox にパースする（`Name <a@b>` 形式も可）
@@ -94,10 +243,58 @@ pub fn build_message(mail: &OutgoingMail) -> Result<Message, AppError> {
         builder = builder.references(refs.clone());
     }
 
-    builder
-        .header(ContentType::TEXT_PLAIN)
-        .body(mail.body_text.clone())
-        .map_err(|e| AppError::Smtp(format!("メッセージ構築に失敗: {}", e)))
+    validate_attachment_size(&mail.attachments)?;
+
+    // 本文部（プレーンのみ or alternative）を組み立てる
+    let body_part = build_body_part(mail);
+
+    let build_err = |e: lettre::error::Error| AppError::Smtp(format!("メッセージ構築に失敗: {}", e));
+
+    if mail.attachments.is_empty() {
+        // 添付なし。alternative かプレーン singlepart をそのまま本文に
+        match body_part {
+            BodyPart::Plain(text) => builder
+                .header(ContentType::TEXT_PLAIN)
+                .body(text)
+                .map_err(build_err),
+            BodyPart::Alternative(mp) => builder.multipart(mp).map_err(build_err),
+        }
+    } else {
+        // 添付あり。multipart/mixed に本文 + 各添付を並べる
+        let mut mixed = MultiPart::mixed().build();
+        mixed = match body_part {
+            BodyPart::Plain(text) => mixed.singlepart(SinglePart::plain(text)),
+            BodyPart::Alternative(mp) => mixed.multipart(mp),
+        };
+        for att in &mail.attachments {
+            let content_type = att
+                .content_type
+                .parse::<ContentType>()
+                .unwrap_or(ContentType::TEXT_PLAIN);
+            mixed = mixed.singlepart(
+                Attachment::new(att.filename.clone()).body(att.data.clone(), content_type),
+            );
+        }
+        builder.multipart(mixed).map_err(build_err)
+    }
+}
+
+/// 本文部の中間表現。プレーン単体か、plain+html の alternative
+enum BodyPart {
+    Plain(String),
+    Alternative(MultiPart),
+}
+
+/// リッチ有無に応じて本文部を組み立てる。
+/// リッチ時の plain フォールバックは HTML から生成する
+fn build_body_part(mail: &OutgoingMail) -> BodyPart {
+    match &mail.body_html {
+        Some(html) => {
+            let plain = html_to_plain(html);
+            BodyPart::Alternative(MultiPart::alternative_plain_html(plain, html.clone()))
+        }
+        None => BodyPart::Plain(mail.body_text.clone()),
+    }
 }
 
 /// SMTP送信。ポート465はImplicit TLS、それ以外はSTARTTLS。
@@ -152,9 +349,19 @@ mod tests {
             bcc: vec![],
             subject: "テスト件名".into(),
             body_text: "こんにちは".into(),
+            body_html: None,
+            attachments: vec![],
             message_id: "<abc-123@pigeon.local>".into(),
             in_reply_to: None,
             references: None,
+        }
+    }
+
+    fn attachment(filename: &str, size: usize) -> OutgoingAttachment {
+        OutgoingAttachment {
+            filename: filename.into(),
+            content_type: guess_content_type(filename),
+            data: vec![0u8; size],
         }
     }
 
@@ -254,6 +461,137 @@ mod tests {
         let msg = build_message(&mail).unwrap();
         let raw = String::from_utf8(msg.formatted()).unwrap();
         assert!(raw.contains("me@example.com"));
+    }
+
+    #[test]
+    fn test_html_to_plain_breaks_and_blocks() {
+        assert_eq!(html_to_plain("<p>Hello</p><p>World</p>"), "Hello\nWorld");
+        assert_eq!(html_to_plain("line1<br>line2"), "line1\nline2");
+        assert_eq!(html_to_plain("<div>a</div><div>b</div>"), "a\nb");
+    }
+
+    #[test]
+    fn test_html_to_plain_list_items() {
+        assert_eq!(
+            html_to_plain("<ul><li>one</li><li>two</li></ul>"),
+            "- one\n- two"
+        );
+    }
+
+    #[test]
+    fn test_html_to_plain_strips_inline_tags_and_entities() {
+        assert_eq!(
+            html_to_plain("<p><strong>bold</strong> &amp; <em>italic</em></p>"),
+            "bold & italic"
+        );
+        assert_eq!(html_to_plain("a&lt;b&gt;c&nbsp;d"), "a<b>c d");
+    }
+
+    #[test]
+    fn test_html_to_plain_preserves_multibyte_utf8() {
+        // 日本語（マルチバイトUTF-8）がバイト分割で文字化けしないこと
+        assert_eq!(html_to_plain("<p>こんにちは</p>"), "こんにちは");
+        assert_eq!(
+            html_to_plain("<p>日本語の<strong>本文</strong>です</p>"),
+            "日本語の本文です"
+        );
+        // 絵文字（4バイト）も壊れないこと
+        assert_eq!(html_to_plain("<p> hi 🕊️ bye</p>"), "hi 🕊️ bye");
+    }
+
+    #[test]
+    fn test_html_to_plain_unclosed_bracket_kept_as_text() {
+        // 閉じない '<' 以降は文字として残す（マルチバイトも壊さない）
+        assert_eq!(html_to_plain("a < b の話"), "a < b の話");
+        assert_eq!(html_to_plain("<p>x</p>y < z"), "x\ny < z");
+    }
+
+    #[test]
+    fn test_html_to_plain_collapses_blank_lines() {
+        // 複数の空ブロックが連続しても空行は1つに圧縮され前後はtrimされる
+        assert_eq!(
+            html_to_plain("<p>a</p><p></p><p></p><p>b</p>"),
+            "a\n\nb"
+        );
+    }
+
+    #[test]
+    fn test_guess_content_type() {
+        assert_eq!(guess_content_type("doc.pdf"), "application/pdf");
+        assert_eq!(guess_content_type("img.PNG"), "image/png");
+        assert_eq!(guess_content_type("photo.jpeg"), "image/jpeg");
+        assert_eq!(guess_content_type("noext"), "application/octet-stream");
+        assert_eq!(guess_content_type("archive.zip"), "application/zip");
+    }
+
+    #[test]
+    fn test_validate_attachment_size_within_limit() {
+        let atts = vec![attachment("a.bin", 1024), attachment("b.bin", 2048)];
+        assert!(validate_attachment_size(&atts).is_ok());
+    }
+
+    #[test]
+    fn test_validate_attachment_size_over_limit() {
+        let atts = vec![attachment("big.bin", MAX_TOTAL_ATTACHMENT_BYTES + 1)];
+        assert!(matches!(
+            validate_attachment_size(&atts),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn test_build_message_plain_only_is_singlepart() {
+        // body_html なし・添付なしは従来どおり text/plain singlepart
+        let msg = build_message(&base_mail()).unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("Content-Type: text/plain"));
+        assert!(!raw.contains("multipart/"));
+    }
+
+    #[test]
+    fn test_build_message_rich_is_multipart_alternative() {
+        let mut mail = base_mail();
+        mail.body_html = Some("<p>Hello <strong>world</strong></p>".into());
+        let msg = build_message(&mail).unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("multipart/alternative"));
+        assert!(raw.contains("text/plain"));
+        assert!(raw.contains("text/html"));
+    }
+
+    #[test]
+    fn test_build_message_with_attachment_is_multipart_mixed() {
+        let mut mail = base_mail();
+        let mut ascii = attachment("report.pdf", 8);
+        ascii.data = b"%PDF-1.4".to_vec();
+        mail.attachments = vec![ascii];
+        let msg = build_message(&mail).unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("multipart/mixed"));
+        assert!(raw.contains("application/pdf"));
+        assert!(raw.contains("report.pdf"));
+    }
+
+    #[test]
+    fn test_build_message_rich_with_attachment_nests_alternative_in_mixed() {
+        let mut mail = base_mail();
+        mail.body_html = Some("<p>hi</p>".into());
+        mail.attachments = vec![attachment("a.png", 4)];
+        let msg = build_message(&mail).unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("multipart/mixed"));
+        assert!(raw.contains("multipart/alternative"));
+        assert!(raw.contains("image/png"));
+    }
+
+    #[test]
+    fn test_build_message_rejects_oversized_attachment() {
+        let mut mail = base_mail();
+        mail.attachments = vec![attachment("big.bin", MAX_TOTAL_ATTACHMENT_BYTES + 1)];
+        assert!(matches!(
+            build_message(&mail),
+            Err(AppError::Validation(_))
+        ));
     }
 
     #[test]

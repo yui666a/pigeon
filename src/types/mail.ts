@@ -37,6 +37,10 @@ export interface SendMailRequest {
   subject: string;
   body_text: string;
   reply_to_mail_id: string | null;
+  /** リッチ本文のHTML。null ならプレーン送信（plain は Rust が HTML から生成） */
+  body_html: string | null;
+  /** 添付ファイルの絶対パス。Rust がバイト列を読み込む */
+  attachments: string[];
 }
 
 /** ローカル下書き（v1: IMAP Draftsフォルダとの同期は将来） */
