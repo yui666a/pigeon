@@ -46,10 +46,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 let syncProgressHandler: ((event: { payload: unknown }) => void) | null = null;
+let newMailHandler: ((event: { payload: unknown }) => void) | null = null;
 const mockUnlisten = vi.fn();
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((name: string, handler: (event: { payload: unknown }) => void) => {
     if (name === "sync-progress") syncProgressHandler = handler;
+    if (name === "new-mail-detected") newMailHandler = handler;
     return Promise.resolve(mockUnlisten);
   }),
 }));
@@ -550,6 +552,34 @@ describe("mailStore", () => {
       expect(count).toBe(0);
       expect(mockInvoke).not.toHaveBeenCalledWith("sync_account", expect.anything());
       expect(useMailStore.getState().syncing).toBe(true);
+    });
+  });
+
+  describe("new mail detection (IMAP IDLE)", () => {
+    it("syncs the detected account on new-mail-detected", async () => {
+      mockInvoke.mockResolvedValue(0);
+      await useMailStore.getState().initNewMailListener();
+
+      newMailHandler!({ payload: { account_id: "acc2" } });
+
+      // 表示中アカウント（acc1）と無関係に、検知されたアカウントを同期する
+      expect(mockInvoke).toHaveBeenCalledWith("sync_account", {
+        accountId: "acc2",
+      });
+    });
+
+    it("does not start a sync while another sync is in flight", async () => {
+      useMailStore.setState({ syncing: true });
+      await useMailStore.getState().initNewMailListener();
+
+      newMailHandler!({ payload: { account_id: "acc1" } });
+
+      expect(mockInvoke).not.toHaveBeenCalledWith("sync_account", expect.anything());
+    });
+
+    it("returns an unlisten function", async () => {
+      const unlisten = await useMailStore.getState().initNewMailListener();
+      expect(unlisten).toBe(mockUnlisten);
     });
   });
 });

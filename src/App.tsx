@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import "./App.css";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { ThreadList } from "./components/thread-list/ThreadList";
@@ -9,10 +10,20 @@ import { ErrorToast } from "./components/common/ErrorToast";
 import { ComposeModal } from "./components/compose/ComposeModal";
 import { useUiStore } from "./stores/uiStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useMailStore } from "./stores/mailStore";
 
 function App() {
   const viewMode = useUiStore((s) => s.viewMode);
+  const initNewMailListener = useMailStore((s) => s.initNewMailListener);
   useKeyboardShortcuts();
+
+  // IMAP IDLE の新着検知イベントを受けて自動同期する（アプリ全体の関心事）
+  useEffect(() => {
+    const promise = initNewMailListener();
+    return () => {
+      promise.then((unlisten) => unlisten());
+    };
+  }, [initNewMailListener]);
 
   return (
     <div className="flex h-screen">
