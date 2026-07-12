@@ -33,7 +33,7 @@ export function ComposeModal() {
       if (e.key !== "Escape") return;
       // 送信中は閉じない（入力内容と送信状態を保護する）
       if (useComposeStore.getState().sending) return;
-      useComposeStore.getState().closeCompose();
+      void useComposeStore.getState().closeCompose();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
@@ -47,7 +47,7 @@ export function ComposeModal() {
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h2 className="text-sm font-semibold">{MODE_TITLES[mode]}</h2>
           <button
-            onClick={closeCompose}
+            onClick={() => void closeCompose()}
             disabled={sending}
             className="text-gray-400 hover:text-gray-600 disabled:opacity-40"
             aria-label="閉じる"
@@ -107,7 +107,7 @@ export function ComposeModal() {
 
         <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
           <button
-            onClick={closeCompose}
+            onClick={() => void closeCompose()}
             disabled={sending}
             className="rounded border px-4 py-1.5 text-sm hover:bg-gray-100 disabled:opacity-40"
           >

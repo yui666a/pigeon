@@ -154,6 +154,14 @@ export function Sidebar() {
         >
           ✉ 新規作成
         </button>
+        {selectedAccountId && (
+          <button
+            onClick={() => setViewMode("drafts")}
+            className="w-full px-4 py-3 text-left text-sm text-gray-700 hover:bg-gray-100"
+          >
+            📝 下書き
+          </button>
+        )}
       </div>
       <div className="border-t">
         <NotificationToggle />

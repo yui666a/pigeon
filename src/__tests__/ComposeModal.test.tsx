@@ -152,11 +152,25 @@ describe("ComposeModal", () => {
     expect(useComposeStore.getState().isOpen).toBe(true);
   });
 
-  it("closes when キャンセル is clicked", () => {
+  it("closes when キャンセル is clicked", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "draft-1",
+      account_id: "acc1",
+      to_addr: "a@ex.com",
+      cc_addr: "",
+      bcc_addr: "",
+      subject: "",
+      body_text: "",
+      in_reply_to: null,
+      created_at: "2026-07-13T00:00:00Z",
+      updated_at: "2026-07-13T00:00:00Z",
+    });
     useComposeStore.setState({ isOpen: true, to: "a@ex.com" });
     render(<ComposeModal />);
     fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
-    expect(useComposeStore.getState().isOpen).toBe(false);
+    await vi.waitFor(() => {
+      expect(useComposeStore.getState().isOpen).toBe(false);
+    });
     expect(useComposeStore.getState().to).toBe("");
   });
 });

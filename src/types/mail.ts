@@ -17,6 +17,7 @@ export interface Mail {
   uid: number;
   flags: string | null;
   is_read: boolean;
+  is_flagged: boolean;
   fetched_at: string;
 }
 
@@ -38,6 +39,32 @@ export interface SendMailRequest {
   reply_to_mail_id: string | null;
 }
 
+/** ローカル下書き（v1: IMAP Draftsフォルダとの同期は将来） */
+export interface Draft {
+  id: string;
+  account_id: string;
+  to_addr: string;
+  cc_addr: string;
+  bcc_addr: string;
+  subject: string;
+  body_text: string;
+  in_reply_to: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Tauri `save_draft` command の入力（Rust側 SaveDraftRequest と対応） */
+export interface SaveDraftRequest {
+  id: string | null;
+  account_id: string;
+  to_addr: string;
+  cc_addr: string;
+  bcc_addr: string;
+  subject: string;
+  body_text: string;
+  in_reply_to: string | null;
+}
+
 export interface SearchResult {
   mail: Mail;
   project_id: string | null;
@@ -52,4 +79,11 @@ export interface Thread {
   mail_count: number;
   from_addrs: string[];
   mails: Mail[];
+}
+
+/** 一括操作（bulk_delete_mails 等）の結果。1件の失敗で残りは止めない */
+export interface BulkResult {
+  succeeded: string[];
+  /** [mail_id, エラーメッセージ] の組 */
+  failed: [string, string][];
 }

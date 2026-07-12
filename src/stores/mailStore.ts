@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Mail, Thread, UnreadCounts } from "../types/mail";
+import type { BulkResult, Mail, Thread, UnreadCounts } from "../types/mail";
 import { useErrorStore } from "./errorStore";
 import { useAccountStore } from "./accountStore";
 import { useUiStore } from "./uiStore";
@@ -35,6 +35,8 @@ interface MailState {
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
   markMailRead: (mail: Mail) => void;
+  toggleFlagged: (mail: Mail) => Promise<void>;
+  markMailUnread: (mail: Mail) => Promise<void>;
   deleteMail: (mail: Mail) => Promise<void>;
   archiveMail: (mail: Mail) => Promise<void>;
   unarchiveMail: (mail: Mail) => Promise<void>;
@@ -44,6 +46,9 @@ interface MailState {
   removeUnclassifiedMail: (mailId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
+  bulkDeleteMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
+  bulkArchiveMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
+  bulkMoveMails: (mailIds: string[], projectId: string) => Promise<BulkResult | null>;
 }
 
 function markReadInMails(mails: Mail[], mailId: string): Mail[] {
@@ -66,6 +71,46 @@ function removeMailFromThread(thread: Thread, mailId: string): Thread | null {
     mail_count: mails.length,
     last_date: mails[mails.length - 1].date,
   };
+}
+
+function setFlaggedInMails(mails: Mail[], mailId: string, flagged: boolean): Mail[] {
+  return mails.map((m) => (m.id === mailId ? { ...m, is_flagged: flagged } : m));
+}
+
+function setFlaggedInThread(thread: Thread, mailId: string, flagged: boolean): Thread {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  return { ...thread, mails: setFlaggedInMails(thread.mails, mailId, flagged) };
+}
+
+/** スター/フラグを表示用の全状態へ反映する（toggleFlagged の楽観更新・失敗時のロールバック共用） */
+function setFlaggedInState(
+  state: MailState,
+  mailId: string,
+  flagged: boolean,
+): Partial<MailState> {
+  return {
+    threads: state.threads.map((t) => setFlaggedInThread(t, mailId, flagged)),
+    selectedThread: state.selectedThread
+      ? setFlaggedInThread(state.selectedThread, mailId, flagged)
+      : null,
+    selectedMail:
+      state.selectedMail?.id === mailId
+        ? { ...state.selectedMail, is_flagged: flagged }
+        : state.selectedMail,
+    unclassifiedMails: setFlaggedInMails(state.unclassifiedMails, mailId, flagged),
+    unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+      setFlaggedInThread(t, mailId, flagged),
+    ),
+  };
+}
+
+function markUnreadInMails(mails: Mail[], mailId: string): Mail[] {
+  return mails.map((m) => (m.id === mailId ? { ...m, is_read: false } : m));
+}
+
+function markUnreadInThread(thread: Thread, mailId: string): Thread {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  return { ...thread, mails: markUnreadInMails(thread.mails, mailId) };
 }
 
 function setFolderInMails(mails: Mail[], mailId: string, folder: string): Mail[] {
@@ -205,6 +250,58 @@ export const useMailStore = create<MailState>((set, get) => ({
       });
   },
 
+  // スター/フラグは既読と同様に楽観更新するが、既読と違い頻繁にトグルされ
+  // 誤操作の是正もしやすいため、失敗時はロールバックしてエラー表示する
+  // （既読の「サーバー失敗はログのみ」より一段階ユーザーに見える形にする）
+  toggleFlagged: async (mail) => {
+    const next = !mail.is_flagged;
+    set((state) => setFlaggedInState(state, mail.id, next));
+    try {
+      await invoke("set_flagged", {
+        accountId: mail.account_id,
+        mailId: mail.id,
+        flagged: next,
+      });
+    } catch (e) {
+      set((state) => setFlaggedInState(state, mail.id, !next));
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  // 未読に戻す。mark_read の逆で DB は即時更新・サーバー反映はベストエフォート
+  // だが、未読化した本文を表示したままだと selectMail の自動既読化で即座に
+  // 既読へ戻ってしまうため、成功時は選択を解除する（設計書「自動既読化との干渉回避」）
+  markMailUnread: async (mail) => {
+    set((state) => ({
+      threads: state.threads.map((t) => markUnreadInThread(t, mail.id)),
+      selectedThread: state.selectedThread
+        ? markUnreadInThread(state.selectedThread, mail.id)
+        : state.selectedThread,
+      unclassifiedMails: markUnreadInMails(state.unclassifiedMails, mail.id),
+      unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+        markUnreadInThread(t, mail.id),
+      ),
+    }));
+    try {
+      await invoke("mark_unread", { accountId: mail.account_id, mailId: mail.id });
+      set({ selectedMail: null });
+      void get().fetchUnreadCounts(mail.account_id);
+    } catch (e) {
+      // ロールバック: 既読状態に戻す
+      set((state) => ({
+        threads: state.threads.map((t) => markReadInThread(t, mail.id)),
+        selectedThread: state.selectedThread
+          ? markReadInThread(state.selectedThread, mail.id)
+          : state.selectedThread,
+        unclassifiedMails: markReadInMails(state.unclassifiedMails, mail.id),
+        unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+          markReadInThread(t, mail.id),
+        ),
+      }));
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
   // 削除は破壊的操作のため楽観更新しない: サーバー反映（invoke）が成功した
   // 場合のみローカル状態から除去する。失敗時はエラー表示のみで状態は変えない
   deleteMail: async (mail) => {
@@ -324,9 +421,73 @@ export const useMailStore = create<MailState>((set, get) => ({
         .then((count) => {
           // 実際に取り込まれた件数を条件にする（IDLE の誤検知や
           // 同期中ガード・エラー時の count=0 では空通知を出さない）
-          if (count > 0) void notifyNewMail(count);
+          if (count > 0) void notifyNewMail(count, event.payload.account_id);
         });
     });
     return unlisten;
   },
+
+  // 一括操作。呼び出し元（ThreadList / UnclassifiedList）が結果を見て
+  // 一覧再読み込みと選択解除を行う（設計書 2026-07-13-bulk-actions-design.md）
+  bulkDeleteMails: async (accountId, mailIds) => {
+    try {
+      const result = await invoke<BulkResult>("bulk_delete_mails", {
+        accountId,
+        mailIds,
+      });
+      reportBulkResult(result, "削除");
+      void get().fetchUnreadCounts(accountId);
+      return result;
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      return null;
+    }
+  },
+
+  bulkArchiveMails: async (accountId, mailIds) => {
+    try {
+      const result = await invoke<BulkResult>("bulk_archive_mails", {
+        accountId,
+        mailIds,
+      });
+      reportBulkResult(result, "アーカイブ");
+      void get().fetchUnreadCounts(accountId);
+      return result;
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      return null;
+    }
+  },
+
+  bulkMoveMails: async (mailIds, projectId) => {
+    try {
+      const result = await invoke<BulkResult>("bulk_move_mails", {
+        mailIds,
+        projectId,
+      });
+      reportBulkResult(result, "案件への移動");
+      return result;
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      return null;
+    }
+  },
 }));
+
+/** 一括操作の結果をトーストで要約表示する。失敗が1件でも混在する場合は
+ * 成功件数を含めてもエラートーストにする（一部失敗を成功扱いに見せない） */
+function reportBulkResult(result: BulkResult, actionLabel: string): void {
+  const { succeeded, failed } = result;
+  if (failed.length === 0) {
+    useErrorStore.getState().addSuccess(`${actionLabel}しました（${succeeded.length}件）`);
+    return;
+  }
+  console.error(`bulk ${actionLabel} partial failure:`, failed);
+  if (succeeded.length > 0) {
+    useErrorStore
+      .getState()
+      .addError(`${actionLabel}しました（${succeeded.length}件、失敗 ${failed.length}件）`);
+  } else {
+    useErrorStore.getState().addError(`${actionLabel}に失敗しました（${failed.length}件）`);
+  }
+}

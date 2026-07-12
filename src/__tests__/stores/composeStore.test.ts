@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useComposeStore } from "../../stores/composeStore";
 import { useAccountStore } from "../../stores/accountStore";
 import { useErrorStore } from "../../stores/errorStore";
+import { useDraftStore } from "../../stores/draftStore";
 import type { Account } from "../../types/account";
-import type { Mail } from "../../types/mail";
+import type { Draft, Mail } from "../../types/mail";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -46,6 +47,7 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
     uid: 1,
     flags: null,
     is_read: false,
+    is_flagged: false,
     fetched_at: "2026-07-10T10:00:00Z",
     ...overrides,
   };
@@ -64,12 +66,14 @@ describe("composeStore", () => {
       body: "",
       sending: false,
       replyToMailId: null,
+      draftId: null,
     });
     useAccountStore.setState({
       accounts: [makeAccount()],
       selectedAccountId: "acc1",
     });
     useErrorStore.setState({ toasts: [] });
+    useDraftStore.setState({ drafts: [], loading: false });
   });
 
   describe("openCompose", () => {
@@ -198,16 +202,159 @@ describe("composeStore", () => {
       expect(mockInvoke).not.toHaveBeenCalled();
       expect(useComposeStore.getState().isOpen).toBe(true);
     });
+
+    it("deletes the associated draft on successful send", async () => {
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "send_mail") return Promise.resolve(undefined);
+        if (cmd === "delete_draft") return Promise.resolve(undefined);
+        return Promise.reject(new Error(`unexpected: ${cmd}`));
+      });
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({
+        to: "a@ex.com",
+        subject: "S",
+        body: "B",
+        draftId: "draft-1",
+      });
+
+      await useComposeStore.getState().send();
+
+      expect(mockInvoke).toHaveBeenCalledWith("delete_draft", {
+        id: "draft-1",
+      });
+    });
+
+    it("does not call delete_draft when there is no associated draft", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", subject: "S", body: "B" });
+
+      await useComposeStore.getState().send();
+
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "delete_draft",
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("openComposeFromDraft", () => {
+    it("restores fields from a draft and tracks its id", () => {
+      const draft: Draft = {
+        id: "draft-1",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "b@ex.com",
+        bcc_addr: "",
+        subject: "件名",
+        body_text: "本文",
+        in_reply_to: "m1",
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+
+      useComposeStore.getState().openComposeFromDraft(draft);
+
+      const s = useComposeStore.getState();
+      expect(s.isOpen).toBe(true);
+      expect(s.to).toBe("a@ex.com");
+      expect(s.cc).toBe("b@ex.com");
+      expect(s.subject).toBe("件名");
+      expect(s.body).toBe("本文");
+      expect(s.replyToMailId).toBe("m1");
+      expect(s.draftId).toBe("draft-1");
+    });
   });
 
   describe("closeCompose", () => {
-    it("closes and resets fields", () => {
+    it("closes and resets fields", async () => {
+      mockInvoke.mockResolvedValue({
+        id: "draft-1",
+        account_id: "acc1",
+        to_addr: "tanaka@example.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "Re: 打ち合わせの件",
+        body_text: "> こんにちは。",
+        in_reply_to: "m1",
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      });
       useComposeStore.getState().openCompose("reply", makeMail());
-      useComposeStore.getState().closeCompose();
+      await useComposeStore.getState().closeCompose();
       const s = useComposeStore.getState();
       expect(s.isOpen).toBe(false);
       expect(s.to).toBe("");
       expect(s.body).toBe("");
+    });
+
+    it("auto-saves as a draft when there is input", async () => {
+      const saved: Draft = {
+        id: "draft-new",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "S",
+        body_text: "B",
+        in_reply_to: null,
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+      mockInvoke.mockResolvedValue(saved);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", subject: "S", body: "B" });
+
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).toHaveBeenCalledWith("save_draft", {
+        req: expect.objectContaining({
+          id: null,
+          account_id: "acc1",
+          to_addr: "a@ex.com",
+          subject: "S",
+          body_text: "B",
+        }),
+      });
+      expect(useComposeStore.getState().isOpen).toBe(false);
+    });
+
+    it("does not save a draft when all fields are empty", async () => {
+      useComposeStore.getState().openCompose("new");
+
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "save_draft",
+        expect.anything(),
+      );
+    });
+
+    it("reuses the same draft id across repeated saves (upsert)", async () => {
+      const firstSave: Draft = {
+        id: "draft-1",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "",
+        body_text: "",
+        in_reply_to: null,
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+      mockInvoke.mockResolvedValue(firstSave);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com" });
+      await useComposeStore.getState().closeCompose();
+
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", draftId: "draft-1" });
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).toHaveBeenLastCalledWith("save_draft", {
+        req: expect.objectContaining({ id: "draft-1" }),
+      });
     });
   });
 
