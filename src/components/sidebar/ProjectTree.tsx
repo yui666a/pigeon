@@ -18,14 +18,15 @@ interface ProjectTreeProps {
 export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTreeProps) {
   const { selectedAccountId } = useAccountStore();
   const { projects, fetchProjects } = useProjectStore();
-  const { unclassifiedMails, fetchUnclassified } = useMailStore();
+  const { unclassifiedMails, fetchUnclassified, fetchUnreadCounts } = useMailStore();
 
   useEffect(() => {
     if (selectedAccountId) {
       fetchProjects(selectedAccountId);
       fetchUnclassified(selectedAccountId);
+      fetchUnreadCounts(selectedAccountId);
     }
-  }, [selectedAccountId, fetchProjects, fetchUnclassified]);
+  }, [selectedAccountId, fetchProjects, fetchUnclassified, fetchUnreadCounts]);
 
   if (!selectedAccountId) {
     return null;
@@ -83,6 +84,7 @@ function ProjectListInner({
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
   const endDrag = useDragStore((s) => s.endDrag);
   const { moveMail } = useMailStore();
+  const unreadByProject = useMailStore((s) => s.unreadCounts.by_project);
   const { startRename } = useProjectRenameContext();
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -160,6 +162,7 @@ function ProjectListInner({
             onDrop={handleDropOnProject}
             directory={directories[project.id] ?? null}
             scanning={!!scanningProjects[project.id]}
+            unreadCount={unreadByProject[project.id] ?? 0}
           />
         ))}
       </ul>
