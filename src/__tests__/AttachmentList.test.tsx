@@ -26,6 +26,7 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
     mime_type: "application/pdf",
     size: 2048,
     file_path: "/cache/m1/report.pdf",
+    content_id: null,
     ...overrides,
   };
 }
