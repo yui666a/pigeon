@@ -6,6 +6,11 @@ interface AccountListProps {
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
   onReauth?: (id: string) => void;
+  onBackfill?: (id: string) => void;
+  /** 現在バックフィル実行中のアカウントID（多重クリック防止のボタン無効化用） */
+  backfillingAccountId?: string | null;
+  /** account_id -> これ以上サーバーに古いメールが無いか */
+  backfillExhausted?: Record<string, boolean>;
 }
 
 export function AccountList({
@@ -14,6 +19,9 @@ export function AccountList({
   onSelect,
   onRemove,
   onReauth,
+  onBackfill,
+  backfillingAccountId,
+  backfillExhausted,
 }: AccountListProps) {
   if (accounts.length === 0) {
     return <p className="px-4 py-2 text-sm text-gray-400">アカウントなし</p>;
@@ -62,6 +70,23 @@ export function AccountList({
                 再認証
               </button>
             )}
+            {!account.needs_reauth && onBackfill && (() => {
+              const isBackfilling = backfillingAccountId === account.id;
+              const isExhausted = backfillExhausted?.[account.id] === true;
+              return (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onBackfill(account.id);
+                  }}
+                  disabled={isBackfilling || isExhausted}
+                  className="ml-1 shrink-0 rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="過去のメールを取得"
+                >
+                  {isBackfilling ? "取得中…" : isExhausted ? "全件取得済み" : "過去のメールを取得"}
+                </button>
+              );
+            })()}
             <button
               onClick={(e) => {
                 e.stopPropagation();

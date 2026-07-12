@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useComposeStore } from "../../stores/composeStore";
+import { useMailStore } from "../../stores/mailStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSearchStore } from "../../stores/searchStore";
 import { useUiStore } from "../../stores/uiStore";
 import { AccountList } from "./AccountList";
+
+// バックフィルの既定取得件数。settings.initial_sync_limit（バックエンド既定値）と
+// 同じ値をそのまま使う。設定UIは作らない（設計書 2026-07-13-mail-backfill-design.md）
+const BACKFILL_LIMIT = 5000;
 import { AccountForm } from "./AccountForm";
 import { SearchBar } from "./SearchBar";
 import { ProjectTree } from "./ProjectTree";
@@ -27,12 +32,23 @@ export function Sidebar() {
     initDeepLinkListener,
   } = useAccountStore();
   const { createProject, linkDirectory, rescanProject } = useProjectStore();
+  const backfillAccount = useMailStore((s) => s.backfillAccount);
+  const backfillExhausted = useMailStore((s) => s.backfillExhausted);
   const openCompose = useComposeStore((s) => s.openCompose);
   const { search, clearSearch } = useSearchStore();
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
   const [showProjectForm, setShowProjectForm] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
+  // backfilling はストア側では同時実行不可のグローバルフラグ（SyncLocks 共有）のため、
+  // 「どのアカウントの操作でボタンを無効化するか」はローカルで追跡する
+  const [backfillingAccountId, setBackfillingAccountId] = useState<string | null>(null);
+
+  const handleBackfill = async (accountId: string) => {
+    setBackfillingAccountId(accountId);
+    await backfillAccount(accountId, BACKFILL_LIMIT);
+    setBackfillingAccountId(null);
+  };
 
   const handleSearch = (query: string) => {
     if (!selectedAccountId) return;
@@ -124,6 +140,9 @@ export function Sidebar() {
           onSelect={handleSelectAccount}
           onRemove={removeAccount}
           onReauth={startReauth}
+          onBackfill={handleBackfill}
+          backfillingAccountId={backfillingAccountId}
+          backfillExhausted={backfillExhausted}
         />
         <ProjectTree
           onSelectUnclassified={() => setViewMode("unclassified")}

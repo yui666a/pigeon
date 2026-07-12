@@ -54,11 +54,13 @@ vi.mock("../../utils/notifyNewMail", () => ({
 
 let syncProgressHandler: ((event: { payload: unknown }) => void) | null = null;
 let newMailHandler: ((event: { payload: unknown }) => void) | null = null;
+let backfillProgressHandler: ((event: { payload: unknown }) => void) | null = null;
 const mockUnlisten = vi.fn();
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((name: string, handler: (event: { payload: unknown }) => void) => {
     if (name === "sync-progress") syncProgressHandler = handler;
     if (name === "new-mail-detected") newMailHandler = handler;
+    if (name === "backfill-progress") backfillProgressHandler = handler;
     return Promise.resolve(mockUnlisten);
   }),
 }));
@@ -77,6 +79,9 @@ describe("mailStore", () => {
       error: null,
       syncProgress: null,
       unreadCounts: { by_project: {}, unclassified: 0 },
+      backfilling: false,
+      backfillProgress: null,
+      backfillExhausted: {},
     });
     useAccountStore.setState({ selectedAccountId: "acc1" });
     useUiStore.setState({ viewMode: "threads" });
@@ -920,6 +925,111 @@ describe("mailStore", () => {
         projectId: "p1",
       });
       expect(result).toEqual({ succeeded: ["m1", "m2"], failed: [] });
+    });
+  });
+
+  describe("backfillAccount", () => {
+    it("sets backfilling state, invokes backfill_account with the given limit, and refetches lists", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) => {
+        if (cmd === "backfill_account") {
+          return Promise.resolve({ fetched: 42, exhausted: false });
+        }
+        return Promise.resolve([]);
+      });
+      useAccountStore.setState({ selectedAccountId: "acc1" });
+      useUiStore.setState({ viewMode: "threads" });
+
+      await useMailStore.getState().backfillAccount("acc1", 5000);
+
+      expect(mockInvoke).toHaveBeenCalledWith("backfill_account", {
+        accountId: "acc1",
+        limit: 5000,
+      });
+      expect(useMailStore.getState().backfilling).toBe(false);
+      expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
+        accountId: "acc1",
+        folder: "INBOX",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
+        accountId: "acc1",
+      });
+    });
+
+    it("records exhausted=true so the caller can disable the button", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "backfill_account"
+          ? Promise.resolve({ fetched: 0, exhausted: true })
+          : Promise.resolve([]),
+      );
+
+      await useMailStore.getState().backfillAccount("acc1", 5000);
+
+      expect(useMailStore.getState().backfillExhausted["acc1"]).toBe(true);
+    });
+
+    it("does not refetch the thread list when a different account is selected", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "backfill_account"
+          ? Promise.resolve({ fetched: 10, exhausted: false })
+          : Promise.resolve([]),
+      );
+      useAccountStore.setState({ selectedAccountId: "acc2" });
+      useUiStore.setState({ viewMode: "threads" });
+
+      await useMailStore.getState().backfillAccount("acc1", 5000);
+
+      expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
+    });
+
+    it("does not start another backfill while one is in flight", async () => {
+      useMailStore.setState({ backfilling: true });
+
+      await useMailStore.getState().backfillAccount("acc1", 5000);
+
+      expect(mockInvoke).not.toHaveBeenCalledWith("backfill_account", expect.anything());
+    });
+
+    it("sets error and clears backfilling on failure", async () => {
+      mockInvoke.mockRejectedValue("backfill error");
+
+      await useMailStore.getState().backfillAccount("acc1", 5000);
+
+      expect(useMailStore.getState().error).toBe("backfill error");
+      expect(useMailStore.getState().backfilling).toBe(false);
+    });
+  });
+
+  describe("backfill progress", () => {
+    it("updates backfillProgress on backfill-progress events", async () => {
+      await useMailStore.getState().initBackfillListener();
+      backfillProgressHandler!({
+        payload: { account_id: "acc1", done: 100, total: 5000 },
+      });
+      expect(useMailStore.getState().backfillProgress).toEqual({
+        account_id: "acc1",
+        done: 100,
+        total: 5000,
+      });
+    });
+
+    it("clears backfillProgress when backfillAccount finishes", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "backfill_account"
+          ? Promise.resolve({ fetched: 1, exhausted: false })
+          : Promise.resolve([]),
+      );
+      useMailStore.setState({
+        backfillProgress: { account_id: "acc1", done: 100, total: 200 },
+      });
+
+      await useMailStore.getState().backfillAccount("acc1", 5000);
+
+      expect(useMailStore.getState().backfillProgress).toBeNull();
+    });
+
+    it("returns an unlisten function", async () => {
+      const unlisten = await useMailStore.getState().initBackfillListener();
+      expect(unlisten).toBe(mockUnlisten);
     });
   });
 });

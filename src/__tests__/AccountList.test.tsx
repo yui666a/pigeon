@@ -106,4 +106,80 @@ describe("AccountList", () => {
     fireEvent.click(screen.getByTitle("再認証"));
     expect(onReauth).toHaveBeenCalledWith("4");
   });
+
+  describe("backfill button", () => {
+    it("calls onBackfill with the account id when clicked", () => {
+      const onBackfill = vi.fn();
+      render(
+        <AccountList
+          accounts={[baseAccount]}
+          selectedId={null}
+          onSelect={() => {}}
+          onRemove={() => {}}
+          onBackfill={onBackfill}
+        />,
+      );
+      fireEvent.click(screen.getByTitle("過去のメールを取得"));
+      expect(onBackfill).toHaveBeenCalledWith("1");
+    });
+
+    it("is not shown when the account needs reauth", () => {
+      const onBackfill = vi.fn();
+      const reauthAccount: Account = { ...baseAccount, needs_reauth: true };
+      render(
+        <AccountList
+          accounts={[reauthAccount]}
+          selectedId={null}
+          onSelect={() => {}}
+          onRemove={() => {}}
+          onBackfill={onBackfill}
+        />,
+      );
+      expect(screen.queryByTitle("過去のメールを取得")).not.toBeInTheDocument();
+    });
+
+    it("shows '取得中…' and disables the button while backfilling this account", () => {
+      const onBackfill = vi.fn();
+      render(
+        <AccountList
+          accounts={[baseAccount]}
+          selectedId={null}
+          onSelect={() => {}}
+          onRemove={() => {}}
+          onBackfill={onBackfill}
+          backfillingAccountId="1"
+        />,
+      );
+      const button = screen.getByRole("button", { name: "取得中…" });
+      expect(button).toBeDisabled();
+    });
+
+    it("shows '全件取得済み' and disables the button when exhausted", () => {
+      const onBackfill = vi.fn();
+      render(
+        <AccountList
+          accounts={[baseAccount]}
+          selectedId={null}
+          onSelect={() => {}}
+          onRemove={() => {}}
+          onBackfill={onBackfill}
+          backfillExhausted={{ "1": true }}
+        />,
+      );
+      const button = screen.getByRole("button", { name: "全件取得済み" });
+      expect(button).toBeDisabled();
+    });
+
+    it("does not render the button at all when onBackfill is not given", () => {
+      render(
+        <AccountList
+          accounts={[baseAccount]}
+          selectedId={null}
+          onSelect={() => {}}
+          onRemove={() => {}}
+        />,
+      );
+      expect(screen.queryByTitle("過去のメールを取得")).not.toBeInTheDocument();
+    });
+  });
 });
