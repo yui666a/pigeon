@@ -117,7 +117,8 @@ EXPUNGE する。async-imap 0.11 は `Session::uid_expunge` と `capabilities()`
 - `mailStore.ts`: `deleteMail(mail)` / `archiveMail(mail)` アクション。invoke 成功後に
   threads / selectedThread / selectedMail / unclassifiedMails から該当メールを除去
   （スレッドが空になればスレッドごと除去）し、`fetchUnreadCounts` を呼ぶ。
-  失敗時は `errorStore.addError` のみでローカル状態は変更しない。
+  成功時は成功トースト（`errorStore.addSuccess`。「削除しました」/「アーカイブしました」）で
+  フィードバックする。失敗時は `errorStore.addError` のみでローカル状態は変更しない。
   `unarchiveMail(mail)` は invoke 成功後に該当メールの folder を `'INBOX'` へ
   ローカル更新する（除去はしない。上記「アーカイブ解除」参照）
 - `useKeyboardShortcuts.ts`: `e` = アーカイブ（既存の発火ガード —

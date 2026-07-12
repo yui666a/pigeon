@@ -84,6 +84,7 @@ export const useComposeStore = create<ComposeState>((set, get) => ({
     try {
       await invoke("send_mail", { req });
       set({ isOpen: false, sending: false, ...EMPTY_FIELDS });
+      useErrorStore.getState().addSuccess("メールを送信しました");
     } catch (e) {
       // 失敗時はモーダルを開いたまま入力内容を保持する
       set({ sending: false });

@@ -6,7 +6,7 @@ import { UnclassifiedList } from "./components/thread-list/UnclassifiedList";
 import { SearchResults } from "./components/thread-list/SearchResults";
 import { MailView } from "./components/mail-view/MailView";
 import { DragOverlay } from "./components/common/DragOverlay";
-import { ErrorToast } from "./components/common/ErrorToast";
+import { ToastContainer } from "./components/common/ToastContainer";
 import { ComposeModal } from "./components/compose/ComposeModal";
 import { useUiStore } from "./stores/uiStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -41,7 +41,7 @@ function App() {
         <MailView />
       </div>
       <DragOverlay />
-      <ErrorToast />
+      <ToastContainer />
       <ComposeModal />
     </div>
   );

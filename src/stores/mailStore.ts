@@ -212,6 +212,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       await invoke("delete_mail", { accountId: mail.account_id, mailId: mail.id });
       set((state) => removeMailFromState(state, mail.id));
       void get().fetchUnreadCounts(mail.account_id);
+      useErrorStore.getState().addSuccess("削除しました");
     } catch (e) {
       useErrorStore.getState().addError(String(e));
     }
@@ -222,6 +223,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       await invoke("archive_mail", { accountId: mail.account_id, mailId: mail.id });
       set((state) => removeMailFromState(state, mail.id));
       void get().fetchUnreadCounts(mail.account_id);
+      useErrorStore.getState().addSuccess("アーカイブしました");
     } catch (e) {
       useErrorStore.getState().addError(String(e));
     }
