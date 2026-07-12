@@ -199,6 +199,19 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 9 {
+        migrate_v9(conn)?;
+        version = 9;
+        set_schema_version(conn, version)?;
+    }
+
+    if version < 10 {
+        migrate_v10(conn)?;
+        version = 10;
+        set_schema_version(conn, version)?;
+    }
+
+    // v11 は別機能で予約済みのため欠番（マージ時に順序解決される）
     if version < 12 {
         migrate_v12(conn)?;
         version = 12;
@@ -357,6 +370,36 @@ fn migrate_v8(conn: &Connection) -> Result<(), AppError> {
         );
         CREATE INDEX IF NOT EXISTS idx_attachments_mail ON attachments(mail_id);
         ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v9(conn: &Connection) -> Result<(), AppError> {
+    // スター/フラグ（\Flagged）の管理。正はサーバーの \Flagged で、これはそのキャッシュ。
+    // 既存行は flags 列（サーバーフラグの文字列）に \Flagged を含んでいれば 1 に埋め戻す
+    // （is_read を v7 で埋め戻さなかったのは当時 flags の一括再取得が未実装だったため。
+    // 今回は文字列に情報があるので活かす）
+    conn.execute_batch(
+        "ALTER TABLE mails ADD COLUMN is_flagged INTEGER NOT NULL DEFAULT 0;
+         UPDATE mails SET is_flagged = 1 WHERE flags LIKE '%\\Flagged%';",
+    )?;
+    Ok(())
+}
+
+fn migrate_v10(conn: &Connection) -> Result<(), AppError> {
+    // uid がサーバー実 UID として確定しているか（Sent 同期の watermark 用）。
+    // 詳細: docs/superpowers/specs/2026-07-12-sent-sync-uidplus-design.md
+    //
+    // 既定は 1（確定）。INBOX 等サーバーから取得した行の uid はサーバー実 UID なので確定。
+    // 一方、送信時にローカル保存する Sent 行の uid は get_max_uid+1 の推定値であり未確定。
+    // 本マイグレーション以前は Sent 同期が存在しなかったため、既存の folder='Sent' 行は
+    // すべて送信時の推定 uid とみなして 0（未確定）で埋め戻す。
+    conn.execute_batch(
+        "ALTER TABLE mails ADD COLUMN uid_confirmed INTEGER NOT NULL DEFAULT 1;",
+    )?;
+    conn.execute(
+        "UPDATE mails SET uid_confirmed = 0 WHERE folder = 'Sent'",
+        [],
     )?;
     Ok(())
 }
@@ -1072,6 +1115,95 @@ mod tests {
     }
 
     #[test]
+    fn test_v10_adds_uid_confirmed_defaulting_to_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        // uid_confirmed を指定しない INSERT はデフォルト 1（確定）になる
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+
+        let confirmed: i32 = conn
+            .query_row("SELECT uid_confirmed FROM mails WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(confirmed, 1, "uid_confirmed defaults to 1 (confirmed)");
+    }
+
+    #[test]
+    fn test_v10_backfills_existing_sent_rows_as_unconfirmed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // v8 までを適用した状態（Sent 同期が存在しなかった時代）で既存メールを仕込む
+        get_schema_version(&conn).unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        set_schema_version(&conn, 8).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        // INBOX 行（サーバー実 uid）と Sent 行（送信時の推定 uid）
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('inbox1', 'acc1', 'INBOX', '<a@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('sent1', 'acc1', 'Sent', '<b@y>', 'a@b', 'c@d', 'S', '2026-07-12', 1)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let inbox_confirmed: i32 = conn
+            .query_row(
+                "SELECT uid_confirmed FROM mails WHERE id = 'inbox1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let sent_confirmed: i32 = conn
+            .query_row(
+                "SELECT uid_confirmed FROM mails WHERE id = 'sent1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inbox_confirmed, 1, "INBOX 既存行は確定のまま");
+        assert_eq!(sent_confirmed, 0, "Sent 既存行は推定 uid として未確定に埋め戻す");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 12);
+    }
+
+    #[test]
     fn test_v6_unique_index_rejects_duplicate_uid() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -1214,6 +1346,94 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "メール削除で添付レコードもCASCADE削除される");
+    }
+
+    #[test]
+    fn test_v9_adds_is_flagged_column_with_default_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-13', 1)",
+            [],
+        )
+        .unwrap();
+
+        let is_flagged: i32 = conn
+            .query_row("SELECT is_flagged FROM mails WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(is_flagged, 0, "is_flagged defaults to 0 (未フラグ)");
+    }
+
+    #[test]
+    fn test_v9_backfills_is_flagged_from_existing_flags_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // v8 までを適用した状態で既存メールを仕込む（flags 列にサーバーフラグ文字列がある想定）
+        get_schema_version(&conn).unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        set_schema_version(&conn, 8).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid, flags)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-13', 1, '\\Seen \\Flagged')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid, flags)
+             VALUES ('m2', 'acc1', 'INBOX', '<p@q>', 'a@b', 'c@d', 'S', '2026-07-13', 2, '\\Seen')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid, flags)
+             VALUES ('m3', 'acc1', 'INBOX', '<r@s>', 'a@b', 'c@d', 'S', '2026-07-13', 3, NULL)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let flagged = |id: &str| -> i32 {
+            conn.query_row(
+                &format!("SELECT is_flagged FROM mails WHERE id = '{}'", id),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(flagged("m1"), 1, "flags に \\Flagged を含む行は埋め戻される");
+        assert_eq!(flagged("m2"), 0, "\\Flagged を含まない行は 0 のまま");
+        assert_eq!(flagged("m3"), 0, "flags が NULL の行は 0 のまま");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 12);
     }
 
     #[test]

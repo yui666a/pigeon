@@ -11,6 +11,8 @@ export function MailActions({ mail }: MailActionsProps) {
   const archiveMail = useMailStore((s) => s.archiveMail);
   const unarchiveMail = useMailStore((s) => s.unarchiveMail);
   const deleteMail = useMailStore((s) => s.deleteMail);
+  const toggleFlagged = useMailStore((s) => s.toggleFlagged);
+  const markMailUnread = useMailStore((s) => s.markMailUnread);
 
   const isArchived = mail.folder === "Archive";
 
@@ -18,6 +20,8 @@ export function MailActions({ mail }: MailActionsProps) {
     "rounded border px-3 py-1 text-sm text-gray-700 hover:bg-gray-100";
   const deleteButtonClass =
     "rounded border px-3 py-1 text-sm text-red-600 hover:bg-red-50";
+  const starButtonClass =
+    "rounded border px-3 py-1 text-sm text-amber-500 hover:bg-amber-50";
 
   const handleDelete = () => {
     // 削除はサーバーからも消える破壊的操作のため必ず確認する
@@ -61,6 +65,16 @@ export function MailActions({ mail }: MailActionsProps) {
       )}
       <button className={deleteButtonClass} onClick={handleDelete}>
         削除
+      </button>
+      <button
+        className={starButtonClass}
+        onClick={() => void toggleFlagged(mail)}
+        aria-label={mail.is_flagged ? "★" : "☆"}
+      >
+        {mail.is_flagged ? "★" : "☆"}
+      </button>
+      <button className={buttonClass} onClick={() => void markMailUnread(mail)}>
+        未読にする
       </button>
     </div>
   );

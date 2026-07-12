@@ -36,12 +36,14 @@ pub fn extract_attachments(raw: &[u8]) -> Vec<ExtractedAttachment> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn parse_mime(
     raw: &[u8],
     account_id: &str,
     folder: &str,
     uid: u32,
     is_read: bool,
+    is_flagged: bool,
     flags: Option<String>,
 ) -> Option<Mail> {
     let message = MessageParser::default().parse(raw)?;
@@ -125,7 +127,10 @@ pub fn parse_mime(
         uid,
         flags,
         is_read,
+        is_flagged,
         fetched_at: chrono::Utc::now().to_rfc3339(),
+        // サーバーから取得した uid はサーバー実 UID なので確定
+        uid_confirmed: true,
     })
 }
 
@@ -153,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_email() {
-        let mail = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 1, false, None).unwrap();
+        let mail = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 1, false, false, None).unwrap();
         assert_eq!(mail.subject, "Test Email");
         assert_eq!(mail.from_addr, "sender@example.com");
         assert_eq!(mail.to_addr, "recipient@example.com");
@@ -164,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_parse_reply_email() {
-        let mail = parse_mime(REPLY_EMAIL, "acc1", "INBOX", 2, false, None).unwrap();
+        let mail = parse_mime(REPLY_EMAIL, "acc1", "INBOX", 2, false, false, None).unwrap();
         assert_eq!(mail.subject, "Re: Test Email");
         assert!(mail.in_reply_to.is_some());
         assert!(mail.references.is_some());
@@ -172,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_does_not_panic() {
-        let result = parse_mime(b"not a valid email at all", "acc1", "INBOX", 1, false, None);
+        let result = parse_mime(b"not a valid email at all", "acc1", "INBOX", 1, false, false, None);
         // mail-parser may partially parse, just ensure no panic
         let _ = result;
     }
@@ -213,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_parse_email_with_cc() {
-        let mail = parse_mime(EMAIL_WITH_CC, "acc1", "INBOX", 3, false, None).unwrap();
+        let mail = parse_mime(EMAIL_WITH_CC, "acc1", "INBOX", 3, false, false, None).unwrap();
         assert!(mail.cc_addr.is_some());
         let cc = mail.cc_addr.unwrap();
         assert!(cc.contains("cc1@example.com"));
@@ -222,20 +227,20 @@ mod tests {
 
     #[test]
     fn test_parse_email_no_subject_defaults() {
-        let mail = parse_mime(EMAIL_NO_SUBJECT, "acc1", "INBOX", 4, false, None).unwrap();
+        let mail = parse_mime(EMAIL_NO_SUBJECT, "acc1", "INBOX", 4, false, false, None).unwrap();
         assert_eq!(mail.subject, "(no subject)");
     }
 
     #[test]
     fn test_parse_email_with_display_name() {
-        let mail = parse_mime(EMAIL_WITH_DISPLAY_NAME, "acc1", "INBOX", 5, false, None).unwrap();
+        let mail = parse_mime(EMAIL_WITH_DISPLAY_NAME, "acc1", "INBOX", 5, false, false, None).unwrap();
         assert!(mail.from_addr.contains("Alice Smith"));
         assert!(mail.from_addr.contains("alice@example.com"));
     }
 
     #[test]
     fn test_parse_email_with_references_chain() {
-        let mail = parse_mime(EMAIL_WITH_REFERENCES_CHAIN, "acc1", "INBOX", 6, false, None).unwrap();
+        let mail = parse_mime(EMAIL_WITH_REFERENCES_CHAIN, "acc1", "INBOX", 6, false, false, None).unwrap();
         assert_eq!(mail.in_reply_to, Some("<chain2@example.com>".to_string()));
         let refs = mail.references.unwrap();
         assert!(refs.contains("<chain1@example.com>"));
@@ -244,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_parse_email_sets_account_and_folder() {
-        let mail = parse_mime(SIMPLE_EMAIL, "my-account", "Sent", 10, false, None).unwrap();
+        let mail = parse_mime(SIMPLE_EMAIL, "my-account", "Sent", 10, false, false, None).unwrap();
         assert_eq!(mail.account_id, "my-account");
         assert_eq!(mail.folder, "Sent");
         assert_eq!(mail.uid, 10);
@@ -258,32 +263,35 @@ mod tests {
             "INBOX",
             1,
             true,
-            Some("\\Seen \\Answered".into()),
+            true,
+            Some("\\Seen \\Flagged".into()),
         )
         .unwrap();
         assert!(mail.is_read);
-        assert_eq!(mail.flags, Some("\\Seen \\Answered".to_string()));
+        assert!(mail.is_flagged);
+        assert_eq!(mail.flags, Some("\\Seen \\Flagged".to_string()));
 
-        let unread = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 2, false, None).unwrap();
+        let unread = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 2, false, false, None).unwrap();
         assert!(!unread.is_read);
+        assert!(!unread.is_flagged);
         assert!(unread.flags.is_none());
     }
 
     #[test]
     fn test_parse_email_no_attachments() {
-        let mail = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 1, false, None).unwrap();
+        let mail = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 1, false, false, None).unwrap();
         assert!(!mail.has_attachments);
     }
 
     #[test]
     fn test_parse_email_raw_size() {
-        let mail = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 1, false, None).unwrap();
+        let mail = parse_mime(SIMPLE_EMAIL, "acc1", "INBOX", 1, false, false, None).unwrap();
         assert_eq!(mail.raw_size, Some(SIMPLE_EMAIL.len() as i64));
     }
 
     #[test]
     fn test_parse_empty_bytes() {
-        let result = parse_mime(b"", "acc1", "INBOX", 1, false, None);
+        let result = parse_mime(b"", "acc1", "INBOX", 1, false, false, None);
         let _ = result;
     }
 
@@ -350,7 +358,7 @@ mod tests {
     #[test]
     fn test_extract_attachments_marks_has_attachments() {
         // 同期時の has_attachments フラグと抽出結果が整合すること
-        let mail = parse_mime(MULTIPART_EMAIL_WITH_ATTACHMENTS, "acc1", "INBOX", 1, false, None).unwrap();
+        let mail = parse_mime(MULTIPART_EMAIL_WITH_ATTACHMENTS, "acc1", "INBOX", 1, false, false, None).unwrap();
         assert!(mail.has_attachments);
     }
 
