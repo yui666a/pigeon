@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use std::sync::Mutex;
+use tauri::State;
 
 use crate::classifier::factory::build_classifier;
 use crate::db::{assignments, mails, projects};
@@ -22,14 +21,6 @@ pub struct PendingClassifications(pub Mutex<HashMap<String, ClassifyResult>>);
 impl PendingClassifications {
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
-    }
-}
-
-pub struct ClassifyCancelFlag(pub Arc<AtomicBool>);
-
-impl ClassifyCancelFlag {
-    pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
     }
 }
 
@@ -88,139 +79,6 @@ pub async fn classify_mail(
     }
 
     Ok(ClassifyResponse { mail_id, result })
-}
-
-/// Classify all unassigned mails for `account_id`, emitting progress events.
-#[tauri::command]
-pub async fn classify_unassigned(
-    db: State<'_, DbState>,
-    pending: State<'_, PendingClassifications>,
-    cancel_flag: State<'_, ClassifyCancelFlag>,
-    secure_store: State<'_, SecureStoreState>,
-    handle: AppHandle,
-    account_id: String,
-) -> Result<(), AppError> {
-    // Reset cancel flag
-    cancel_flag.0.store(false, Ordering::SeqCst);
-
-    // Load unclassified mails and settings
-    let (mails, corrections, classifier) = {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        let mails = assignments::get_unclassified_mails(&conn, &account_id)?;
-        let corrections =
-            assignments::get_recent_corrections(&conn, &account_id, 20).unwrap_or_default();
-        let classifier = build_classifier(&conn, &secure_store.0)?;
-        (mails, corrections, classifier)
-    };
-
-    // Health check before starting the loop
-    classifier.health_check().await?;
-
-    let total = mails.len();
-    let mut assigned = 0u32;
-    let mut needs_review = 0u32;
-    let mut unclassified_count = 0u32;
-
-    // Load project summaries once before the loop.
-    // New projects are only inserted when the user approves (approve_new_project),
-    // not during classification, so per-iteration reload is unnecessary.
-    let project_summaries = {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        projects::build_project_summaries(&conn, &account_id, false)?
-    };
-
-    for (idx, mail) in mails.iter().enumerate() {
-        // Check cancellation
-        if cancel_flag.0.load(Ordering::SeqCst) {
-            let _ = handle.emit(
-                "classify-progress",
-                serde_json::json!({
-                    "current": idx,
-                    "total": total,
-                    "cancelled": true,
-                }),
-            );
-            return Ok(());
-        }
-
-        let mail_summary = MailSummary::from_mail(mail);
-
-        let result = match classifier
-            .classify(&mail_summary, &project_summaries, &corrections)
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => ClassifyResult {
-                action: ClassifyAction::Unclassified,
-                confidence: 0.0,
-                reason: "分類中にエラーが発生しました".to_string(),
-            },
-        };
-
-        let response = ClassifyResponse {
-            mail_id: mail.id.clone(),
-            result: result.clone(),
-        };
-
-        // Persist result
-        {
-            let conn = db.0.lock().map_err(AppError::lock_err)?;
-            match &result.action {
-                ClassifyAction::Assign { project_id }
-                    if result.confidence >= CONFIDENCE_UNCERTAIN =>
-                {
-                    if let Err(e) = assignments::assign_mail(
-                        &conn,
-                        &mail.id,
-                        project_id,
-                        "ai",
-                        Some(result.confidence),
-                    ) {
-                        eprintln!("[warn] Failed to assign mail {}: {}", mail.id, e);
-                    }
-                    assigned += 1;
-                }
-                ClassifyAction::Create { .. } => {
-                    let mut map = pending.0.lock().map_err(AppError::lock_err)?;
-                    map.insert(mail.id.clone(), result);
-                    needs_review += 1;
-                }
-                _ => {
-                    unclassified_count += 1;
-                }
-            }
-        }
-
-        // Emit progress with result
-        let _ = handle.emit(
-            "classify-progress",
-            serde_json::json!({
-                "current": idx,
-                "total": total,
-                "result": response,
-            }),
-        );
-    }
-
-    // Emit completion event
-    let _ = handle.emit(
-        "classify-complete",
-        serde_json::json!({
-            "total": total,
-            "assigned": assigned,
-            "needs_review": needs_review,
-            "unclassified": unclassified_count,
-        }),
-    );
-
-    Ok(())
-}
-
-/// Cancel an in-progress `classify_unassigned` run.
-#[tauri::command]
-pub fn cancel_classification(cancel_flag: State<ClassifyCancelFlag>) -> Result<(), AppError> {
-    cancel_flag.0.store(true, Ordering::SeqCst);
-    Ok(())
 }
 
 /// Approve an AI classification (user confirms the assigned project).
@@ -504,18 +362,6 @@ mod tests {
         assert!(mails_a.is_empty());
         assert_eq!(mails_b.len(), 1);
         assert_eq!(mails_b[0].id, "m1");
-    }
-
-    // --- cancel flag ---
-
-    #[test]
-    fn test_cancel_flag_toggle() {
-        let flag = ClassifyCancelFlag::new();
-        assert!(!flag.0.load(Ordering::SeqCst));
-        flag.0.store(true, Ordering::SeqCst);
-        assert!(flag.0.load(Ordering::SeqCst));
-        flag.0.store(false, Ordering::SeqCst);
-        assert!(!flag.0.load(Ordering::SeqCst));
     }
 
     // --- PendingClassifications ---
