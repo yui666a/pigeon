@@ -1,69 +1,73 @@
-# Pigeon
+# 🕊 Pigeon
 
-AIによってメールを案件ごとに自動グルーピングするデスクトップメールクライアント。ローカルLLM（Ollama）を使用してメールを案件単位で自動分類し、「案件 > スレッド > メール」の階層で管理する。
+**AIがメールを案件ごとに自動グルーピングするデスクトップメールクライアント**
 
-## 必要要件
+従来のフォルダベースの整理ではなく、ローカルLLM（Ollama）がメールを解析して「**案件 > スレッド > メール**」の階層で自動整理します。見積もり依頼から納品まで、1つの案件に関するやり取りが1か所にまとまります。
 
-- [mise](https://mise.jdx.dev/) (推奨) — Rust / Node.js / pnpm を一括管理
-- [Rust](https://www.rust-lang.org/tools/install) (1.94+)
-- [Node.js](https://nodejs.org/) (22+)
-- [pnpm](https://pnpm.io/) (10+)
-- [Ollama](https://ollama.ai/) (ローカルLLM、Phase 2 以降で使用)
-- Tauri 2 の[システム依存関係](https://v2.tauri.app/start/prerequisites/)
+| | |
+|---|---|
+| フレームワーク | Tauri 2（Rust + React 19 / TypeScript） |
+| 対応サーバー | Gmail（OAuth 2.0）/ 任意のIMAP/SMTPサーバー |
+| AI分類 | Ollama（ローカル・デフォルト）/ Claude API / Vertex AI（オプション） |
+| データ保存 | ローカルSQLite（FTS5全文検索）+ OSキーチェーン |
 
-## セットアップ
+## ✨ 主な機能
+
+- 🤖 **AI自動分類** — 新着メールを既存案件へ自動振り分け。新しい案件の作成も提案。手動修正から学習して精度が向上
+- 🧵 **スレッド表示** — RFC 2822準拠の返信チェーン構築（件名フォールバック付き）
+- 📤 **送信** — 新規作成 / 返信 / 全員に返信 / 転送。スレッディングヘッダー自動付与
+- ⚡ **リアルタイム同期** — IMAP IDLEによるプッシュ受信 + デスクトップ通知
+- 🔍 **全文検索** — SQLite FTS5による案件横断検索
+- 🗑 **メール操作** — 既読管理・削除（ゴミ箱へ移動）・アーカイブ・添付ファイル保存
+- 🔒 **プライバシー第一** — 認証情報はOSキーチェーン保管。デフォルトのOllamaならメール内容がマシンの外に出ない
+
+全機能の詳細は **[FEATURES.md](FEATURES.md)** を参照。
+
+## 🚀 クイックスタート
 
 ```bash
-# リポジトリをクローン
 git clone https://github.com/yui666a/pigeon.git
 cd pigeon
-
-# mise でツールチェーンをインストール（Rust, Node.js, pnpm）
-mise install
-
-# フロントエンドの依存関係をインストール
+mise install        # Rust / Node.js / pnpm を一括インストール
 pnpm install
-
-# 開発サーバーを起動
+cp .env.sample .env # Gmailを使う場合はOAuthクライアント情報を記入（SETUP.md参照）
 pnpm tauri dev
 ```
 
-## テスト
+詳細な手順（Ollamaの準備、Google OAuthクライアントの作成、トラブルシューティング）は **[SETUP.md](SETUP.md)** を参照。
+
+## 🧪 開発
 
 ```bash
-# Rust テスト
-cd src-tauri && cargo test
-
-# フロントエンド テスト
-pnpm test
-```
-
-## リント
-
-```bash
+pnpm test                                  # フロントエンドテスト (Vitest)
+cd src-tauri && cargo test                 # Rustテスト
 cd src-tauri && cargo clippy -- -D warnings
-cd src-tauri && cargo fmt -- --check
+pnpm tauri build                           # リリースビルド
 ```
 
-## ビルド
+開発フロー・Git戦略・コーディング規約は [CONTRIBUTING.md](CONTRIBUTING.md) と [agent.md](agent.md) を参照。
 
-```bash
-pnpm tauri build
-```
-
-## プロジェクト構成
+## 📁 プロジェクト構成
 
 ```
 pigeon/
 ├── src/                    # React フロントエンド
-│   ├── components/         # UI コンポーネント（3ペイン構成）
+│   ├── components/         # UI（3ペイン: 案件ツリー / スレッド一覧 / メール本文）
 │   ├── stores/             # Zustand ストア
+│   ├── hooks/              # カスタムフック（ショートカット等）
 │   └── types/              # TypeScript 型定義
 ├── src-tauri/              # Rust バックエンド
 │   └── src/
 │       ├── commands/       # Tauri commands（フロントエンドAPI）
-│       ├── db/             # SQLite スキーマ・CRUD
-│       ├── mail_sync/      # IMAP クライアント・MIME パーサー
+│       ├── mail_sync/      # IMAP / SMTP / MIME / IDLE
+│       ├── classifier/     # LLM抽象レイヤー（Ollama / Claude / Vertex）
+│       ├── db/             # SQLite スキーマ・CRUD・FTS5
 │       └── models/         # 共有データ型
-└── docs/                   # 設計書・実装計画
+└── docs/superpowers/       # 設計書（specs/）・実装計画（plans/）
 ```
+
+## 📚 ドキュメント
+
+- [SETUP.md](SETUP.md) — インストールと初期設定
+- [FEATURES.md](FEATURES.md) — 機能一覧と使い方
+- [docs/superpowers/specs/](docs/superpowers/specs/) — 各機能の設計書（本体設計は `2026-04-12-pigeon-design.md`）
