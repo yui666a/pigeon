@@ -4,7 +4,7 @@ use crate::db::{accounts, mails};
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
-use crate::models::mail::Thread;
+use crate::models::mail::{Thread, UnreadCounts};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 /// sync-progress イベントの payload
@@ -183,6 +183,76 @@ async fn sync_account_inner(
     }
     fetch_result?;
     Ok(count)
+}
+
+/// メールを既読にする。DB は即時更新し、IMAP への \Seen 反映は
+/// バックグラウンドでベストエフォート実行する（失敗してもエラーにしない。
+/// サーバー側の状態は次回同期のフラグ再同期で収束する）。
+#[tauri::command]
+pub fn mark_read(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    account_id: String,
+    mail_id: String,
+) -> Result<(), AppError> {
+    let (folder, uid) = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        mails::mark_read(&conn, &mail_id)?
+    };
+
+    // サーバー反映は同期処理と独立の都度接続で行い、UI をブロックしない
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = push_seen_flag(&app, &account_id, &folder, uid).await {
+            eprintln!(
+                "[warn] mark_read: failed to set \\Seen on server (mail {}, uid {}): {}",
+                mail_id, uid, e
+            );
+        }
+    });
+    Ok(())
+}
+
+/// IMAP に接続して指定メールへ \Seen フラグを付ける（mark_read のバックグラウンド処理）。
+async fn push_seen_flag(
+    app: &AppHandle,
+    account_id: &str,
+    folder: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    use tauri::Manager;
+
+    let account = {
+        let db = app.state::<DbState>();
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
+        accounts::get_account(&conn, account_id)?
+    };
+    let secure_store = app.state::<SecureStoreState>();
+    let (auth_type, username, credential) =
+        resolve_imap_credentials(&account, &secure_store.0).await?;
+
+    let mut session = imap_client::connect(
+        &account.imap_host,
+        account.imap_port,
+        &auth_type,
+        &username,
+        &credential,
+    )
+    .await?;
+    let store_result = imap_client::store_seen_flag(&mut session, folder, uid).await;
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed: {}", e);
+    }
+    store_result
+}
+
+/// プロジェクト毎 + 未分類の未読件数を返す（INBOX のみ対象）。
+#[tauri::command]
+pub fn get_unread_counts(
+    state: State<DbState>,
+    account_id: String,
+) -> Result<UnreadCounts, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    mails::get_unread_counts(&conn, &account_id)
 }
 
 #[tauri::command]

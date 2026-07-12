@@ -131,6 +131,8 @@ pub fn run() {
             commands::mail_commands::sync_account,
             commands::mail_commands::get_threads,
             commands::mail_commands::get_threads_by_project,
+            commands::mail_commands::mark_read,
+            commands::mail_commands::get_unread_counts,
             commands::project_commands::create_project,
             commands::project_commands::get_projects,
             commands::project_commands::update_project,
