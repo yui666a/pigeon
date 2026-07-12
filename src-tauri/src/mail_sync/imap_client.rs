@@ -331,6 +331,15 @@ pub async fn store_seen_flag(
     store_flag_delta(session, folder, uid, "\\Seen", true).await
 }
 
+/// 指定 UID のメールから \Seen フラグを外す（未読に戻すサーバー反映）。
+pub async fn remove_seen_flag(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    store_flag_delta(session, folder, uid, "\\Seen", false).await
+}
+
 /// 指定 UID のメールの \Flagged を付与・除去する（スター/フラグのサーバー反映）。
 pub async fn store_flagged(
     session: &mut ImapSession,
