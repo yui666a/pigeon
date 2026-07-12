@@ -45,6 +45,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
+const mockNotifyNewMail = vi.fn();
+vi.mock("../../utils/notifyNewMail", () => ({
+  notifyNewMail: (...args: unknown[]) => mockNotifyNewMail(...args),
+}));
+
 let syncProgressHandler: ((event: { payload: unknown }) => void) | null = null;
 let newMailHandler: ((event: { payload: unknown }) => void) | null = null;
 const mockUnlisten = vi.fn();
@@ -580,6 +585,52 @@ describe("mailStore", () => {
     it("returns an unlisten function", async () => {
       const unlisten = await useMailStore.getState().initNewMailListener();
       expect(unlisten).toBe(mockUnlisten);
+    });
+
+    it("notifies with the synced count when new mails were imported", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "sync_account"
+          ? Promise.resolve(4)
+          : Promise.resolve({ by_project: {}, unclassified: 0 }),
+      );
+      await useMailStore.getState().initNewMailListener();
+
+      newMailHandler!({ payload: { account_id: "acc1" } });
+
+      await vi.waitFor(() => {
+        expect(mockNotifyNewMail).toHaveBeenCalledWith(4);
+      });
+    });
+
+    it("does not notify when the sync imported nothing", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "sync_account"
+          ? Promise.resolve(0)
+          : Promise.resolve({ by_project: {}, unclassified: 0 }),
+      );
+      await useMailStore.getState().initNewMailListener();
+
+      newMailHandler!({ payload: { account_id: "acc1" } });
+
+      // syncAccount(0件) の解決を待ってから未通知を検証する
+      await vi.waitFor(() => {
+        expect(mockInvoke).toHaveBeenCalledWith("sync_account", {
+          accountId: "acc1",
+        });
+      });
+      await Promise.resolve();
+      expect(mockNotifyNewMail).not.toHaveBeenCalled();
+    });
+
+    it("does not notify when the sync was skipped by the in-flight guard", async () => {
+      useMailStore.setState({ syncing: true });
+      await useMailStore.getState().initNewMailListener();
+
+      newMailHandler!({ payload: { account_id: "acc1" } });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockNotifyNewMail).not.toHaveBeenCalled();
     });
   });
 });

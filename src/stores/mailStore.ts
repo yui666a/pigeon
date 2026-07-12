@@ -5,6 +5,7 @@ import type { Mail, Thread, UnreadCounts } from "../types/mail";
 import { useErrorStore } from "./errorStore";
 import { useAccountStore } from "./accountStore";
 import { useUiStore } from "./uiStore";
+import { notifyNewMail } from "../utils/notifyNewMail";
 
 interface SyncProgress {
   account_id: string;
@@ -258,7 +259,13 @@ export const useMailStore = create<MailState>((set, get) => ({
     // 表示中アカウントと無関係に同期してよい（一覧への反映可否は sync-progress
     // リスナーが判断する）。多重実行は syncing フラグと SyncLocks が抑止する
     const unlisten = await listen<NewMailEvent>("new-mail-detected", (event) => {
-      void get().syncAccount(event.payload.account_id);
+      void get()
+        .syncAccount(event.payload.account_id)
+        .then((count) => {
+          // 実際に取り込まれた件数を条件にする（IDLE の誤検知や
+          // 同期中ガード・エラー時の count=0 では空通知を出さない）
+          if (count > 0) void notifyNewMail(count);
+        });
     });
     return unlisten;
   },
