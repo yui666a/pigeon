@@ -17,6 +17,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   sendNotification: (...args: unknown[]) => mockSendNotification(...args),
 }));
 
+const mockInvoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
 describe("notifyNewMail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -75,26 +80,58 @@ describe("notifyNewMail", () => {
     expect(mockSendNotification).not.toHaveBeenCalled();
   });
 
-  it("shows count only when subjects are given but preview is disabled (default)", async () => {
+  it("shows count only when accountId is given but preview is disabled (default) — no invoke", async () => {
     mockIsPermissionGranted.mockResolvedValue(true);
 
-    await notifyNewMail(2, ["件名A", "件名B"]);
+    await notifyNewMail(2, "acc1");
 
+    expect(mockInvoke).not.toHaveBeenCalled();
     expect(mockSendNotification).toHaveBeenCalledWith({
       title: "Pigeon",
       body: "2件の新着メールを受信しました",
     });
   });
 
-  it("shows subject preview when subjects are given and preview is enabled", async () => {
+  it("shows count only when preview is enabled but accountId is omitted — no invoke", async () => {
     mockIsPermissionGranted.mockResolvedValue(true);
     localStorage.setItem(NOTIFY_SUBJECT_PREVIEW_KEY, "true");
 
-    await notifyNewMail(2, ["件名A", "件名B"]);
+    await notifyNewMail(2);
 
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockSendNotification).toHaveBeenCalledWith({
+      title: "Pigeon",
+      body: "2件の新着メールを受信しました",
+    });
+  });
+
+  it("fetches and shows subject preview when accountId is given and preview is enabled", async () => {
+    mockIsPermissionGranted.mockResolvedValue(true);
+    localStorage.setItem(NOTIFY_SUBJECT_PREVIEW_KEY, "true");
+    mockInvoke.mockResolvedValue(["件名A", "件名B"]);
+
+    await notifyNewMail(2, "acc1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_recent_unread_subjects", {
+      accountId: "acc1",
+      limit: 3,
+    });
     expect(mockSendNotification).toHaveBeenCalledWith({
       title: "Pigeon",
       body: "件名A\n件名B",
+    });
+  });
+
+  it("falls back to count-only when the subject fetch fails", async () => {
+    mockIsPermissionGranted.mockResolvedValue(true);
+    localStorage.setItem(NOTIFY_SUBJECT_PREVIEW_KEY, "true");
+    mockInvoke.mockRejectedValue(new Error("db error"));
+
+    await notifyNewMail(2, "acc1");
+
+    expect(mockSendNotification).toHaveBeenCalledWith({
+      title: "Pigeon",
+      body: "2件の新着メールを受信しました",
     });
   });
 });

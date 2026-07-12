@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
@@ -53,16 +54,33 @@ export function buildNotificationBody(
 }
 
 /**
+ * 件名プレビュー用に、直近の未読件名をバックエンドから取得する。
+ * 取得失敗時は空配列を返す（プレビューは補助機能のため、失敗しても
+ * 件数のみの通知にフォールバックする。エラートーストは出さない）。
+ */
+async function fetchPreviewSubjects(accountId: string): Promise<string[]> {
+  try {
+    return await invoke<string[]>("get_recent_unread_subjects", {
+      accountId,
+      limit: SUBJECT_PREVIEW_LIMIT,
+    });
+  } catch (e) {
+    console.error("fetchPreviewSubjects failed:", e);
+    return [];
+  }
+}
+
+/**
  * 新着メールのデスクトップ通知を表示する。
  * 通知は補助機能のため、権限拒否・プラグインエラーは静かにスキップし、
  * エラートーストは出さない。
  *
- * @param subjects プレビュー対象の件名（新着として取り込まれたメールの件名）。
- *   省略時・プレビュー設定OFF時は件数のみの通知になる
+ * @param accountId 新着を検知したアカウント。省略時、またはプレビュー設定
+ *   OFF時は件数のみの通知になる（件名取得の invoke 自体を行わない）
  */
 export async function notifyNewMail(
   count: number,
-  subjects: string[] = [],
+  accountId?: string,
 ): Promise<void> {
   if (!isNotificationEnabled()) return;
   try {
@@ -71,9 +89,15 @@ export async function notifyNewMail(
       granted = (await requestPermission()) === "granted";
     }
     if (!granted) return;
+
+    const previewEnabled = isSubjectPreviewEnabled();
+    const subjects =
+      previewEnabled && accountId
+        ? await fetchPreviewSubjects(accountId)
+        : [];
     sendNotification({
       title: "Pigeon",
-      body: buildNotificationBody(count, subjects, isSubjectPreviewEnabled()),
+      body: buildNotificationBody(count, subjects, previewEnabled),
     });
   } catch (e) {
     console.error("notifyNewMail failed:", e);
