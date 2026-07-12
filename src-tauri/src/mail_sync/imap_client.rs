@@ -1,4 +1,4 @@
-use async_imap::types::Flag;
+use async_imap::types::{Flag, NameAttribute};
 use async_imap::Session;
 use async_native_tls::TlsStream;
 use futures::TryStreamExt;
@@ -432,7 +432,33 @@ pub async fn copy_message(
         .map_err(|e| AppError::Imap(format!("UID COPY to {} failed: {}", dest, e)))
 }
 
+/// フォルダ属性に \Trash (RFC 6154 SPECIAL-USE) が含まれるか
+pub(crate) fn has_trash_attribute(attrs: &[NameAttribute<'_>]) -> bool {
+    attrs.iter().any(|a| *a == NameAttribute::Trash)
+}
+
+/// LIST 応答から SPECIAL-USE (RFC 6154) の \Trash 属性を持つフォルダを探す。
+/// Gmail はロケールに依らずこの属性を返す（例: "[Gmail]/ゴミ箱"）。
+/// 非対応サーバーでは None（呼び出し側が完全削除にフォールバックする）
+pub async fn find_trash_folder(session: &mut ImapSession) -> Result<Option<String>, AppError> {
+    let folders: Vec<_> = session
+        .list(None, Some("*"))
+        .await
+        .map_err(|e| AppError::Imap(format!("List folders failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("List stream failed: {}", e)))?;
+    Ok(folders
+        .iter()
+        .find(|f| has_trash_attribute(f.attributes()))
+        .map(|f| f.name().to_string()))
+}
+
 /// メールをサーバーから削除する（接続 → 削除 → logout）。
+/// \Trash 属性のゴミ箱フォルダが見つかればそこへ COPY してから元を消す
+/// （= ゴミ箱へ移動。Gmail では「ラベル剥がし」ではなく本当の削除になる）。
+/// ゴミ箱が無いサーバーでは \Deleted + EXPUNGE の完全削除にフォールバックする。
+/// ゴミ箱フォルダ内のメールを削除する場合は COPY せず完全削除する。
 /// 破壊的操作のため呼び出し側は成功を確認してからローカルへ反映すること。
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_message_remote(
@@ -445,7 +471,20 @@ pub async fn delete_message_remote(
     uid: u32,
 ) -> Result<(), AppError> {
     let mut session = connect(host, port, auth_type, username, credential).await?;
-    let result = delete_message(&mut session, folder, uid).await;
+    let result = {
+        // LIST 失敗は接続異常の可能性が高く、黙って完全削除に切り替えるのは
+        // 危険（ゴミ箱移動のつもりが復元不能になる）ためエラーとして返す
+        match find_trash_folder(&mut session).await {
+            Err(e) => Err(e),
+            Ok(Some(trash)) if trash != folder => {
+                match copy_message(&mut session, folder, uid, &trash).await {
+                    Ok(()) => delete_message(&mut session, folder, uid).await,
+                    Err(e) => Err(e),
+                }
+            }
+            Ok(_) => delete_message(&mut session, folder, uid).await,
+        }
+    };
     if let Err(e) = session.logout().await {
         eprintln!("[warn] IMAP logout failed after delete: {}", e);
     }
@@ -578,5 +617,24 @@ mod tests {
     #[test]
     fn test_flags_to_string_empty_is_none() {
         assert_eq!(flags_to_string(&[]), None);
+    }
+
+    #[test]
+    fn test_has_trash_attribute_detects_trash() {
+        assert!(has_trash_attribute(&[
+            NameAttribute::NoInferiors,
+            NameAttribute::Trash,
+        ]));
+    }
+
+    #[test]
+    fn test_has_trash_attribute_ignores_other_special_use() {
+        // \Sent や \Junk はゴミ箱ではない
+        assert!(!has_trash_attribute(&[
+            NameAttribute::Sent,
+            NameAttribute::Junk,
+            NameAttribute::Marked,
+        ]));
+        assert!(!has_trash_attribute(&[]));
     }
 }

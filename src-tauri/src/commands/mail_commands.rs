@@ -249,7 +249,9 @@ async fn push_seen_flag(
 /// 削除のサーバー反映方式（設計書 2026-07-12-mail-delete-archive-design.md）
 #[derive(Debug, PartialEq)]
 enum DeletePlan {
-    /// サーバーで \Deleted + EXPUNGE 後にローカル行を削除する
+    /// サーバーで削除後にローカル行を削除する。
+    /// サーバー側は \Trash フォルダがあればゴミ箱へ移動、なければ完全削除
+    /// （imap_client::delete_message_remote 参照）
     Server,
     /// ローカル行の削除のみ（Sent は uid が APPEND 時の推定値のため。v1 制限）
     LocalOnly,

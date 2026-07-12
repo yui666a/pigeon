@@ -18,7 +18,11 @@ export function MailActions({ mail }: MailActionsProps) {
 
   const handleDelete = () => {
     // 削除はサーバーからも消える破壊的操作のため必ず確認する
-    if (window.confirm("このメールを削除しますか？この操作は取り消せません。")) {
+    if (
+      window.confirm(
+        "このメールを削除しますか？サーバーにゴミ箱があればゴミ箱へ移動し、無い場合は完全に削除されます。",
+      )
+    ) {
       void deleteMail(mail);
     }
   };
