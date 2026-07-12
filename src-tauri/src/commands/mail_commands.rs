@@ -376,7 +376,13 @@ async fn backfill_folder_into(
                 let conn = state.0.lock().map_err(AppError::lock_err)?;
                 for m in batch {
                     if let Some(mail) = mime_parser::parse_mime(
-                        &m.body, account_id, "INBOX", m.uid, m.is_read, m.flags,
+                        &m.body,
+                        account_id,
+                        "INBOX",
+                        m.uid,
+                        m.is_read,
+                        m.is_flagged,
+                        m.flags,
                     ) {
                         if mails::insert_mail(&conn, &mail)? {
                             fetched += 1;
