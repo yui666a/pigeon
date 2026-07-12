@@ -25,6 +25,7 @@ function makeMail(id: string, overrides: Partial<Mail> = {}): Mail {
     uid: 1,
     flags: null,
     is_read: false,
+    is_flagged: false,
     fetched_at: "2026-07-12T00:00:00",
     ...overrides,
   };
@@ -504,6 +505,112 @@ describe("mailStore", () => {
     });
   });
 
+  describe("toggleFlagged", () => {
+    it("optimistically flips is_flagged and invokes set_flagged", async () => {
+      const m1 = makeMail("m1", { is_flagged: false });
+      const thread = makeThread([m1]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().toggleFlagged(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("set_flagged", {
+        accountId: "acc1",
+        mailId: "m1",
+        flagged: true,
+      });
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].is_flagged).toBe(true);
+      expect(s.selectedThread?.mails[0].is_flagged).toBe(true);
+      expect(s.selectedMail?.is_flagged).toBe(true);
+      expect(s.unclassifiedMails[0].is_flagged).toBe(true);
+    });
+
+    it("toggles back to false when already flagged", async () => {
+      const m1 = makeMail("m1", { is_flagged: true });
+      useMailStore.setState({ selectedMail: m1 });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().toggleFlagged(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("set_flagged", {
+        accountId: "acc1",
+        mailId: "m1",
+        flagged: false,
+      });
+      expect(useMailStore.getState().selectedMail?.is_flagged).toBe(false);
+    });
+
+    it("reverts local state when the server call fails", async () => {
+      const m1 = makeMail("m1", { is_flagged: false });
+      useMailStore.setState({ selectedMail: m1 });
+      mockInvoke.mockRejectedValue("IMAP error: STORE failed");
+
+      await useMailStore.getState().toggleFlagged(m1);
+
+      expect(useMailStore.getState().selectedMail?.is_flagged).toBe(false);
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].kind).toBe("error");
+    });
+  });
+
+  describe("markMailUnread", () => {
+    it("sets is_read=false, invokes mark_unread, and clears selection", async () => {
+      const m1 = makeMail("m1", { is_read: true });
+      const thread = makeThread([m1]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().markMailUnread(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("mark_unread", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].is_read).toBe(false);
+      expect(s.unclassifiedMails[0].is_read).toBe(false);
+      // 選択解除: 未読化した本文を表示したまま自動既読化が再度走るのを防ぐ
+      expect(s.selectedMail).toBeNull();
+    });
+
+    it("refreshes unread counts after success", async () => {
+      const m1 = makeMail("m1", { is_read: true });
+      useMailStore.setState({ threads: [makeThread([m1])] });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().markMailUnread(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
+    it("keeps local state unchanged when the server call fails", async () => {
+      const m1 = makeMail("m1", { is_read: true });
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedMail: m1 });
+      mockInvoke.mockRejectedValue("IMAP error: STORE failed");
+
+      await useMailStore.getState().markMailUnread(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].is_read).toBe(true);
+      expect(s.selectedMail?.id).toBe("m1");
+    });
+  });
+
   describe("unarchiveMail", () => {
     it("invokes unarchive_mail and updates folder to INBOX in all state on success", async () => {
       const m1 = makeMail("m1", { folder: "Archive" });
@@ -701,7 +808,7 @@ describe("mailStore", () => {
       newMailHandler!({ payload: { account_id: "acc1" } });
 
       await vi.waitFor(() => {
-        expect(mockNotifyNewMail).toHaveBeenCalledWith(4);
+        expect(mockNotifyNewMail).toHaveBeenCalledWith(4, "acc1");
       });
     });
 
@@ -734,6 +841,85 @@ describe("mailStore", () => {
       await Promise.resolve();
 
       expect(mockNotifyNewMail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("bulkDeleteMails", () => {
+    it("invokes bulk_delete_mails and shows a success toast on full success", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "bulk_delete_mails"
+          ? Promise.resolve({ succeeded: ["m1", "m2"], failed: [] })
+          : Promise.resolve({ by_project: {}, unclassified: 0 }),
+      );
+
+      const result = await useMailStore.getState().bulkDeleteMails("acc1", ["m1", "m2"]);
+
+      expect(mockInvoke).toHaveBeenCalledWith("bulk_delete_mails", {
+        accountId: "acc1",
+        mailIds: ["m1", "m2"],
+      });
+      expect(result).toEqual({ succeeded: ["m1", "m2"], failed: [] });
+      expect(useErrorStore.getState().toasts.some((t) => t.kind === "success")).toBe(true);
+    });
+
+    it("shows an error toast when every mail fails", async () => {
+      mockInvoke.mockResolvedValue({
+        succeeded: [],
+        failed: [["m1", "boom"]],
+      });
+
+      await useMailStore.getState().bulkDeleteMails("acc1", ["m1"]);
+
+      expect(useErrorStore.getState().toasts.some((t) => t.kind === "error")).toBe(true);
+    });
+
+    it("shows an error toast (not success) on partial failure", async () => {
+      mockInvoke.mockResolvedValue({
+        succeeded: ["m1"],
+        failed: [["m2", "boom"]],
+      });
+
+      await useMailStore.getState().bulkDeleteMails("acc1", ["m1", "m2"]);
+
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === "error")).toBe(true);
+      expect(toasts.some((t) => t.kind === "success")).toBe(false);
+    });
+
+    it("returns null and shows error toast when invoke rejects", async () => {
+      mockInvoke.mockRejectedValue("bulk delete error");
+
+      const result = await useMailStore.getState().bulkDeleteMails("acc1", ["m1"]);
+
+      expect(result).toBeNull();
+      expect(useErrorStore.getState().toasts.some((t) => t.kind === "error")).toBe(true);
+    });
+  });
+
+  describe("bulkArchiveMails", () => {
+    it("invokes bulk_archive_mails with the given ids", async () => {
+      mockInvoke.mockResolvedValue({ succeeded: ["m1"], failed: [] });
+
+      await useMailStore.getState().bulkArchiveMails("acc1", ["m1"]);
+
+      expect(mockInvoke).toHaveBeenCalledWith("bulk_archive_mails", {
+        accountId: "acc1",
+        mailIds: ["m1"],
+      });
+    });
+  });
+
+  describe("bulkMoveMails", () => {
+    it("invokes bulk_move_mails with mailIds and projectId", async () => {
+      mockInvoke.mockResolvedValue({ succeeded: ["m1", "m2"], failed: [] });
+
+      const result = await useMailStore.getState().bulkMoveMails(["m1", "m2"], "p1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("bulk_move_mails", {
+        mailIds: ["m1", "m2"],
+        projectId: "p1",
+      });
+      expect(result).toEqual({ succeeded: ["m1", "m2"], failed: [] });
     });
   });
 });

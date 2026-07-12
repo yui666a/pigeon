@@ -1,8 +1,8 @@
 name: Test
 
 on:
+  # branches を指定しない: スタックPR（main 以外を base にする PR）でも CI を走らせる
   pull_request:
-    branches: [main]
 
 concurrency:
   group: test-${{ github.head_ref }}

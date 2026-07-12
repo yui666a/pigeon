@@ -8,17 +8,17 @@ use std::collections::HashMap;
 /// Must match the field order expected by `row_to_mail`.
 pub const MAIL_COLUMNS: &str = "id, account_id, folder, message_id, in_reply_to, \"references\",
      from_addr, to_addr, cc_addr, subject, body_text, body_html,
-     date, has_attachments, raw_size, uid, flags, is_read, fetched_at, uid_confirmed";
+     date, has_attachments, raw_size, uid, flags, is_read, is_flagged, fetched_at, uid_confirmed";
 
 /// Number of columns in MAIL_COLUMNS / MAIL_COLUMNS_PREFIXED.
 /// JOIN クエリで追加カラムを読む際のオフセットとして使う。
-pub const MAIL_COLUMN_COUNT: usize = 20;
+pub const MAIL_COLUMN_COUNT: usize = 21;
 
 /// Column list with `m.` table prefix for JOIN queries.
 pub const MAIL_COLUMNS_PREFIXED: &str =
     "m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
      m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
-     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.is_read, m.fetched_at, m.uid_confirmed";
+     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.is_read, m.is_flagged, m.fetched_at, m.uid_confirmed";
 
 /// Map a rusqlite Row to a Mail struct. Column order must match `MAIL_COLUMNS`.
 pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
@@ -41,8 +41,9 @@ pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
         uid: row.get(15)?,
         flags: row.get(16)?,
         is_read: row.get(17)?,
-        fetched_at: row.get(18)?,
-        uid_confirmed: row.get(19)?,
+        is_flagged: row.get(18)?,
+        fetched_at: row.get(19)?,
+        uid_confirmed: row.get(20)?,
     })
 }
 
@@ -65,8 +66,8 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
         "INSERT OR IGNORE INTO mails
          (id, account_id, folder, message_id, in_reply_to, \"references\",
           from_addr, to_addr, cc_addr, subject, body_text, body_html,
-          date, has_attachments, raw_size, uid, flags, is_read, fetched_at, uid_confirmed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+          date, has_attachments, raw_size, uid, flags, is_read, is_flagged, fetched_at, uid_confirmed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             mail.id,
             mail.account_id,
@@ -86,6 +87,7 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
             mail.uid,
             mail.flags,
             mail.is_read,
+            mail.is_flagged,
             mail.fetched_at,
             mail.uid_confirmed,
         ],
@@ -142,23 +144,25 @@ pub fn get_max_confirmed_uid(
     Ok(uid)
 }
 
-/// サーバーから取得した uid → \Seen マップで既知メールの is_read を一括更新する。
-/// 状態が変わる行のみ UPDATE し、更新した行数を返す（フラグ再同期用）。
-pub fn update_read_flags(
+/// サーバーから取得した uid → (\Seen, \Flagged) マップで既知メールの
+/// is_read / is_flagged を一括更新する。状態が変わる行のみ UPDATE し、
+/// 更新した行数を返す（フラグ再同期用）。
+pub fn update_flag_state(
     conn: &Connection,
     account_id: &str,
     folder: &str,
-    seen_by_uid: &HashMap<u32, bool>,
+    flags_by_uid: &HashMap<u32, (bool, bool)>,
 ) -> Result<usize, AppError> {
     let tx = conn.unchecked_transaction()?;
     let mut updated = 0usize;
     {
         let mut stmt = tx.prepare(
-            "UPDATE mails SET is_read = ?1
-             WHERE account_id = ?2 AND folder = ?3 AND uid = ?4 AND is_read != ?1",
+            "UPDATE mails SET is_read = ?1, is_flagged = ?2
+             WHERE account_id = ?3 AND folder = ?4 AND uid = ?5
+               AND (is_read != ?1 OR is_flagged != ?2)",
         )?;
-        for (uid, is_seen) in seen_by_uid {
-            updated += stmt.execute(params![is_seen, account_id, folder, uid])?;
+        for (uid, (is_seen, is_flagged)) in flags_by_uid {
+            updated += stmt.execute(params![is_seen, is_flagged, account_id, folder, uid])?;
         }
     }
     tx.commit()?;
@@ -342,6 +346,62 @@ pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppE
         params![mail_id],
     )?;
     Ok((folder, uid))
+}
+
+/// メールを未読に戻し、サーバー反映に必要な (folder, uid) を返す（mark_read の逆）。
+pub fn mark_unread(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
+    let (folder, uid): (String, u32) = conn
+        .query_row(
+            "SELECT folder, uid FROM mails WHERE id = ?1",
+            params![mail_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
+    conn.execute(
+        "UPDATE mails SET is_read = 0 WHERE id = ?1",
+        params![mail_id],
+    )?;
+    Ok((folder, uid))
+}
+
+/// メールのスター/フラグを設定し、サーバー反映に必要な (folder, uid) を返す。
+pub fn set_flagged(
+    conn: &Connection,
+    mail_id: &str,
+    flagged: bool,
+) -> Result<(String, u32), AppError> {
+    let (folder, uid): (String, u32) = conn
+        .query_row(
+            "SELECT folder, uid FROM mails WHERE id = ?1",
+            params![mail_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
+    conn.execute(
+        "UPDATE mails SET is_flagged = ?1 WHERE id = ?2",
+        params![flagged, mail_id],
+    )?;
+    Ok((folder, uid))
+}
+
+/// 直近の未読メール（INBOX）の件名を新しい順に最大 limit 件返す。
+/// デスクトップ通知の件名プレビュー用（2026-07-12-desktop-notification-design.md
+/// 「v2: 通知の強化」）。
+pub fn get_recent_unread_subjects(
+    conn: &Connection,
+    account_id: &str,
+    limit: u32,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT subject FROM mails
+         WHERE account_id = ?1 AND folder = 'INBOX' AND is_read = 0
+         ORDER BY date DESC LIMIT ?2",
+    )?;
+    let subjects = stmt
+        .query_map(params![account_id, limit], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(subjects)
 }
 
 /// プロジェクト毎 + 未分類の未読件数を集計する（INBOX のみ対象）。
@@ -549,7 +609,24 @@ mod tests {
     }
 
     #[test]
-    fn test_update_read_flags_syncs_server_state() {
+    fn test_insert_mail_persists_is_flagged() {
+        let conn = setup_db();
+        let mut flagged_mail =
+            make_mail("m1", "<msg1@example.com>", "Flagged", "2026-07-12T10:00:00");
+        flagged_mail.is_flagged = true;
+        let plain_mail = make_mail("m2", "<msg2@example.com>", "Plain", "2026-07-12T11:00:00");
+        insert_mail(&conn, &flagged_mail).unwrap();
+        insert_mail(&conn, &plain_mail).unwrap();
+
+        let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+        let flagged = mails.iter().find(|m| m.id == "m1").unwrap();
+        let plain = mails.iter().find(|m| m.id == "m2").unwrap();
+        assert!(flagged.is_flagged);
+        assert!(!plain.is_flagged);
+    }
+
+    #[test]
+    fn test_update_flag_state_syncs_server_state() {
         let conn = setup_db();
         let mut m1 = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
         m1.uid = 101;
@@ -559,28 +636,50 @@ mod tests {
         insert_mail(&conn, &m1).unwrap();
         insert_mail(&conn, &m2).unwrap();
 
-        // サーバー側: uid=101 は既読、uid=102 は未読（他クライアントでの変更を模擬）
-        let seen: HashMap<u32, bool> = [(101, true), (102, false)].into_iter().collect();
-        let updated = update_read_flags(&conn, "acc1", "INBOX", &seen).unwrap();
+        // サーバー側: uid=101 は既読+フラグ、uid=102 は未読+フラグなし（他クライアントでの変更を模擬）
+        let state: HashMap<u32, (bool, bool)> =
+            [(101, (true, true)), (102, (false, false))].into_iter().collect();
+        let updated = update_flag_state(&conn, "acc1", "INBOX", &state).unwrap();
         assert_eq!(updated, 2);
 
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
-        assert!(mails.iter().find(|m| m.id == "m1").unwrap().is_read);
-        assert!(!mails.iter().find(|m| m.id == "m2").unwrap().is_read);
+        let m1_after = mails.iter().find(|m| m.id == "m1").unwrap();
+        let m2_after = mails.iter().find(|m| m.id == "m2").unwrap();
+        assert!(m1_after.is_read);
+        assert!(m1_after.is_flagged);
+        assert!(!m2_after.is_read);
+        assert!(!m2_after.is_flagged);
     }
 
     #[test]
-    fn test_update_read_flags_skips_unchanged_and_unknown_uids() {
+    fn test_update_flag_state_skips_unchanged_and_unknown_uids() {
         let conn = setup_db();
         let mut m1 = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
         m1.uid = 101;
         m1.is_read = true;
         insert_mail(&conn, &m1).unwrap();
 
-        // uid=101 は既に既読なので変更なし。uid=999 は DB に存在しない
-        let seen: HashMap<u32, bool> = [(101, true), (999, true)].into_iter().collect();
-        let updated = update_read_flags(&conn, "acc1", "INBOX", &seen).unwrap();
+        // uid=101 は既に既読・未フラグで変更なし。uid=999 は DB に存在しない
+        let state: HashMap<u32, (bool, bool)> =
+            [(101, (true, false)), (999, (true, true))].into_iter().collect();
+        let updated = update_flag_state(&conn, "acc1", "INBOX", &state).unwrap();
         assert_eq!(updated, 0, "変更のない行・未知の uid は更新されない");
+    }
+
+    #[test]
+    fn test_update_flag_state_updates_flagged_only_change() {
+        let conn = setup_db();
+        let mut m1 = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        m1.uid = 101;
+        m1.is_read = true;
+        insert_mail(&conn, &m1).unwrap();
+
+        // is_read は変化なしだが is_flagged だけ変わるケースも更新対象になる
+        let state: HashMap<u32, (bool, bool)> = [(101, (true, true))].into_iter().collect();
+        let updated = update_flag_state(&conn, "acc1", "INBOX", &state).unwrap();
+        assert_eq!(updated, 1);
+        let mail = get_mail_by_id(&conn, "m1").unwrap();
+        assert!(mail.is_flagged);
     }
 
     #[test]
@@ -602,6 +701,52 @@ mod tests {
     fn test_mark_read_missing_mail_returns_not_found() {
         let conn = setup_db();
         let result = mark_read(&conn, "nonexistent");
+        assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
+
+    #[test]
+    fn test_mark_unread_updates_row_and_returns_folder_uid() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        mail.uid = 42;
+        mail.is_read = true;
+        insert_mail(&conn, &mail).unwrap();
+
+        let (folder, uid) = mark_unread(&conn, "m1").unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(uid, 42);
+
+        let stored = get_mail_by_id(&conn, "m1").unwrap();
+        assert!(!stored.is_read);
+    }
+
+    #[test]
+    fn test_mark_unread_missing_mail_returns_not_found() {
+        let conn = setup_db();
+        let result = mark_unread(&conn, "nonexistent");
+        assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
+
+    #[test]
+    fn test_set_flagged_updates_row_and_returns_folder_uid() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<msg1@example.com>", "A", "2026-07-12T10:00:00");
+        mail.uid = 42;
+        insert_mail(&conn, &mail).unwrap();
+
+        let (folder, uid) = set_flagged(&conn, "m1", true).unwrap();
+        assert_eq!(folder, "INBOX");
+        assert_eq!(uid, 42);
+        assert!(get_mail_by_id(&conn, "m1").unwrap().is_flagged);
+
+        set_flagged(&conn, "m1", false).unwrap();
+        assert!(!get_mail_by_id(&conn, "m1").unwrap().is_flagged);
+    }
+
+    #[test]
+    fn test_set_flagged_missing_mail_returns_not_found() {
+        let conn = setup_db();
+        let result = set_flagged(&conn, "nonexistent", true);
         assert!(matches!(result, Err(AppError::MailNotFound(_))));
     }
 
@@ -973,6 +1118,48 @@ mod tests {
         let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].uid, 777);
+    }
+
+    #[test]
+    fn test_get_recent_unread_subjects_orders_by_date_desc_and_limits() {
+        let conn = setup_db();
+        let mut m1 = make_mail("m1", "<m1@example.com>", "Oldest", "2026-07-12T09:00:00");
+        m1.is_read = false;
+        let mut m2 = make_mail("m2", "<m2@example.com>", "Middle", "2026-07-12T10:00:00");
+        m2.is_read = false;
+        let mut m3 = make_mail("m3", "<m3@example.com>", "Newest", "2026-07-12T11:00:00");
+        m3.is_read = false;
+        insert_mail(&conn, &m1).unwrap();
+        insert_mail(&conn, &m2).unwrap();
+        insert_mail(&conn, &m3).unwrap();
+
+        let subjects = get_recent_unread_subjects(&conn, "acc1", 2).unwrap();
+        assert_eq!(subjects, vec!["Newest".to_string(), "Middle".to_string()]);
+    }
+
+    #[test]
+    fn test_get_recent_unread_subjects_excludes_read_and_other_folders() {
+        let conn = setup_db();
+        let mut read_mail = make_mail("m1", "<m1@example.com>", "Read", "2026-07-12T10:00:00");
+        read_mail.is_read = true;
+        let mut sent_mail = make_mail("m2", "<m2@example.com>", "Sent", "2026-07-12T11:00:00");
+        sent_mail.is_read = false;
+        sent_mail.folder = "Sent".into();
+        let mut unread = make_mail("m3", "<m3@example.com>", "Unread", "2026-07-12T12:00:00");
+        unread.is_read = false;
+        insert_mail(&conn, &read_mail).unwrap();
+        insert_mail(&conn, &sent_mail).unwrap();
+        insert_mail(&conn, &unread).unwrap();
+
+        let subjects = get_recent_unread_subjects(&conn, "acc1", 10).unwrap();
+        assert_eq!(subjects, vec!["Unread".to_string()]);
+    }
+
+    #[test]
+    fn test_get_recent_unread_subjects_empty() {
+        let conn = setup_db();
+        let subjects = get_recent_unread_subjects(&conn, "acc1", 3).unwrap();
+        assert!(subjects.is_empty());
     }
 
     #[test]

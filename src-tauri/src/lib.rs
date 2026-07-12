@@ -165,7 +165,10 @@ pub fn run() {
             commands::mail_commands::get_threads,
             commands::mail_commands::get_threads_by_project,
             commands::mail_commands::mark_read,
+            commands::flag_commands::set_flagged,
+            commands::flag_commands::mark_unread,
             commands::mail_commands::get_unread_counts,
+            commands::mail_commands::get_recent_unread_subjects,
             commands::project_commands::create_project,
             commands::project_commands::get_projects,
             commands::project_commands::update_project,
@@ -197,6 +200,9 @@ pub fn run() {
             commands::mail_commands::delete_mail,
             commands::mail_commands::archive_mail,
             commands::mail_commands::unarchive_mail,
+            commands::bulk_commands::bulk_delete_mails,
+            commands::bulk_commands::bulk_archive_mails,
+            commands::bulk_commands::bulk_move_mails,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

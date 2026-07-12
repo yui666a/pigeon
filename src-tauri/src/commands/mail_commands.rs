@@ -146,6 +146,7 @@ async fn sync_folder_into(
                         logical_folder,
                         fetched.uid,
                         fetched.is_read,
+                        fetched.is_flagged,
                         fetched.flags,
                     ) {
                         let inserted = match strategy {
@@ -266,22 +267,22 @@ async fn sync_account_inner(
     .await;
     let mut count = *fetch_result.as_ref().unwrap_or(&0);
 
-    // フラグ再同期: 既知メールの既読状態をサーバーに合わせる
-    // （他クライアントで既読にした変更の取り込み。設計書「フラグ変更→ローカルDB更新」）。
+    // フラグ再同期: 既知メールの既読状態・スター状態をサーバーに合わせる
+    // （他クライアントでの変更の取り込み。設計書「フラグ変更→ローカルDB更新」）。
     // 取り込み自体は成功しているため、ここの失敗は同期エラーにしない
     if fetch_result.is_ok() {
-        match imap_client::fetch_seen_map(&mut session, "INBOX").await {
-            Ok(seen_map) => {
+        match imap_client::fetch_flag_map(&mut session, "INBOX").await {
+            Ok(flag_map) => {
                 let update_result = state
                     .0
                     .lock()
                     .map_err(AppError::lock_err)
-                    .and_then(|conn| mails::update_read_flags(&conn, account_id, "INBOX", &seen_map));
+                    .and_then(|conn| mails::update_flag_state(&conn, account_id, "INBOX", &flag_map));
                 if let Err(e) = update_result {
-                    eprintln!("[warn] read-flag DB update failed: {}", e);
+                    eprintln!("[warn] flag-state DB update failed: {}", e);
                 }
             }
-            Err(e) => eprintln!("[warn] read-flag resync failed: {}", e),
+            Err(e) => eprintln!("[warn] flag-state resync failed: {}", e),
         }
 
         // Sent フォルダの同期（ベストエフォート）。送信時ローカル行の uid 確定と
@@ -527,6 +528,18 @@ pub fn get_unread_counts(
 ) -> Result<UnreadCounts, AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
     mails::get_unread_counts(&conn, &account_id)
+}
+
+/// デスクトップ通知の件名プレビュー用に、直近の未読メール件名を返す
+/// （2026-07-12-desktop-notification-design.md「v2: 通知の強化」）。
+#[tauri::command]
+pub fn get_recent_unread_subjects(
+    state: State<DbState>,
+    account_id: String,
+    limit: u32,
+) -> Result<Vec<String>, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    mails::get_recent_unread_subjects(&conn, &account_id, limit)
 }
 
 #[tauri::command]

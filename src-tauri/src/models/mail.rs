@@ -20,6 +20,7 @@ pub struct Mail {
     pub uid: u32,
     pub flags: Option<String>,
     pub is_read: bool,
+    pub is_flagged: bool,
     pub fetched_at: String,
     /// uid がサーバー実 UID として確定しているか。サーバー取得行は true、
     /// 送信時にローカル保存する Sent 行（推定 uid）は false。
