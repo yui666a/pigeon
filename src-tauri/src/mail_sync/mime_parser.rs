@@ -9,6 +9,17 @@ pub struct ExtractedAttachment {
     pub filename: Option<String>,
     pub mime_type: String,
     pub data: Vec<u8>,
+    /// Content-ID ヘッダの値（`<` `>` を除去済み）。
+    /// 本文中の `<img src="cid:...">` から参照される場合にセットされる
+    pub content_id: Option<String>,
+}
+
+/// Content-ID ヘッダの値から `<` `>` を除去する
+fn normalize_content_id(raw: &str) -> String {
+    raw.trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_string()
 }
 
 /// 元メールのバイト列から添付ファイルを抽出する純関数。
@@ -31,6 +42,7 @@ pub fn extract_attachments(raw: &[u8]) -> Vec<ExtractedAttachment> {
                 filename: part.attachment_name().map(|s| s.to_string()),
                 mime_type,
                 data: part.contents().to_vec(),
+                content_id: part.content_id().map(normalize_content_id),
             }
         })
         .collect()
@@ -235,7 +247,8 @@ mod tests {
 
     #[test]
     fn test_parse_email_with_references_chain() {
-        let mail = parse_mime(EMAIL_WITH_REFERENCES_CHAIN, "acc1", "INBOX", 6, false, None).unwrap();
+        let mail =
+            parse_mime(EMAIL_WITH_REFERENCES_CHAIN, "acc1", "INBOX", 6, false, None).unwrap();
         assert_eq!(mail.in_reply_to, Some("<chain2@example.com>".to_string()));
         let refs = mail.references.unwrap();
         assert!(refs.contains("<chain1@example.com>"));
@@ -350,7 +363,15 @@ mod tests {
     #[test]
     fn test_extract_attachments_marks_has_attachments() {
         // 同期時の has_attachments フラグと抽出結果が整合すること
-        let mail = parse_mime(MULTIPART_EMAIL_WITH_ATTACHMENTS, "acc1", "INBOX", 1, false, None).unwrap();
+        let mail = parse_mime(
+            MULTIPART_EMAIL_WITH_ATTACHMENTS,
+            "acc1",
+            "INBOX",
+            1,
+            false,
+            None,
+        )
+        .unwrap();
         assert!(mail.has_attachments);
     }
 
@@ -372,5 +393,43 @@ mod tests {
     fn test_extract_attachments_invalid_bytes() {
         assert!(extract_attachments(b"").is_empty());
         assert!(extract_attachments(b"garbage").is_empty());
+    }
+
+    const EMAIL_WITH_INLINE_IMAGE: &[u8] = b"From: sender@example.com\r\n\
+        To: recipient@example.com\r\n\
+        Subject: Inline Image\r\n\
+        Message-ID: <inline@example.com>\r\n\
+        Date: Mon, 13 Jul 2026 10:00:00 +0900\r\n\
+        MIME-Version: 1.0\r\n\
+        Content-Type: multipart/related; boundary=\"BOUNDARY\"\r\n\
+        \r\n\
+        --BOUNDARY\r\n\
+        Content-Type: text/html\r\n\
+        \r\n\
+        <html><body><img src=\"cid:logo123@example.com\"></body></html>\r\n\
+        --BOUNDARY\r\n\
+        Content-Type: image/png; name=\"logo.png\"\r\n\
+        Content-Disposition: inline; filename=\"logo.png\"\r\n\
+        Content-ID: <logo123@example.com>\r\n\
+        Content-Transfer-Encoding: base64\r\n\
+        \r\n\
+        iVBORw0KGgo=\r\n\
+        --BOUNDARY--\r\n";
+
+    #[test]
+    fn test_extract_attachments_sets_content_id() {
+        let attachments = extract_attachments(EMAIL_WITH_INLINE_IMAGE);
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].filename.as_deref(), Some("logo.png"));
+        assert_eq!(
+            attachments[0].content_id.as_deref(),
+            Some("logo123@example.com")
+        );
+    }
+
+    #[test]
+    fn test_extract_attachments_without_content_id_is_none() {
+        let attachments = extract_attachments(MULTIPART_EMAIL_WITH_ATTACHMENTS);
+        assert!(attachments.iter().all(|a| a.content_id.is_none()));
     }
 }
