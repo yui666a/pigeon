@@ -1,3 +1,4 @@
 pub mod imap_client;
 pub mod mime_parser;
 pub mod oauth;
+pub mod smtp_client;
