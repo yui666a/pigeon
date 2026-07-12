@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useAccountStore } from "../../stores/accountStore";
+import { useComposeStore } from "../../stores/composeStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSearchStore } from "../../stores/searchStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -26,6 +27,7 @@ export function Sidebar() {
     initDeepLinkListener,
   } = useAccountStore();
   const { createProject, linkDirectory, rescanProject } = useProjectStore();
+  const openCompose = useComposeStore((s) => s.openCompose);
   const { search, clearSearch } = useSearchStore();
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
@@ -163,6 +165,14 @@ export function Sidebar() {
           )}
         </div>
       )}
+      <div className="border-t">
+        <button
+          onClick={() => openCompose("new")}
+          className="w-full px-4 py-3 text-left text-sm text-blue-600 hover:bg-gray-100 hover:underline"
+        >
+          ✉ 新規作成
+        </button>
+      </div>
       <SyncIndicator />
       <ScanIndicator />
       {showLlmSettings && (
