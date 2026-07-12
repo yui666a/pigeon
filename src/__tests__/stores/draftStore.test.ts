@@ -85,6 +85,78 @@ describe("draftStore", () => {
       const result = await useDraftStore.getState().saveDraft(req);
       expect(result).toBeNull();
     });
+
+    it("adds a newly created draft to the list (list freshness)", async () => {
+      const saved = makeDraft({ id: "new-id", subject: "新規下書き" });
+      mockInvoke.mockResolvedValue(saved);
+      useDraftStore.setState({ drafts: [] });
+
+      await useDraftStore.getState().saveDraft({
+        id: null,
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "新規下書き",
+        body_text: "",
+        in_reply_to: null,
+      });
+
+      const drafts = useDraftStore.getState().drafts;
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0].id).toBe("new-id");
+    });
+
+    it("replaces the existing draft in place when updating (does not duplicate)", async () => {
+      const existing = makeDraft({
+        id: "d1",
+        subject: "旧",
+        updated_at: "2026-07-12T10:00:00Z",
+      });
+      const updated = makeDraft({
+        id: "d1",
+        subject: "新",
+        updated_at: "2026-07-12T11:00:00Z",
+      });
+      useDraftStore.setState({ drafts: [existing] });
+      mockInvoke.mockResolvedValue(updated);
+
+      await useDraftStore.getState().saveDraft({
+        id: "d1",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "新",
+        body_text: "",
+        in_reply_to: null,
+      });
+
+      const drafts = useDraftStore.getState().drafts;
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0].subject).toBe("新");
+    });
+
+    it("keeps the list ordered by updated_at desc after an upsert", async () => {
+      const older = makeDraft({ id: "d-old", updated_at: "2026-07-12T09:00:00Z" });
+      const newer = makeDraft({ id: "new-id", updated_at: "2026-07-12T12:00:00Z" });
+      useDraftStore.setState({ drafts: [older] });
+      mockInvoke.mockResolvedValue(newer);
+
+      await useDraftStore.getState().saveDraft({
+        id: null,
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "",
+        body_text: "",
+        in_reply_to: null,
+      });
+
+      const ids = useDraftStore.getState().drafts.map((d) => d.id);
+      expect(ids).toEqual(["new-id", "d-old"]);
+    });
   });
 
   describe("deleteDraft", () => {

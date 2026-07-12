@@ -31,7 +31,17 @@ export const useDraftStore = create<DraftState>((set, get) => ({
 
   saveDraft: async (req) => {
     try {
-      return await invoke<Draft>("save_draft", { req });
+      const saved = await invoke<Draft>("save_draft", { req });
+      // 一覧(drafts)にも反映する。既存idなら置換、新規なら updated_at 降順を保って挿入。
+      // これをしないと自動保存直後に一覧を開いても再マウントまで反映されない
+      const rest = get().drafts.filter((d) => d.id !== saved.id);
+      const insertAt = rest.findIndex((d) => d.updated_at < saved.updated_at);
+      const drafts =
+        insertAt === -1
+          ? [...rest, saved]
+          : [...rest.slice(0, insertAt), saved, ...rest.slice(insertAt)];
+      set({ drafts });
+      return saved;
     } catch (e) {
       // 下書き保存はベストエフォート。失敗を理由に閉じる等の操作を妨げない
       useErrorStore.getState().addError(String(e));
