@@ -199,6 +199,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 9 {
+        migrate_v9(conn)?;
+        version = 9;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -355,6 +361,18 @@ fn migrate_v8(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v9(conn: &Connection) -> Result<(), AppError> {
+    // スター/フラグ（\Flagged）の管理。正はサーバーの \Flagged で、これはそのキャッシュ。
+    // 既存行は flags 列（サーバーフラグの文字列）に \Flagged を含んでいれば 1 に埋め戻す
+    // （is_read を v7 で埋め戻さなかったのは当時 flags の一括再取得が未実装だったため。
+    // 今回は文字列に情報があるので活かす）
+    conn.execute_batch(
+        "ALTER TABLE mails ADD COLUMN is_flagged INTEGER NOT NULL DEFAULT 0;
+         UPDATE mails SET is_flagged = 1 WHERE flags LIKE '%\\Flagged%';",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,7 +487,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -676,7 +694,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -699,7 +717,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -869,7 +887,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -1039,7 +1057,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -1152,7 +1170,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -1185,5 +1203,93 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "メール削除で添付レコードもCASCADE削除される");
+    }
+
+    #[test]
+    fn test_v9_adds_is_flagged_column_with_default_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-13', 1)",
+            [],
+        )
+        .unwrap();
+
+        let is_flagged: i32 = conn
+            .query_row("SELECT is_flagged FROM mails WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(is_flagged, 0, "is_flagged defaults to 0 (未フラグ)");
+    }
+
+    #[test]
+    fn test_v9_backfills_is_flagged_from_existing_flags_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // v8 までを適用した状態で既存メールを仕込む（flags 列にサーバーフラグ文字列がある想定）
+        get_schema_version(&conn).unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        set_schema_version(&conn, 8).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid, flags)
+             VALUES ('m1', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-13', 1, '\\Seen \\Flagged')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid, flags)
+             VALUES ('m2', 'acc1', 'INBOX', '<p@q>', 'a@b', 'c@d', 'S', '2026-07-13', 2, '\\Seen')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid, flags)
+             VALUES ('m3', 'acc1', 'INBOX', '<r@s>', 'a@b', 'c@d', 'S', '2026-07-13', 3, NULL)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let flagged = |id: &str| -> i32 {
+            conn.query_row(
+                &format!("SELECT is_flagged FROM mails WHERE id = '{}'", id),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(flagged("m1"), 1, "flags に \\Flagged を含む行は埋め戻される");
+        assert_eq!(flagged("m2"), 0, "\\Flagged を含まない行は 0 のまま");
+        assert_eq!(flagged("m3"), 0, "flags が NULL の行は 0 のまま");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 9);
     }
 }
