@@ -7,7 +7,7 @@ use tauri::State;
 
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
-use crate::mail_sync::smtp_client::OutgoingMail;
+use crate::mail_sync::smtp_client::{OutgoingAttachment, OutgoingMail};
 use crate::mail_sync::{imap_client, smtp_client};
 use crate::models::account::{Account, AccountProvider};
 use crate::models::mail::Mail;
@@ -27,6 +27,13 @@ pub struct SendMailRequest {
     /// 新規・転送では None
     #[serde(default)]
     pub reply_to_mail_id: Option<String>,
+    /// リッチ本文の HTML。Some なら multipart/alternative で送る（plain は HTML から生成）。
+    /// None ならプレーンのみ送信
+    #[serde(default)]
+    pub body_html: Option<String>,
+    /// 添付ファイルの絶対パス。空なら添付なし
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 /// 返信元メールから (In-Reply-To, References) を導出する
@@ -45,12 +52,37 @@ pub(crate) fn derive_threading_headers(
     }
 }
 
-/// リクエストとアカウント情報から OutgoingMail を構築する
+/// 添付パスのリストを読み込み、OutgoingAttachment のリストに変換する。
+/// ファイル名は末尾コンポーネント、Content-Type は拡張子から推定する
+pub(crate) fn read_attachments(paths: &[String]) -> Result<Vec<OutgoingAttachment>, AppError> {
+    paths
+        .iter()
+        .map(|path| {
+            let data = std::fs::read(path)
+                .map_err(|e| AppError::FileIo(format!("添付ファイルの読み込みに失敗 {}: {}", path, e)))?;
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("attachment")
+                .to_string();
+            let content_type = smtp_client::guess_content_type(&filename);
+            Ok(OutgoingAttachment {
+                filename,
+                content_type,
+                data,
+            })
+        })
+        .collect()
+}
+
+/// リクエストとアカウント情報から OutgoingMail を構築する。
+/// 添付は読み込み済みのものを渡す（IO は read_attachments に分離）
 pub(crate) fn build_outgoing(
     account: &Account,
     req: &SendMailRequest,
     reply_source: Option<&Mail>,
     message_id: &str,
+    attachments: Vec<OutgoingAttachment>,
 ) -> OutgoingMail {
     let (in_reply_to, references) = derive_threading_headers(reply_source);
     OutgoingMail {
@@ -61,6 +93,8 @@ pub(crate) fn build_outgoing(
         bcc: req.bcc.clone(),
         subject: req.subject.clone(),
         body_text: req.body_text.clone(),
+        body_html: req.body_html.clone(),
+        attachments,
         message_id: message_id.to_string(),
         in_reply_to,
         references,
@@ -92,9 +126,9 @@ pub(crate) fn build_sent_record(
         },
         subject: outgoing.subject.clone(),
         body_text: Some(outgoing.body_text.clone()),
-        body_html: None,
+        body_html: outgoing.body_html.clone(),
         date: now.clone(),
-        has_attachments: false,
+        has_attachments: !outgoing.attachments.is_empty(),
         raw_size: Some(raw_size as i64),
         uid,
         flags: Some("\\Seen".into()),
@@ -122,9 +156,10 @@ pub async fn send_mail(
         (account, reply_source, sent_folder)
     };
 
-    // 2. メッセージ構築（バリデーション含む）
+    // 2. 添付ファイルの読み込み → メッセージ構築（サイズ・アドレス検証含む）
+    let attachments = read_attachments(&req.attachments)?;
     let message_id = smtp_client::generate_message_id();
-    let outgoing = build_outgoing(&account, &req, reply_source.as_ref(), &message_id);
+    let outgoing = build_outgoing(&account, &req, reply_source.as_ref(), &message_id, attachments);
     let message = smtp_client::build_message(&outgoing)?;
     let raw = message.formatted();
 
@@ -204,6 +239,8 @@ mod tests {
             subject: "件名".into(),
             body_text: "本文".into(),
             reply_to_mail_id: None,
+            body_html: None,
+            attachments: vec![],
         }
     }
 
@@ -235,7 +272,7 @@ mod tests {
     fn test_build_outgoing_uses_account_identity() {
         let account = make_account();
         let req = make_request();
-        let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>");
+        let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>", vec![]);
         assert_eq!(outgoing.from_name, "Hiroshi");
         assert_eq!(outgoing.from_email, "me@example.com");
         assert_eq!(outgoing.message_id, "<mid@pigeon.local>");
@@ -249,7 +286,7 @@ mod tests {
             cc: vec!["c1@ex.com".into(), "c2@ex.com".into()],
             ..make_request()
         };
-        let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>");
+        let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>", vec![]);
         let record = build_sent_record(&account, &outgoing, 5, 1234);
         assert_eq!(record.folder, "Sent");
         assert_eq!(record.uid, 5);
@@ -263,9 +300,45 @@ mod tests {
     }
 
     #[test]
+    fn test_build_sent_record_reflects_html_and_attachments() {
+        let account = make_account();
+        let req = SendMailRequest {
+            body_html: Some("<p>hi</p>".into()),
+            ..make_request()
+        };
+        let att = OutgoingAttachment {
+            filename: "a.pdf".into(),
+            content_type: "application/pdf".into(),
+            data: vec![0u8; 3],
+        };
+        let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>", vec![att]);
+        let record = build_sent_record(&account, &outgoing, 1, 100);
+        assert_eq!(record.body_html.as_deref(), Some("<p>hi</p>"));
+        assert!(record.has_attachments);
+    }
+
+    #[test]
+    fn test_read_attachments_reads_bytes_and_infers_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.pdf");
+        std::fs::write(&path, b"%PDF-1.4").unwrap();
+        let atts = read_attachments(&[path.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].filename, "report.pdf");
+        assert_eq!(atts[0].content_type, "application/pdf");
+        assert_eq!(atts[0].data, b"%PDF-1.4");
+    }
+
+    #[test]
+    fn test_read_attachments_missing_file_errors() {
+        let result = read_attachments(&["/nonexistent/path/x.bin".into()]);
+        assert!(matches!(result, Err(AppError::FileIo(_))));
+    }
+
+    #[test]
     fn test_build_sent_record_empty_cc_is_none() {
         let account = make_account();
-        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>");
+        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
         let record = build_sent_record(&account, &outgoing, 1, 100);
         assert!(record.cc_addr.is_none());
     }
@@ -275,7 +348,7 @@ mod tests {
         // 挿入 → 取得で同じ内容が得られ、uid の採番が単調増加すること
         let conn = crate::test_helpers::setup_db();
         let account = make_account();
-        let outgoing = build_outgoing(&account, &make_request(), None, "<mid1@pigeon.local>");
+        let outgoing = build_outgoing(&account, &make_request(), None, "<mid1@pigeon.local>", vec![]);
 
         let uid1 = mails::get_max_uid(&conn, "acc1", "Sent").unwrap() + 1;
         let rec1 = build_sent_record(&account, &outgoing, uid1, 100);
