@@ -83,11 +83,13 @@ describe("MailActions", () => {
   describe("archive and delete", () => {
     const archiveMail = vi.fn();
     const deleteMail = vi.fn();
+    const unarchiveMail = vi.fn();
 
     beforeEach(() => {
       archiveMail.mockReset();
       deleteMail.mockReset();
-      useMailStore.setState({ archiveMail, deleteMail });
+      unarchiveMail.mockReset();
+      useMailStore.setState({ archiveMail, deleteMail, unarchiveMail });
     });
 
     afterEach(() => {
@@ -125,6 +127,47 @@ describe("MailActions", () => {
       render(<MailActions mail={makeMail()} />);
       fireEvent.click(screen.getByRole("button", { name: "削除" }));
       expect(deleteMail).not.toHaveBeenCalled();
+    });
+
+    it("does not show the unarchive button for a non-archived mail", () => {
+      render(<MailActions mail={makeMail()} />);
+      expect(
+        screen.queryByRole("button", { name: "アーカイブ解除" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("unarchive (folder='Archive')", () => {
+    const unarchiveMail = vi.fn();
+    const archiveMail = vi.fn();
+
+    function makeArchivedMail(): Mail {
+      return { ...makeMail(), folder: "Archive" };
+    }
+
+    beforeEach(() => {
+      unarchiveMail.mockReset();
+      archiveMail.mockReset();
+      useMailStore.setState({ unarchiveMail, archiveMail });
+    });
+
+    it("shows unarchive instead of archive for an archived mail", () => {
+      render(<MailActions mail={makeArchivedMail()} />);
+      expect(
+        screen.getByRole("button", { name: "アーカイブ解除" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "アーカイブ" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("unarchives the mail on click", () => {
+      render(<MailActions mail={makeArchivedMail()} />);
+      fireEvent.click(screen.getByRole("button", { name: "アーカイブ解除" }));
+      expect(unarchiveMail).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "m1", folder: "Archive" }),
+      );
+      expect(archiveMail).not.toHaveBeenCalled();
     });
   });
 });
