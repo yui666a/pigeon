@@ -2,6 +2,7 @@ import { useMailStore } from "../../stores/mailStore";
 import { MailHeader } from "./MailHeader";
 import { MailTabs } from "./MailTabs";
 import { MailBody } from "./MailBody";
+import { MailActions } from "./MailActions";
 import { EmptyState } from "../common/EmptyState";
 
 export function MailView() {
@@ -16,6 +17,7 @@ export function MailView() {
     return (
       <div className="flex h-full flex-col">
         <MailHeader mail={selectedMail} />
+        <MailActions mail={selectedMail} />
         <MailBody mail={selectedMail} />
       </div>
     );
@@ -32,6 +34,7 @@ export function MailView() {
         onSelect={selectMail}
       />
       <MailHeader mail={mail} />
+      <MailActions mail={mail} />
       <MailBody mail={mail} />
     </div>
   );
