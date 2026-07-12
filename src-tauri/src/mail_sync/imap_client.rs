@@ -9,7 +9,7 @@ use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use crate::error::AppError;
 use crate::models::account::AuthType;
 
-type ImapSession = Session<TlsStream<Compat<TcpStream>>>;
+pub(crate) type ImapSession = Session<TlsStream<Compat<TcpStream>>>;
 
 pub async fn connect(
     host: &str,
@@ -522,6 +522,28 @@ pub async fn archive_message_remote(
     result
 }
 
+/// フォルダ属性に \Sent (RFC 6154 SPECIAL-USE) が含まれるか
+pub(crate) fn has_sent_attribute(attrs: &[NameAttribute<'_>]) -> bool {
+    attrs.iter().any(|a| *a == NameAttribute::Sent)
+}
+
+/// LIST 応答から SPECIAL-USE (RFC 6154) の \Sent 属性を持つフォルダを探す。
+/// Gmail はロケールに依らずこの属性を返す（例: "[Gmail]/送信済みメール"）。
+/// 非対応サーバーでは None（呼び出し側が settings の sent_folder にフォールバックする）
+pub async fn find_sent_folder(session: &mut ImapSession) -> Result<Option<String>, AppError> {
+    let folders: Vec<_> = session
+        .list(None, Some("*"))
+        .await
+        .map_err(|e| AppError::Imap(format!("List folders failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("List stream failed: {}", e)))?;
+    Ok(folders
+        .iter()
+        .find(|f| has_sent_attribute(f.attributes()))
+        .map(|f| f.name().to_string()))
+}
+
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
     let folders: Vec<_> = session
         .list(None, Some("*"))
@@ -636,5 +658,24 @@ mod tests {
             NameAttribute::Marked,
         ]));
         assert!(!has_trash_attribute(&[]));
+    }
+
+    #[test]
+    fn test_has_sent_attribute_detects_sent() {
+        assert!(has_sent_attribute(&[
+            NameAttribute::NoInferiors,
+            NameAttribute::Sent,
+        ]));
+    }
+
+    #[test]
+    fn test_has_sent_attribute_ignores_other_special_use() {
+        // \Trash や \Junk は送信済みではない
+        assert!(!has_sent_attribute(&[
+            NameAttribute::Trash,
+            NameAttribute::Junk,
+            NameAttribute::Drafts,
+        ]));
+        assert!(!has_sent_attribute(&[]));
     }
 }

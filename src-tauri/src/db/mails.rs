@@ -165,6 +165,53 @@ pub fn update_folder(conn: &Connection, mail_id: &str, folder: &str) -> Result<(
     Ok(())
 }
 
+/// account_id + folder + message_id に一致するメールの id を返す（無ければ None）。
+/// Sent 同期で、送信時ローカル行とサーバー同期行を突き合わせるのに使う。
+pub fn get_mail_id_by_message_id(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+    message_id: &str,
+) -> Result<Option<String>, AppError> {
+    let id = conn
+        .query_row(
+            "SELECT id FROM mails WHERE account_id = ?1 AND folder = ?2 AND message_id = ?3",
+            params![account_id, folder, message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok();
+    Ok(id)
+}
+
+/// メールの uid を更新する（行は残るため案件割り当て・スレッド・検索は維持される）。
+/// Sent 同期で送信時の推定 uid を正しいサーバー uid に置き換えるのに使う。
+/// 対象が存在しなければ MailNotFound。
+pub fn update_uid(conn: &Connection, mail_id: &str, uid: u32) -> Result<(), AppError> {
+    let affected = conn.execute(
+        "UPDATE mails SET uid = ?1 WHERE id = ?2",
+        params![uid, mail_id],
+    )?;
+    if affected == 0 {
+        return Err(AppError::MailNotFound(mail_id.to_string()));
+    }
+    Ok(())
+}
+
+/// Sent 同期用のマージ挿入。同一 (account_id, folder='Sent', message_id) の行が
+/// 既にあれば（送信時ローカル保存分）、その行の uid をサーバー値へ更新して二重行を防ぎ、
+/// 案件割り当てを保持する。無ければ通常挿入する（他クライアント送信の取り込み）。
+/// 戻り値は「新規の取り込みが起きたか」（同期件数の集計用。uid 更新のみは false）。
+pub fn upsert_sent_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
+    if let Some(existing_id) =
+        get_mail_id_by_message_id(conn, &mail.account_id, &mail.folder, &mail.message_id)?
+    {
+        update_uid(conn, &existing_id, mail.uid)?;
+        Ok(false)
+    } else {
+        insert_mail(conn, mail)
+    }
+}
+
 /// メールを既読にし、サーバー反映に必要な (folder, uid) を返す。
 pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
     let (folder, uid): (String, u32) = conn
@@ -598,6 +645,129 @@ mod tests {
         let counts = get_unread_counts(&conn, "acc1").unwrap();
         assert!(counts.by_project.is_empty());
         assert_eq!(counts.unclassified, 0);
+    }
+
+    #[test]
+    fn test_get_mail_id_by_message_id_matches_account_folder() {
+        let conn = setup_db();
+        let mut sent = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        sent.folder = "Sent".into();
+        insert_mail(&conn, &sent).unwrap();
+
+        // 一致
+        assert_eq!(
+            get_mail_id_by_message_id(&conn, "acc1", "Sent", "<mid@pigeon.local>").unwrap(),
+            Some("s1".to_string())
+        );
+        // folder 違い・message_id 違いは None
+        assert_eq!(
+            get_mail_id_by_message_id(&conn, "acc1", "INBOX", "<mid@pigeon.local>").unwrap(),
+            None
+        );
+        assert_eq!(
+            get_mail_id_by_message_id(&conn, "acc1", "Sent", "<other@pigeon.local>").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_update_uid_changes_uid_and_keeps_assignment() {
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        let mut sent = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        sent.folder = "Sent".into();
+        sent.uid = 1; // 送信時の推定値
+        insert_mail(&conn, &sent).unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
+
+        // サーバー同期で得た正しい uid に更新
+        update_uid(&conn, "s1", 4242).unwrap();
+
+        let stored = get_mail_by_id(&conn, "s1").unwrap();
+        assert_eq!(stored.uid, 4242);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "uid 更新では案件割り当てが維持される");
+    }
+
+    #[test]
+    fn test_update_uid_missing_returns_not_found() {
+        let conn = setup_db();
+        assert!(matches!(
+            update_uid(&conn, "nonexistent", 1),
+            Err(AppError::MailNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_upsert_sent_mail_updates_existing_uid_no_duplicate() {
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        // 送信時ローカル保存分（推定 uid=1）
+        let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        local.folder = "Sent".into();
+        local.uid = 1;
+        insert_mail(&conn, &local).unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
+
+        // サーバー同期分（別 id・正しい uid=5000・同 message_id）
+        let mut server = make_mail("s2", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        server.folder = "Sent".into();
+        server.uid = 5000;
+        let inserted = upsert_sent_mail(&conn, &server).unwrap();
+        assert!(!inserted, "既存 message_id は新規挿入しない");
+
+        // 行は1つのまま、uid はサーバー値に更新、案件割り当ては保持
+        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(all.len(), 1, "二重行が作られない");
+        assert_eq!(all[0].id, "s1", "既存行が残る");
+        assert_eq!(all[0].uid, 5000, "uid がサーバー値に確定される");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "案件割り当てが維持される");
+    }
+
+    #[test]
+    fn test_upsert_sent_mail_inserts_new_message_id() {
+        // 他クライアントから送ったメール（ローカルに送信行が無い）は新規取り込みされる
+        let conn = setup_db();
+        let mut server = make_mail("s1", "<external@server>", "他クライアント", "2026-07-12T10:00:00");
+        server.folder = "Sent".into();
+        server.uid = 777;
+        let inserted = upsert_sent_mail(&conn, &server).unwrap();
+        assert!(inserted, "未知の message_id は挿入される");
+
+        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].uid, 777);
     }
 
     #[test]
