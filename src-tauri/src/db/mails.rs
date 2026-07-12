@@ -141,6 +141,30 @@ pub fn update_read_flags(
     Ok(updated)
 }
 
+/// メールの行を削除する。mail_project_assignments / mail_attachments /
+/// correction_log は CASCADE で消え、FTS はトリガーで削除される。
+/// 対象が存在しなければ MailNotFound。
+pub fn delete_mail(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
+    let affected = conn.execute("DELETE FROM mails WHERE id = ?1", params![mail_id])?;
+    if affected == 0 {
+        return Err(AppError::MailNotFound(mail_id.to_string()));
+    }
+    Ok(())
+}
+
+/// メールのフォルダを更新する（アーカイブ等）。行は残るため案件割り当て・
+/// スレッド・検索は維持される。対象が存在しなければ MailNotFound。
+pub fn update_folder(conn: &Connection, mail_id: &str, folder: &str) -> Result<(), AppError> {
+    let affected = conn.execute(
+        "UPDATE mails SET folder = ?1 WHERE id = ?2",
+        params![folder, mail_id],
+    )?;
+    if affected == 0 {
+        return Err(AppError::MailNotFound(mail_id.to_string()));
+    }
+    Ok(())
+}
+
 /// メールを既読にし、サーバー反映に必要な (folder, uid) を返す。
 pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
     let (folder, uid): (String, u32) = conn
@@ -416,6 +440,114 @@ mod tests {
         let conn = setup_db();
         let result = mark_read(&conn, "nonexistent");
         assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
+
+    #[test]
+    fn test_delete_mail_removes_row() {
+        let conn = setup_db();
+        let mail = make_mail("m1", "<msg1@example.com>", "Bye", "2026-07-12T10:00:00");
+        insert_mail(&conn, &mail).unwrap();
+
+        delete_mail(&conn, "m1").unwrap();
+
+        assert!(matches!(
+            get_mail_by_id(&conn, "m1"),
+            Err(AppError::MailNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_delete_mail_cascades_project_assignment() {
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        // CASCADE の検証には外部キーの有効化が必要（本番は lib.rs で有効化している）
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        let mail = make_mail("m1", "<msg1@example.com>", "Deal", "2026-07-12T10:00:00");
+        insert_mail(&conn, &mail).unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "m1", &proj.id, "user", None).unwrap();
+
+        delete_mail(&conn, "m1").unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "割り当ては CASCADE で消える");
+    }
+
+    #[test]
+    fn test_delete_mail_missing_returns_not_found() {
+        let conn = setup_db();
+        assert!(matches!(
+            delete_mail(&conn, "nonexistent"),
+            Err(AppError::MailNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_update_folder_moves_mail() {
+        let conn = setup_db();
+        let mail = make_mail("m1", "<msg1@example.com>", "Keep", "2026-07-12T10:00:00");
+        insert_mail(&conn, &mail).unwrap();
+
+        update_folder(&conn, "m1", "Archive").unwrap();
+
+        let stored = get_mail_by_id(&conn, "m1").unwrap();
+        assert_eq!(stored.folder, "Archive");
+        // INBOX の一覧からは消える
+        assert!(get_mails_by_account(&conn, "acc1", "INBOX")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_update_folder_keeps_project_assignment() {
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        let mail = make_mail("m1", "<msg1@example.com>", "Deal", "2026-07-12T10:00:00");
+        insert_mail(&conn, &mail).unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "m1", &proj.id, "user", None).unwrap();
+
+        update_folder(&conn, "m1", "Archive").unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "アーカイブでは案件割り当てが維持される");
+    }
+
+    #[test]
+    fn test_update_folder_missing_returns_not_found() {
+        let conn = setup_db();
+        assert!(matches!(
+            update_folder(&conn, "nonexistent", "Archive"),
+            Err(AppError::MailNotFound(_))
+        ));
     }
 
     #[test]

@@ -329,6 +329,131 @@ describe("mailStore", () => {
     });
   });
 
+  describe("deleteMail", () => {
+    it("invokes delete_mail and removes the mail from all state on success", async () => {
+      const m1 = makeMail("m1");
+      const m2 = makeMail("m2");
+      const thread = makeThread([m1, m2]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().deleteMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("delete_mail", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails.map((m) => m.id)).toEqual(["m2"]);
+      expect(s.threads[0].mail_count).toBe(1);
+      expect(s.selectedThread?.mails.map((m) => m.id)).toEqual(["m2"]);
+      expect(s.selectedMail).toBeNull();
+      expect(s.unclassifiedMails).toHaveLength(0);
+    });
+
+    it("removes the whole thread when it becomes empty", async () => {
+      const m1 = makeMail("m1");
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedThread: thread });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().deleteMail(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads).toHaveLength(0);
+      expect(s.selectedThread).toBeNull();
+    });
+
+    it("refreshes unread counts after success", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      const m1 = makeMail("m1");
+      useMailStore.setState({ threads: [makeThread([m1])] });
+
+      await useMailStore.getState().deleteMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
+    it("keeps local state unchanged when the server delete fails", async () => {
+      const m1 = makeMail("m1");
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedMail: m1 });
+      mockInvoke.mockRejectedValue("IMAP error: EXPUNGE failed");
+
+      await useMailStore.getState().deleteMail(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads).toHaveLength(1);
+      expect(s.threads[0].mails).toHaveLength(1);
+      expect(s.selectedMail?.id).toBe("m1");
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "get_unread_counts",
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("archiveMail", () => {
+    it("invokes archive_mail and removes the mail from view state on success", async () => {
+      const m1 = makeMail("m1");
+      const m2 = makeMail("m2");
+      const thread = makeThread([m1, m2]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().archiveMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("archive_mail", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails.map((m) => m.id)).toEqual(["m2"]);
+      expect(s.selectedMail).toBeNull();
+      expect(s.unclassifiedMails).toHaveLength(0);
+    });
+
+    it("removes the whole thread when it becomes empty and refreshes unread counts", async () => {
+      const m1 = makeMail("m1");
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedThread: thread });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().archiveMail(m1);
+
+      expect(useMailStore.getState().threads).toHaveLength(0);
+      expect(useMailStore.getState().selectedThread).toBeNull();
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
+    it("keeps local state unchanged when the server archive fails", async () => {
+      const m1 = makeMail("m1");
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedThread: thread });
+      mockInvoke.mockRejectedValue("IMAP error: UID COPY failed");
+
+      await useMailStore.getState().archiveMail(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads).toHaveLength(1);
+      expect(s.selectedThread?.mails).toHaveLength(1);
+    });
+  });
+
   describe("sync progress", () => {
     it("updates syncProgress on sync-progress events", async () => {
       await useMailStore.getState().initSyncListener();

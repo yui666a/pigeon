@@ -1,8 +1,9 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { MailActions } from "../components/mail-view/MailActions";
 import { useComposeStore } from "../stores/composeStore";
 import { useAccountStore } from "../stores/accountStore";
+import { useMailStore } from "../stores/mailStore";
 import type { Mail } from "../types/mail";
 
 function makeMail(): Mail {
@@ -77,5 +78,53 @@ describe("MailActions", () => {
     expect(s.mode).toBe("forward");
     expect(s.replyToMailId).toBeNull();
     expect(s.subject).toBe("Fwd: 打ち合わせの件");
+  });
+
+  describe("archive and delete", () => {
+    const archiveMail = vi.fn();
+    const deleteMail = vi.fn();
+
+    beforeEach(() => {
+      archiveMail.mockReset();
+      deleteMail.mockReset();
+      useMailStore.setState({ archiveMail, deleteMail });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("renders archive and delete buttons", () => {
+      render(<MailActions mail={makeMail()} />);
+      expect(
+        screen.getByRole("button", { name: "アーカイブ" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "削除" })).toBeInTheDocument();
+    });
+
+    it("archives the mail without confirmation", () => {
+      render(<MailActions mail={makeMail()} />);
+      fireEvent.click(screen.getByRole("button", { name: "アーカイブ" }));
+      expect(archiveMail).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "m1" }),
+      );
+    });
+
+    it("deletes the mail after the user confirms", () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(<MailActions mail={makeMail()} />);
+      fireEvent.click(screen.getByRole("button", { name: "削除" }));
+      expect(window.confirm).toHaveBeenCalled();
+      expect(deleteMail).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "m1" }),
+      );
+    });
+
+    it("does not delete when the user cancels the confirmation", () => {
+      vi.spyOn(window, "confirm").mockReturnValue(false);
+      render(<MailActions mail={makeMail()} />);
+      fireEvent.click(screen.getByRole("button", { name: "削除" }));
+      expect(deleteMail).not.toHaveBeenCalled();
+    });
   });
 });

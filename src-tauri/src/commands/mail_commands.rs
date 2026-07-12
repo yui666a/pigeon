@@ -1,10 +1,10 @@
 use tauri::{AppHandle, Emitter, State};
 
-use crate::db::{accounts, mails};
+use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
-use crate::models::mail::{Thread, UnreadCounts};
+use crate::models::mail::{Mail, Thread, UnreadCounts};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 /// sync-progress イベントの payload
@@ -245,6 +245,134 @@ async fn push_seen_flag(
     store_result
 }
 
+/// 削除のサーバー反映方式（設計書 2026-07-12-mail-delete-archive-design.md）
+#[derive(Debug, PartialEq)]
+enum DeletePlan {
+    /// サーバーで \Deleted + EXPUNGE 後にローカル行を削除する
+    Server,
+    /// ローカル行の削除のみ（Sent は uid が APPEND 時の推定値のため。v1 制限）
+    LocalOnly,
+}
+
+fn plan_delete(folder: &str) -> DeletePlan {
+    if folder == "Sent" {
+        DeletePlan::LocalOnly
+    } else {
+        DeletePlan::Server
+    }
+}
+
+/// アーカイブのサーバー反映方式
+#[derive(Debug, PartialEq)]
+enum ArchivePlan {
+    /// COPY せず \Deleted + EXPUNGE のみ（Gmail: INBOX ラベル剥がし = アーカイブ）
+    DeleteOnly,
+    /// archive_folder へ UID COPY してから \Deleted + EXPUNGE（一般 IMAP）
+    CopyThenDelete(String),
+    /// ローカルの folder 更新のみ（Sent。v1 制限）
+    LocalOnly,
+}
+
+fn plan_archive(provider: &AccountProvider, folder: &str, archive_folder: &str) -> ArchivePlan {
+    if folder == "Sent" {
+        return ArchivePlan::LocalOnly;
+    }
+    match provider {
+        AccountProvider::Google => ArchivePlan::DeleteOnly,
+        AccountProvider::Other => ArchivePlan::CopyThenDelete(archive_folder.to_string()),
+    }
+}
+
+/// 削除・アーカイブ対象のアカウントとメールを読み込む。
+/// アカウント不在は AccountNotFound、メール不在は MailNotFound。
+fn load_mail_context(
+    conn: &rusqlite::Connection,
+    account_id: &str,
+    mail_id: &str,
+) -> Result<(Account, Mail), AppError> {
+    let account = accounts::get_account(conn, account_id)?;
+    let mail = mails::get_mail_by_id(conn, mail_id)?;
+    Ok((account, mail))
+}
+
+/// メールを削除する。サーバー処理（\Deleted + EXPUNGE）を同期的に実行し、
+/// 成功した場合のみローカル DB から行を削除する（既読と違い楽観更新しない。
+/// 案件割り当て等は CASCADE で消える）。
+#[tauri::command]
+pub async fn delete_mail(
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    account_id: String,
+    mail_id: String,
+) -> Result<(), AppError> {
+    let (account, mail) = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        load_mail_context(&conn, &account_id, &mail_id)?
+    };
+
+    // サーバー処理中は DB ロックを保持しない
+    if plan_delete(&mail.folder) == DeletePlan::Server {
+        let (auth_type, username, credential) =
+            resolve_imap_credentials(&account, &secure_store.0).await?;
+        imap_client::delete_message_remote(
+            &account.imap_host,
+            account.imap_port,
+            &auth_type,
+            &username,
+            &credential,
+            &mail.folder,
+            mail.uid,
+        )
+        .await?;
+    }
+
+    // サーバー成功後にのみローカルへ反映する（設計書「エラー・順序の原則」）
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    mails::delete_mail(&conn, &mail_id)
+}
+
+/// メールをアーカイブする。サーバー処理を同期的に実行し、成功した場合のみ
+/// ローカルの folder を 'Archive' に更新する。行は残るため案件割り当て・
+/// スレッド・検索は維持される。
+#[tauri::command]
+pub async fn archive_mail(
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    account_id: String,
+    mail_id: String,
+) -> Result<(), AppError> {
+    let (account, mail, archive_folder) = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        let (account, mail) = load_mail_context(&conn, &account_id, &mail_id)?;
+        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive");
+        (account, mail, archive_folder)
+    };
+
+    let plan = plan_archive(&account.provider, &mail.folder, &archive_folder);
+    if plan != ArchivePlan::LocalOnly {
+        let copy_dest = match &plan {
+            ArchivePlan::CopyThenDelete(dest) => Some(dest.as_str()),
+            _ => None,
+        };
+        let (auth_type, username, credential) =
+            resolve_imap_credentials(&account, &secure_store.0).await?;
+        imap_client::archive_message_remote(
+            &account.imap_host,
+            account.imap_port,
+            &auth_type,
+            &username,
+            &credential,
+            &mail.folder,
+            mail.uid,
+            copy_dest,
+        )
+        .await?;
+    }
+
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    mails::update_folder(&conn, &mail_id, "Archive")
+}
+
 /// プロジェクト毎 + 未分類の未読件数を返す（INBOX のみ対象）。
 #[tauri::command]
 pub fn get_unread_counts(
@@ -281,6 +409,77 @@ mod tests {
     use crate::db::{assignments, projects};
     use crate::models::project::CreateProjectRequest;
     use crate::test_helpers::{make_mail, setup_db};
+
+    #[test]
+    fn test_plan_delete_inbox_requires_server() {
+        assert_eq!(plan_delete("INBOX"), DeletePlan::Server);
+        assert_eq!(plan_delete("Archive"), DeletePlan::Server);
+    }
+
+    #[test]
+    fn test_plan_delete_sent_is_local_only() {
+        // Sent の uid は APPEND 時の推定値でサーバー UID と不一致の可能性がある
+        // ため v1 ではサーバー反映しない（設計書「v1 の制限」）
+        assert_eq!(plan_delete("Sent"), DeletePlan::LocalOnly);
+    }
+
+    #[test]
+    fn test_plan_archive_google_deletes_without_copy() {
+        // Gmail は INBOX からの削除 = ラベル剥がしがアーカイブ相当
+        assert_eq!(
+            plan_archive(&AccountProvider::Google, "INBOX", "Archive"),
+            ArchivePlan::DeleteOnly
+        );
+    }
+
+    #[test]
+    fn test_plan_archive_other_copies_to_archive_folder() {
+        assert_eq!(
+            plan_archive(&AccountProvider::Other, "INBOX", "MyArchive"),
+            ArchivePlan::CopyThenDelete("MyArchive".to_string())
+        );
+    }
+
+    #[test]
+    fn test_plan_archive_sent_is_local_only() {
+        assert_eq!(
+            plan_archive(&AccountProvider::Google, "Sent", "Archive"),
+            ArchivePlan::LocalOnly
+        );
+        assert_eq!(
+            plan_archive(&AccountProvider::Other, "Sent", "Archive"),
+            ArchivePlan::LocalOnly
+        );
+    }
+
+    #[test]
+    fn test_load_mail_context_returns_account_and_mail() {
+        let conn = setup_db();
+        let mail = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-07-12T10:00:00");
+        mails::insert_mail(&conn, &mail).unwrap();
+
+        let (account, loaded) = load_mail_context(&conn, "acc1", "m1").unwrap();
+        assert_eq!(account.id, "acc1");
+        assert_eq!(loaded.id, "m1");
+        assert_eq!(loaded.folder, "INBOX");
+    }
+
+    #[test]
+    fn test_load_mail_context_missing_account() {
+        let conn = setup_db();
+        let mail = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-07-12T10:00:00");
+        mails::insert_mail(&conn, &mail).unwrap();
+
+        let result = load_mail_context(&conn, "missing", "m1");
+        assert!(matches!(result, Err(AppError::AccountNotFound(_))));
+    }
+
+    #[test]
+    fn test_load_mail_context_missing_mail() {
+        let conn = setup_db();
+        let result = load_mail_context(&conn, "acc1", "missing");
+        assert!(matches!(result, Err(AppError::MailNotFound(_))));
+    }
 
     #[test]
     fn test_get_threads_groups_by_reply() {
