@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useMailStore } from "../../stores/mailStore";
 import { useAccountStore } from "../../stores/accountStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useErrorStore } from "../../stores/errorStore";
 import type { Mail, Thread } from "../../types/mail";
 
 function makeMail(id: string, overrides: Partial<Mail> = {}): Mail {
@@ -77,6 +78,7 @@ describe("mailStore", () => {
     });
     useAccountStore.setState({ selectedAccountId: "acc1" });
     useUiStore.setState({ viewMode: "threads" });
+    useErrorStore.setState({ toasts: [] });
   });
 
   describe("fetchThreads", () => {
@@ -363,6 +365,18 @@ describe("mailStore", () => {
       expect(s.unclassifiedMails).toHaveLength(0);
     });
 
+    it("shows a success toast on successful delete", async () => {
+      const m1 = makeMail("m1");
+      useMailStore.setState({ threads: [makeThread([m1])] });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().deleteMail(m1);
+
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({ kind: "success", message: "削除しました" });
+    });
+
     it("removes the whole thread when it becomes empty", async () => {
       const m1 = makeMail("m1");
       const thread = makeThread([m1]);
@@ -404,6 +418,10 @@ describe("mailStore", () => {
         "get_unread_counts",
         expect.anything(),
       );
+      // 失敗時は成功トーストを出さない（エラートーストのみ）
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].kind).toBe("error");
     });
   });
 
@@ -432,6 +450,21 @@ describe("mailStore", () => {
       expect(s.unclassifiedMails).toHaveLength(0);
     });
 
+    it("shows a success toast on successful archive", async () => {
+      const m1 = makeMail("m1");
+      useMailStore.setState({ threads: [makeThread([m1])] });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().archiveMail(m1);
+
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({
+        kind: "success",
+        message: "アーカイブしました",
+      });
+    });
+
     it("removes the whole thread when it becomes empty and refreshes unread counts", async () => {
       const m1 = makeMail("m1");
       const thread = makeThread([m1]);
@@ -458,6 +491,10 @@ describe("mailStore", () => {
       const s = useMailStore.getState();
       expect(s.threads).toHaveLength(1);
       expect(s.selectedThread?.mails).toHaveLength(1);
+      // 失敗時は成功トーストを出さない（エラートーストのみ）
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0].kind).toBe("error");
     });
   });
 

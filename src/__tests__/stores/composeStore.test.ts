@@ -142,6 +142,21 @@ describe("composeStore", () => {
       expect(s.replyToMailId).toBeNull();
     });
 
+    it("shows a success toast on successful send", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", subject: "S", body: "B" });
+
+      await useComposeStore.getState().send();
+
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({
+        kind: "success",
+        message: "メールを送信しました",
+      });
+    });
+
     it("sends reply_to_mail_id as null for new mail", async () => {
       mockInvoke.mockResolvedValue(undefined);
       useComposeStore.getState().openCompose("new");
