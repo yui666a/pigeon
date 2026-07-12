@@ -8,17 +8,17 @@ use std::collections::HashMap;
 /// Must match the field order expected by `row_to_mail`.
 pub const MAIL_COLUMNS: &str = "id, account_id, folder, message_id, in_reply_to, \"references\",
      from_addr, to_addr, cc_addr, subject, body_text, body_html,
-     date, has_attachments, raw_size, uid, flags, is_read, fetched_at";
+     date, has_attachments, raw_size, uid, flags, is_read, fetched_at, uid_confirmed";
 
 /// Number of columns in MAIL_COLUMNS / MAIL_COLUMNS_PREFIXED.
 /// JOIN クエリで追加カラムを読む際のオフセットとして使う。
-pub const MAIL_COLUMN_COUNT: usize = 19;
+pub const MAIL_COLUMN_COUNT: usize = 20;
 
 /// Column list with `m.` table prefix for JOIN queries.
 pub const MAIL_COLUMNS_PREFIXED: &str =
     "m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
      m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
-     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.is_read, m.fetched_at";
+     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.is_read, m.fetched_at, m.uid_confirmed";
 
 /// Map a rusqlite Row to a Mail struct. Column order must match `MAIL_COLUMNS`.
 pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
@@ -42,6 +42,7 @@ pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
         flags: row.get(16)?,
         is_read: row.get(17)?,
         fetched_at: row.get(18)?,
+        uid_confirmed: row.get(19)?,
     })
 }
 
@@ -64,8 +65,8 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
         "INSERT OR IGNORE INTO mails
          (id, account_id, folder, message_id, in_reply_to, \"references\",
           from_addr, to_addr, cc_addr, subject, body_text, body_html,
-          date, has_attachments, raw_size, uid, flags, is_read, fetched_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+          date, has_attachments, raw_size, uid, flags, is_read, fetched_at, uid_confirmed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             mail.id,
             mail.account_id,
@@ -86,6 +87,7 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
             mail.flags,
             mail.is_read,
             mail.fetched_at,
+            mail.uid_confirmed,
         ],
     )?;
     Ok(affected > 0)
@@ -111,6 +113,28 @@ pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<
     let uid: u32 = conn
         .query_row(
             "SELECT COALESCE(MAX(uid), 0) FROM mails WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(uid)
+}
+
+/// uid_confirmed=1 の行のみで folder 内の max uid を返す（差分同期の watermark 用）。
+/// Sent フォルダでは送信時ローカル保存分の uid は推定値（uid_confirmed=0）で、
+/// サーバー実 uid より大きくなりがち。これを watermark に含めると実 uid が推定 max 以下の
+/// サーバー行が fetch からスキップされ、message_id マージによる uid 後追い確定が成立しない。
+/// 確定行のみで watermark を計算することでこの汚染を防ぐ
+/// （設計書 2026-07-12-sent-sync-uidplus-design.md「C1」）。
+pub fn get_max_confirmed_uid(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+) -> Result<u32, AppError> {
+    let uid: u32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(uid), 0) FROM mails
+             WHERE account_id = ?1 AND folder = ?2 AND uid_confirmed = 1",
             params![account_id, folder],
             |row| row.get(0),
         )
@@ -183,12 +207,31 @@ pub fn get_mail_id_by_message_id(
     Ok(id)
 }
 
-/// メールの uid を更新する（行は残るため案件割り当て・スレッド・検索は維持される）。
-/// Sent 同期で送信時の推定 uid を正しいサーバー uid に置き換えるのに使う。
+/// account_id + folder + uid を占有している行の (id, message_id) を返す（無ければ None）。
+/// UNIQUE(account_id, folder, uid) 衝突の相手を特定するのに使う。
+fn find_uid_occupant(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+    uid: u32,
+) -> Result<Option<(String, String)>, AppError> {
+    let row = conn
+        .query_row(
+            "SELECT id, message_id FROM mails
+             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
+            params![account_id, folder, uid],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok();
+    Ok(row)
+}
+
+/// 行を uid=サーバー値・uid_confirmed=1 に確定させる。行は残るため案件割り当ては維持。
 /// 対象が存在しなければ MailNotFound。
-pub fn update_uid(conn: &Connection, mail_id: &str, uid: u32) -> Result<(), AppError> {
+/// 注意: (account_id, folder, uid) の UNIQUE 衝突は呼び出し側で事前に解消すること。
+pub fn confirm_uid(conn: &Connection, mail_id: &str, uid: u32) -> Result<(), AppError> {
     let affected = conn.execute(
-        "UPDATE mails SET uid = ?1 WHERE id = ?2",
+        "UPDATE mails SET uid = ?1, uid_confirmed = 1 WHERE id = ?2",
         params![uid, mail_id],
     )?;
     if affected == 0 {
@@ -197,19 +240,92 @@ pub fn update_uid(conn: &Connection, mail_id: &str, uid: u32) -> Result<(), AppE
     Ok(())
 }
 
-/// Sent 同期用のマージ挿入。同一 (account_id, folder='Sent', message_id) の行が
-/// 既にあれば（送信時ローカル保存分）、その行の uid をサーバー値へ更新して二重行を防ぎ、
-/// 案件割り当てを保持する。無ければ通常挿入する（他クライアント送信の取り込み）。
-/// 戻り値は「新規の取り込みが起きたか」（同期件数の集計用。uid 更新のみは false）。
+/// Sent 同期用のマージ挿入。サーバー同期行 `mail`（正しい uid・uid_confirmed=true）を
+/// ローカルへ取り込む。同一 (account_id, 'Sent', message_id) の送信時ローカル行があれば
+/// その行の uid をサーバー値へ確定して二重行を防ぎ、案件割り当てを保持する。
+///
+/// uid 確定時に別行が同じ (account_id, 'Sent', uid) を占有していると UNIQUE 衝突するため
+/// （送信時の推定 uid とサーバー実 uid が同値を取り合うケース。設計書「C2」）、
+/// 衝突を検出して解消する:
+/// - 占有行が同一 message_id（同一メールの重複行）: 案件割り当てを持つ側を残して他方を削除し統合
+/// - 占有行が異なる message_id: この行の取り込みをスキップして警告（バッチは継続させる）
+///
+/// 戻り値は「新規の取り込みが起きたか」（同期件数の集計用。確定・統合・スキップは false）。
 pub fn upsert_sent_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
-    if let Some(existing_id) =
-        get_mail_id_by_message_id(conn, &mail.account_id, &mail.folder, &mail.message_id)?
-    {
-        update_uid(conn, &existing_id, mail.uid)?;
-        Ok(false)
-    } else {
-        insert_mail(conn, mail)
+    let existing_by_mid =
+        get_mail_id_by_message_id(conn, &mail.account_id, &mail.folder, &mail.message_id)?;
+
+    // uid スロットの占有行（自分自身・message_id 一致行は除外して判定する）
+    let occupant = find_uid_occupant(conn, &mail.account_id, &mail.folder, mail.uid)?
+        .filter(|(occ_id, _)| Some(occ_id) != existing_by_mid.as_ref());
+
+    match existing_by_mid {
+        Some(existing_id) => {
+            // 送信時ローカル行が既にある → uid をサーバー値へ確定
+            if let Some((occ_id, occ_mid)) = occupant {
+                if occ_mid == mail.message_id {
+                    // 同一メールの重複行が uid スロットを占有 → 統合（割り当て保持側を残す）
+                    merge_duplicate_sent_rows(conn, &existing_id, &occ_id, mail.uid)?;
+                    return Ok(false);
+                }
+                // 異なるメールが占有 → 誤操作防止のためスキップ（バッチは継続）
+                eprintln!(
+                    "[warn] Sent uid {} occupied by different message ({}); skipping confirm for {}",
+                    mail.uid, occ_mid, mail.message_id
+                );
+                return Ok(false);
+            }
+            confirm_uid(conn, &existing_id, mail.uid)?;
+            Ok(false)
+        }
+        None => {
+            // 送信時ローカル行が無い（他クライアント送信）
+            if let Some((_occ_id, occ_mid)) = occupant {
+                // 未知メールなのに uid スロットが別メールで埋まっている → スキップ（バッチ継続）
+                eprintln!(
+                    "[warn] Sent uid {} occupied by different message ({}); skipping import of {}",
+                    mail.uid, occ_mid, mail.message_id
+                );
+                return Ok(false);
+            }
+            insert_mail(conn, mail)
+        }
     }
+}
+
+/// 同一メール（同一 message_id）の重複 Sent 行を統合する。案件割り当てを持つ側を残し、
+/// 他方を削除して、残した行を uid=サーバー値・uid_confirmed=1 に確定する。
+/// 両方とも割り当てを持たなければ keep_id を残す。
+fn merge_duplicate_sent_rows(
+    conn: &Connection,
+    keep_candidate: &str,
+    other_candidate: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    let keep_has = has_project_assignment(conn, keep_candidate)?;
+    let other_has = has_project_assignment(conn, other_candidate)?;
+    // 割り当てを持つ側を優先して残す（CASCADE で割り当てを失わないため）
+    let (keep, drop) = if other_has && !keep_has {
+        (other_candidate, keep_candidate)
+    } else {
+        (keep_candidate, other_candidate)
+    };
+    // 先に重複行を消してから uid を確定（UNIQUE 衝突を避ける順序）
+    delete_mail(conn, drop)?;
+    confirm_uid(conn, keep, uid)?;
+    Ok(())
+}
+
+/// 指定メールに案件割り当てが1件以上あるか。
+fn has_project_assignment(conn: &Connection, mail_id: &str) -> Result<bool, AppError> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM mail_project_assignments WHERE mail_id = ?1)",
+            params![mail_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    Ok(exists)
 }
 
 /// メールを既読にし、サーバー反映に必要な (folder, uid) を返す。
@@ -671,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_uid_changes_uid_and_keeps_assignment() {
+    fn test_confirm_uid_changes_uid_sets_confirmed_and_keeps_assignment() {
         use crate::db::{assignments, projects};
         use crate::models::project::CreateProjectRequest;
 
@@ -679,6 +795,7 @@ mod tests {
         let mut sent = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
         sent.folder = "Sent".into();
         sent.uid = 1; // 送信時の推定値
+        sent.uid_confirmed = false;
         insert_mail(&conn, &sent).unwrap();
         let req = CreateProjectRequest {
             account_id: "acc1".into(),
@@ -689,11 +806,12 @@ mod tests {
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
 
-        // サーバー同期で得た正しい uid に更新
-        update_uid(&conn, "s1", 4242).unwrap();
+        // サーバー同期で得た正しい uid に確定
+        confirm_uid(&conn, "s1", 4242).unwrap();
 
         let stored = get_mail_by_id(&conn, "s1").unwrap();
         assert_eq!(stored.uid, 4242);
+        assert!(stored.uid_confirmed, "確定フラグが立つ");
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
@@ -701,14 +819,14 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "uid 更新では案件割り当てが維持される");
+        assert_eq!(count, 1, "uid 確定では案件割り当てが維持される");
     }
 
     #[test]
-    fn test_update_uid_missing_returns_not_found() {
+    fn test_confirm_uid_missing_returns_not_found() {
         let conn = setup_db();
         assert!(matches!(
-            update_uid(&conn, "nonexistent", 1),
+            confirm_uid(&conn, "nonexistent", 1),
             Err(AppError::MailNotFound(_))
         ));
     }
@@ -719,10 +837,11 @@ mod tests {
         use crate::models::project::CreateProjectRequest;
 
         let conn = setup_db();
-        // 送信時ローカル保存分（推定 uid=1）
+        // 送信時ローカル保存分（推定 uid=1・未確定）
         let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
         local.folder = "Sent".into();
         local.uid = 1;
+        local.uid_confirmed = false;
         insert_mail(&conn, &local).unwrap();
         let req = CreateProjectRequest {
             account_id: "acc1".into(),
@@ -733,18 +852,19 @@ mod tests {
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
 
-        // サーバー同期分（別 id・正しい uid=5000・同 message_id）
+        // サーバー同期分（別 id・正しい uid=5000・同 message_id・衝突なし）
         let mut server = make_mail("s2", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
         server.folder = "Sent".into();
         server.uid = 5000;
         let inserted = upsert_sent_mail(&conn, &server).unwrap();
         assert!(!inserted, "既存 message_id は新規挿入しない");
 
-        // 行は1つのまま、uid はサーバー値に更新、案件割り当ては保持
+        // 行は1つのまま、uid はサーバー値に確定、案件割り当ては保持
         let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
         assert_eq!(all.len(), 1, "二重行が作られない");
         assert_eq!(all[0].id, "s1", "既存行が残る");
         assert_eq!(all[0].uid, 5000, "uid がサーバー値に確定される");
+        assert!(all[0].uid_confirmed, "確定フラグが立つ");
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
@@ -753,6 +873,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "案件割り当てが維持される");
+    }
+
+    #[test]
+    fn test_upsert_sent_mail_merges_duplicate_on_uid_collision_keeping_assignment() {
+        // C2: 確定先の uid が同一メールの重複行に占有されている場合、
+        // 割り当てを持つ側を残して統合し、バッチを中断しない
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        // 送信時ローカル行（推定 uid=1・未確定・案件割り当てあり）
+        let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        local.folder = "Sent".into();
+        local.uid = 1;
+        local.uid_confirmed = false;
+        insert_mail(&conn, &local).unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
+
+        // 同一メールの重複行が確定先 uid=5000 を既に占有（過去の部分同期分を模擬）
+        let mut occupant = make_mail("s_dup", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        occupant.folder = "Sent".into();
+        occupant.uid = 5000;
+        occupant.uid_confirmed = true;
+        insert_mail(&conn, &occupant).unwrap();
+
+        // サーバー同期で uid=5000 を s1 に確定しようとする → 重複統合
+        let mut server = make_mail("s_srv", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        server.folder = "Sent".into();
+        server.uid = 5000;
+        let inserted = upsert_sent_mail(&conn, &server).unwrap();
+        assert!(!inserted);
+
+        // 割り当てを持つ s1 が残り uid=5000 に確定、占有行 s_dup は削除、案件割り当ては生存
+        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(all.len(), 1, "重複が統合されて1行");
+        assert_eq!(all[0].id, "s1", "割り当てを持つ側が残る");
+        assert_eq!(all[0].uid, 5000);
+        assert!(all[0].uid_confirmed);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "案件割り当ては失われない");
+    }
+
+    #[test]
+    fn test_upsert_sent_mail_skips_on_foreign_uid_collision_without_abort() {
+        // C2: 確定先 uid を「別メール」が占有 → スキップして Ok を返し、バッチを継続させる
+        let conn = setup_db();
+        // 送信時ローカル行（推定 uid=1・未確定）
+        let mut local = make_mail("s1", "<mine@pigeon.local>", "自分", "2026-07-12T10:00:00");
+        local.folder = "Sent".into();
+        local.uid = 1;
+        local.uid_confirmed = false;
+        insert_mail(&conn, &local).unwrap();
+        // 別メールが確定先 uid=5000 を占有
+        let mut foreign = make_mail("s_foreign", "<foreign@server>", "他人", "2026-07-12T09:00:00");
+        foreign.folder = "Sent".into();
+        foreign.uid = 5000;
+        insert_mail(&conn, &foreign).unwrap();
+
+        // s1 を uid=5000 に確定しようとするが別メール占有 → スキップ（Err にしない）
+        let mut server = make_mail("s_srv", "<mine@pigeon.local>", "自分", "2026-07-12T10:00:00");
+        server.folder = "Sent".into();
+        server.uid = 5000;
+        let result = upsert_sent_mail(&conn, &server);
+        assert!(result.is_ok(), "衝突でも Err にせずバッチを継続できる");
+        assert!(!result.unwrap());
+
+        // s1 は uid=1・未確定のまま（誤って別メールの uid を奪わない）、占有行も無傷
+        let s1 = get_mail_by_id(&conn, "s1").unwrap();
+        assert_eq!(s1.uid, 1);
+        assert!(!s1.uid_confirmed);
+        let foreign_row = get_mail_by_id(&conn, "s_foreign").unwrap();
+        assert_eq!(foreign_row.uid, 5000);
     }
 
     #[test]
@@ -778,6 +983,41 @@ mod tests {
         mail.uid = 42;
         insert_mail(&conn, &mail).unwrap();
         assert_eq!(get_max_uid(&conn, "acc1", "INBOX").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_get_max_confirmed_uid_ignores_unconfirmed_rows() {
+        // C1 の核心: 送信時の推定 uid（未確定・大きい値）が watermark を汚染しないこと
+        let conn = setup_db();
+        // 確定済みの同期行（サーバー実 uid=100）
+        let mut confirmed = make_mail("s1", "<a@ex.com>", "S1", "2026-07-12T10:00:00");
+        confirmed.folder = "Sent".into();
+        confirmed.uid = 100;
+        confirmed.uid_confirmed = true;
+        insert_mail(&conn, &confirmed).unwrap();
+        // 送信時の推定 uid（未確定・実 uid より大きい 9999）
+        let mut estimated = make_mail("s2", "<b@ex.com>", "S2", "2026-07-12T11:00:00");
+        estimated.folder = "Sent".into();
+        estimated.uid = 9999;
+        estimated.uid_confirmed = false;
+        insert_mail(&conn, &estimated).unwrap();
+
+        // get_max_uid は推定値も含めてしまう（汚染された watermark）
+        assert_eq!(get_max_uid(&conn, "acc1", "Sent").unwrap(), 9999);
+        // get_max_confirmed_uid は確定行のみ → 実 uid が 100 以上のサーバー行を取りこぼさない
+        assert_eq!(get_max_confirmed_uid(&conn, "acc1", "Sent").unwrap(), 100);
+    }
+
+    #[test]
+    fn test_get_max_confirmed_uid_zero_when_all_unconfirmed() {
+        let conn = setup_db();
+        let mut estimated = make_mail("s1", "<b@ex.com>", "S", "2026-07-12T10:00:00");
+        estimated.folder = "Sent".into();
+        estimated.uid = 5000;
+        estimated.uid_confirmed = false;
+        insert_mail(&conn, &estimated).unwrap();
+        // 確定行が皆無なら 0 → 初回 Sent 同期として全件対象になる
+        assert_eq!(get_max_confirmed_uid(&conn, "acc1", "Sent").unwrap(), 0);
     }
 
     #[test]

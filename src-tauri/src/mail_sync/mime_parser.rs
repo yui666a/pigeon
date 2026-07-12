@@ -126,6 +126,8 @@ pub fn parse_mime(
         flags,
         is_read,
         fetched_at: chrono::Utc::now().to_rfc3339(),
+        // サーバーから取得した uid はサーバー実 UID なので確定
+        uid_confirmed: true,
     })
 }
 

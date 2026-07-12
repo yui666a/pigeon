@@ -185,7 +185,9 @@ async fn sync_sent_folder(
             Ok(c) => c,
             Err(_) => return 0,
         };
-        mails::get_max_uid(&conn, account_id, "Sent").unwrap_or(0)
+        // 送信時の推定 uid（uid_confirmed=0）を watermark に含めるとサーバー行が
+        // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）
+        mails::get_max_confirmed_uid(&conn, account_id, "Sent").unwrap_or(0)
     };
 
     let server_folder = match imap_client::find_sent_folder(session).await {
