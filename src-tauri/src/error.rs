@@ -75,6 +75,12 @@ pub enum AppError {
     #[error("Unsupported LLM provider: {0}")]
     UnsupportedProvider(String),
 
+    #[error("SMTP error: {0}")]
+    Smtp(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+
     #[error("Internal lock error: {0}")]
     LockError(String),
 }
