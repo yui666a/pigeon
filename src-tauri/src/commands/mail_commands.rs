@@ -145,6 +145,7 @@ async fn sync_account_inner(
                         "INBOX",
                         fetched.uid,
                         fetched.is_read,
+                        fetched.is_flagged,
                         fetched.flags,
                     ) {
                         // 既存行（UNIQUE 重複）は挿入されないため件数に含めない
@@ -160,22 +161,22 @@ async fn sync_account_inner(
     )
     .await;
 
-    // フラグ再同期: 既知メールの既読状態をサーバーに合わせる
-    // （他クライアントで既読にした変更の取り込み。設計書「フラグ変更→ローカルDB更新」）。
+    // フラグ再同期: 既知メールの既読状態・スター状態をサーバーに合わせる
+    // （他クライアントでの変更の取り込み。設計書「フラグ変更→ローカルDB更新」）。
     // 取り込み自体は成功しているため、ここの失敗は同期エラーにしない
     if fetch_result.is_ok() {
-        match imap_client::fetch_seen_map(&mut session, "INBOX").await {
-            Ok(seen_map) => {
+        match imap_client::fetch_flag_map(&mut session, "INBOX").await {
+            Ok(flag_map) => {
                 let update_result = state
                     .0
                     .lock()
                     .map_err(AppError::lock_err)
-                    .and_then(|conn| mails::update_read_flags(&conn, account_id, "INBOX", &seen_map));
+                    .and_then(|conn| mails::update_flag_state(&conn, account_id, "INBOX", &flag_map));
                 if let Err(e) = update_result {
-                    eprintln!("[warn] read-flag DB update failed: {}", e);
+                    eprintln!("[warn] flag-state DB update failed: {}", e);
                 }
             }
-            Err(e) => eprintln!("[warn] read-flag resync failed: {}", e),
+            Err(e) => eprintln!("[warn] flag-state resync failed: {}", e),
         }
     }
 
