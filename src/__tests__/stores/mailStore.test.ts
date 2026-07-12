@@ -701,7 +701,7 @@ describe("mailStore", () => {
       newMailHandler!({ payload: { account_id: "acc1" } });
 
       await vi.waitFor(() => {
-        expect(mockNotifyNewMail).toHaveBeenCalledWith(4);
+        expect(mockNotifyNewMail).toHaveBeenCalledWith(4, "acc1");
       });
     });
 

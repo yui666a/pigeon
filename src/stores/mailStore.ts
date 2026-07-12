@@ -324,7 +324,7 @@ export const useMailStore = create<MailState>((set, get) => ({
         .then((count) => {
           // 実際に取り込まれた件数を条件にする（IDLE の誤検知や
           // 同期中ガード・エラー時の count=0 では空通知を出さない）
-          if (count > 0) void notifyNewMail(count);
+          if (count > 0) void notifyNewMail(count, event.payload.account_id);
         });
     });
     return unlisten;
