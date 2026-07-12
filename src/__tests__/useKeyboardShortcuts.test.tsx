@@ -4,7 +4,9 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { SEARCH_INPUT_ID } from "../components/sidebar/SearchBar";
 import { useMailStore } from "../stores/mailStore";
 import { useComposeStore } from "../stores/composeStore";
-import type { Mail, Thread } from "../types/mail";
+import { useUiStore } from "../stores/uiStore";
+import { useSearchStore } from "../stores/searchStore";
+import type { Mail, Thread, SearchResult } from "../types/mail";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve()),
@@ -149,6 +151,7 @@ describe("useKeyboardShortcuts: j/k = mail navigation", () => {
     selectMail.mockReset();
     selectThread.mockReset();
     useComposeStore.setState({ isOpen: false });
+    useUiStore.setState({ viewMode: "threads" });
     useMailStore.setState({
       selectedMail: null,
       selectedThread: null,
@@ -304,9 +307,157 @@ describe("useKeyboardShortcuts: j/k = mail navigation", () => {
   });
 });
 
+describe("useKeyboardShortcuts: j/k = search results navigation", () => {
+  function makeSearchMail(id: string): Mail {
+    return {
+      id,
+      account_id: "acc1",
+      folder: "INBOX",
+      message_id: `<${id}@ex.com>`,
+      in_reply_to: null,
+      references: null,
+      from_addr: "sender@example.com",
+      to_addr: "me@example.com",
+      cc_addr: null,
+      subject: "Subject",
+      body_text: "body",
+      body_html: null,
+      date: "2026-07-12T10:00:00",
+      has_attachments: false,
+      raw_size: null,
+      uid: 1,
+      flags: null,
+      is_read: true,
+      is_flagged: false,
+      fetched_at: "2026-07-12T00:00:00",
+    };
+  }
+
+  function makeSearchResults(ids: string[]): SearchResult[] {
+    return ids.map((id) => ({
+      mail: makeSearchMail(id),
+      project_id: null,
+      project_name: null,
+      snippet: "...",
+    }));
+  }
+
+  beforeEach(() => {
+    useComposeStore.setState({ isOpen: false });
+    useUiStore.setState({ viewMode: "search" });
+    useSearchStore.setState({
+      results: makeSearchResults(["m1", "m2", "m3"]),
+      selectedIndex: 1,
+    });
+    // スレッド内ナビが誤って動いていないことも確認できるようにしておく
+    useMailStore.setState({ selectedMail: null, selectedThread: null });
+  });
+
+  it("moves the search selection forward on 'j' while the search view is active", () => {
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(useSearchStore.getState().selectedIndex).toBe(2);
+  });
+
+  it("moves the search selection backward on 'k' while the search view is active", () => {
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "k" });
+
+    expect(useSearchStore.getState().selectedIndex).toBe(0);
+  });
+
+  it("stops at the last result (no wrap) on 'j'", () => {
+    useSearchStore.setState({ selectedIndex: 2 });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(useSearchStore.getState().selectedIndex).toBe(2);
+  });
+
+  it("stops at the first result (no wrap) on 'k'", () => {
+    useSearchStore.setState({ selectedIndex: 0 });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "k" });
+
+    expect(useSearchStore.getState().selectedIndex).toBe(0);
+  });
+
+  it("selects the first result on 'j' when nothing is selected yet", () => {
+    useSearchStore.setState({ selectedIndex: -1 });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(useSearchStore.getState().selectedIndex).toBe(0);
+  });
+
+  it("does not touch thread navigation while the search view is active", () => {
+    const mails = [makeSearchMail("t1"), makeSearchMail("t2")];
+    const selectMail = vi.fn();
+    useMailStore.setState({
+      selectedThread: {
+        thread_id: "t1",
+        subject: "S",
+        last_date: mails[1].date,
+        mail_count: 2,
+        from_addrs: [],
+        mails,
+      },
+      selectedMail: mails[0],
+      selectMail,
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(selectMail).not.toHaveBeenCalled();
+    expect(useSearchStore.getState().selectedIndex).toBe(2);
+  });
+
+  it("does nothing while typing in a text input", () => {
+    render(<Harness />);
+
+    fireEvent.keyDown(screen.getByLabelText("field"), { key: "j" });
+
+    expect(useSearchStore.getState().selectedIndex).toBe(1);
+  });
+
+  it("falls back to thread navigation when the search view is not active", () => {
+    useUiStore.setState({ viewMode: "threads" });
+    const mails = [makeSearchMail("t1"), makeSearchMail("t2")];
+    const selectMail = vi.fn();
+    useMailStore.setState({
+      selectedThread: {
+        thread_id: "t1",
+        subject: "S",
+        last_date: mails[1].date,
+        mail_count: 2,
+        from_addrs: [],
+        mails,
+      },
+      selectedMail: mails[0],
+      selectMail,
+    });
+    render(<Harness />);
+
+    fireEvent.keyDown(window, { key: "j" });
+
+    expect(selectMail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "t2" }),
+    );
+    expect(useSearchStore.getState().selectedIndex).toBe(1);
+  });
+});
+
 describe("useKeyboardShortcuts: / = focus search", () => {
   beforeEach(() => {
     useComposeStore.setState({ isOpen: false });
+    useUiStore.setState({ viewMode: "threads" });
     useMailStore.setState({ selectedMail: null, selectedThread: null });
   });
 

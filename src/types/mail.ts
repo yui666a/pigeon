@@ -54,3 +54,10 @@ export interface Thread {
   from_addrs: string[];
   mails: Mail[];
 }
+
+/** 一括操作（bulk_delete_mails 等）の結果。1件の失敗で残りは止めない */
+export interface BulkResult {
+  succeeded: string[];
+  /** [mail_id, エラーメッセージ] の組 */
+  failed: [string, string][];
+}

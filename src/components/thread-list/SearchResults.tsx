@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import DOMPurify from "dompurify";
 import { useSearchStore } from "../../stores/searchStore";
 import { useMailStore } from "../../stores/mailStore";
@@ -11,15 +12,20 @@ function sanitizeSnippet(html: string): string {
 
 function SearchResultItem({
   result,
+  selected,
   onClick,
 }: {
   result: SearchResult;
+  selected: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className="w-full border-b px-4 py-3 text-left hover:bg-gray-50"
+      aria-selected={selected}
+      className={`w-full border-b px-4 py-3 text-left hover:bg-gray-50 ${
+        selected ? "bg-blue-50" : ""
+      }`}
     >
       <div className="flex items-center justify-between">
         <span className="truncate text-sm font-medium">
@@ -55,14 +61,24 @@ export function SearchResults() {
   const query = useSearchStore((s) => s.query);
   const results = useSearchStore((s) => s.results);
   const searching = useSearchStore((s) => s.searching);
+  const selectedIndex = useSearchStore((s) => s.selectedIndex);
+  const setSelectedIndex = useSearchStore((s) => s.setSelectedIndex);
   const selectThread = useMailStore((s) => s.selectThread);
   const selectMail = useMailStore((s) => s.selectMail);
 
-  const handleResultClick = (result: SearchResult) => {
-    // Clear any existing thread selection first to prevent MailView
-    // from rendering stale MailTabs
+  // j/k ナビによる selectedIndex の変化を右ペインに反映する
+  // （クリック選択と同じ経路。selectThread(null) が先でないと
+  // MailView が古い MailTabs を表示し続ける）
+  useEffect(() => {
+    if (selectedIndex === -1) return;
+    const result = results[selectedIndex];
+    if (!result) return;
     selectThread(null);
     selectMail(result.mail);
+  }, [selectedIndex, results, selectThread, selectMail]);
+
+  const handleResultClick = (index: number) => {
+    setSelectedIndex(index);
   };
 
   if (searching) {
@@ -82,11 +98,12 @@ export function SearchResults() {
       <div className="border-b bg-gray-50 px-4 py-2 text-xs text-gray-500">
         「{query}」の検索結果: {results.length}件
       </div>
-      {results.map((result) => (
+      {results.map((result, index) => (
         <SearchResultItem
           key={result.mail.id}
           result={result}
-          onClick={() => handleResultClick(result)}
+          selected={index === selectedIndex}
+          onClick={() => handleResultClick(index)}
         />
       ))}
     </div>
