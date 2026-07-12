@@ -197,6 +197,9 @@ pub fn run() {
             commands::mail_commands::delete_mail,
             commands::mail_commands::archive_mail,
             commands::mail_commands::unarchive_mail,
+            commands::bulk_commands::bulk_delete_mails,
+            commands::bulk_commands::bulk_archive_mails,
+            commands::bulk_commands::bulk_move_mails,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

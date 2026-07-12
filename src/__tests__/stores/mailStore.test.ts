@@ -736,4 +736,83 @@ describe("mailStore", () => {
       expect(mockNotifyNewMail).not.toHaveBeenCalled();
     });
   });
+
+  describe("bulkDeleteMails", () => {
+    it("invokes bulk_delete_mails and shows a success toast on full success", async () => {
+      mockInvoke.mockImplementation((cmd: unknown) =>
+        cmd === "bulk_delete_mails"
+          ? Promise.resolve({ succeeded: ["m1", "m2"], failed: [] })
+          : Promise.resolve({ by_project: {}, unclassified: 0 }),
+      );
+
+      const result = await useMailStore.getState().bulkDeleteMails("acc1", ["m1", "m2"]);
+
+      expect(mockInvoke).toHaveBeenCalledWith("bulk_delete_mails", {
+        accountId: "acc1",
+        mailIds: ["m1", "m2"],
+      });
+      expect(result).toEqual({ succeeded: ["m1", "m2"], failed: [] });
+      expect(useErrorStore.getState().toasts.some((t) => t.kind === "success")).toBe(true);
+    });
+
+    it("shows an error toast when every mail fails", async () => {
+      mockInvoke.mockResolvedValue({
+        succeeded: [],
+        failed: [["m1", "boom"]],
+      });
+
+      await useMailStore.getState().bulkDeleteMails("acc1", ["m1"]);
+
+      expect(useErrorStore.getState().toasts.some((t) => t.kind === "error")).toBe(true);
+    });
+
+    it("shows an error toast (not success) on partial failure", async () => {
+      mockInvoke.mockResolvedValue({
+        succeeded: ["m1"],
+        failed: [["m2", "boom"]],
+      });
+
+      await useMailStore.getState().bulkDeleteMails("acc1", ["m1", "m2"]);
+
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === "error")).toBe(true);
+      expect(toasts.some((t) => t.kind === "success")).toBe(false);
+    });
+
+    it("returns null and shows error toast when invoke rejects", async () => {
+      mockInvoke.mockRejectedValue("bulk delete error");
+
+      const result = await useMailStore.getState().bulkDeleteMails("acc1", ["m1"]);
+
+      expect(result).toBeNull();
+      expect(useErrorStore.getState().toasts.some((t) => t.kind === "error")).toBe(true);
+    });
+  });
+
+  describe("bulkArchiveMails", () => {
+    it("invokes bulk_archive_mails with the given ids", async () => {
+      mockInvoke.mockResolvedValue({ succeeded: ["m1"], failed: [] });
+
+      await useMailStore.getState().bulkArchiveMails("acc1", ["m1"]);
+
+      expect(mockInvoke).toHaveBeenCalledWith("bulk_archive_mails", {
+        accountId: "acc1",
+        mailIds: ["m1"],
+      });
+    });
+  });
+
+  describe("bulkMoveMails", () => {
+    it("invokes bulk_move_mails with mailIds and projectId", async () => {
+      mockInvoke.mockResolvedValue({ succeeded: ["m1", "m2"], failed: [] });
+
+      const result = await useMailStore.getState().bulkMoveMails(["m1", "m2"], "p1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("bulk_move_mails", {
+        mailIds: ["m1", "m2"],
+        projectId: "p1",
+      });
+      expect(result).toEqual({ succeeded: ["m1", "m2"], failed: [] });
+    });
+  });
 });
