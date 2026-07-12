@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Mail, Thread, UnreadCounts } from "../types/mail";
+import type { BulkResult, Mail, Thread, UnreadCounts } from "../types/mail";
 import { useErrorStore } from "./errorStore";
 import { useAccountStore } from "./accountStore";
 import { useUiStore } from "./uiStore";
@@ -44,6 +44,9 @@ interface MailState {
   removeUnclassifiedMail: (mailId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
+  bulkDeleteMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
+  bulkArchiveMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
+  bulkMoveMails: (mailIds: string[], projectId: string) => Promise<BulkResult | null>;
 }
 
 function markReadInMails(mails: Mail[], mailId: string): Mail[] {
@@ -329,4 +332,67 @@ export const useMailStore = create<MailState>((set, get) => ({
     });
     return unlisten;
   },
+
+  // 一括操作。呼び出し元（ThreadList / UnclassifiedList）が結果を見て
+  // 一覧再読み込みと選択解除を行う（設計書 2026-07-13-bulk-actions-design.md）
+  bulkDeleteMails: async (accountId, mailIds) => {
+    try {
+      const result = await invoke<BulkResult>("bulk_delete_mails", {
+        accountId,
+        mailIds,
+      });
+      reportBulkResult(result, "削除");
+      void get().fetchUnreadCounts(accountId);
+      return result;
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      return null;
+    }
+  },
+
+  bulkArchiveMails: async (accountId, mailIds) => {
+    try {
+      const result = await invoke<BulkResult>("bulk_archive_mails", {
+        accountId,
+        mailIds,
+      });
+      reportBulkResult(result, "アーカイブ");
+      void get().fetchUnreadCounts(accountId);
+      return result;
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      return null;
+    }
+  },
+
+  bulkMoveMails: async (mailIds, projectId) => {
+    try {
+      const result = await invoke<BulkResult>("bulk_move_mails", {
+        mailIds,
+        projectId,
+      });
+      reportBulkResult(result, "案件への移動");
+      return result;
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+      return null;
+    }
+  },
 }));
+
+/** 一括操作の結果をトーストで要約表示する */
+function reportBulkResult(result: BulkResult, actionLabel: string): void {
+  const { succeeded, failed } = result;
+  if (failed.length === 0) {
+    useErrorStore.getState().addSuccess(`${actionLabel}しました（${succeeded.length}件）`);
+    return;
+  }
+  console.error(`bulk ${actionLabel} partial failure:`, failed);
+  if (succeeded.length > 0) {
+    useErrorStore
+      .getState()
+      .addSuccess(`${actionLabel}しました（${succeeded.length}件、失敗 ${failed.length}件）`);
+  } else {
+    useErrorStore.getState().addError(`${actionLabel}に失敗しました（${failed.length}件）`);
+  }
+}
