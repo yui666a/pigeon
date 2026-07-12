@@ -6,7 +6,8 @@ import {
 
 /**
  * デスクトップ通知の ON/OFF を保持する localStorage キー。
- * 設定 UI は将来対応（2026-07-12-desktop-notification-design.md）。
+ * 設定 UI はサイドバーの NotificationToggle
+ * （2026-07-12-desktop-notification-design.md）。
  */
 export const NOTIFY_NEW_MAIL_KEY = "pigeon.notifyNewMail";
 
