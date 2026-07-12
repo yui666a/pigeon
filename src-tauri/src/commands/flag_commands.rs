@@ -1,0 +1,94 @@
+use tauri::{AppHandle, State};
+
+use crate::commands::mail_commands::resolve_imap_credentials;
+use crate::db::{accounts, mails};
+use crate::error::AppError;
+use crate::mail_sync::imap_client;
+use crate::state::DbState;
+
+/// Sent 等、サーバー UID を信頼できないフォルダか（v1 制限。既存の
+/// mail_commands::plan_delete と同じ判定対象だが「サーバー反映方式」ではなく
+/// 「サーバー UID を信頼できるか」という別の意味なので独自に持つ）。
+fn is_local_only_folder(folder: &str) -> bool {
+    folder == "Sent"
+}
+
+/// メールのスター/フラグ（\Flagged）を設定する。DB は即時更新し、IMAP への
+/// \Flagged 反映はバックグラウンドでベストエフォート実行する（mark_read と同型）。
+#[tauri::command]
+pub fn set_flagged(
+    app: AppHandle,
+    state: State<'_, DbState>,
+    account_id: String,
+    mail_id: String,
+    flagged: bool,
+) -> Result<(), AppError> {
+    let (folder, uid) = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        mails::set_flagged(&conn, &mail_id, flagged)?
+    };
+
+    if is_local_only_folder(&folder) {
+        return Ok(());
+    }
+
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = push_flagged(&app, &account_id, &folder, uid, flagged).await {
+            eprintln!(
+                "[warn] set_flagged: failed to set \\Flagged on server (mail {}, uid {}): {}",
+                mail_id, uid, e
+            );
+        }
+    });
+    Ok(())
+}
+
+/// IMAP に接続して指定メールの \Flagged を付与・除去する（set_flagged のバックグラウンド処理）。
+async fn push_flagged(
+    app: &AppHandle,
+    account_id: &str,
+    folder: &str,
+    uid: u32,
+    flagged: bool,
+) -> Result<(), AppError> {
+    use tauri::Manager;
+
+    let account = {
+        let db = app.state::<DbState>();
+        let conn = db.0.lock().map_err(AppError::lock_err)?;
+        accounts::get_account(&conn, account_id)?
+    };
+    let secure_store = app.state::<crate::state::SecureStoreState>();
+    let (auth_type, username, credential) =
+        resolve_imap_credentials(&account, &secure_store.0).await?;
+
+    let mut session = imap_client::connect(
+        &account.imap_host,
+        account.imap_port,
+        &auth_type,
+        &username,
+        &credential,
+    )
+    .await?;
+    let store_result = imap_client::store_flagged(&mut session, folder, uid, flagged).await;
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed: {}", e);
+    }
+    store_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_local_only_folder_sent() {
+        assert!(is_local_only_folder("Sent"));
+    }
+
+    #[test]
+    fn test_is_local_only_folder_inbox_and_archive() {
+        assert!(!is_local_only_folder("INBOX"));
+        assert!(!is_local_only_folder("Archive"));
+    }
+}
