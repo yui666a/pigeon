@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import { MailBody } from "../components/mail-view/MailBody";
 import type { Mail } from "../types/mail";
 
@@ -10,6 +11,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: vi.fn(),
 }));
+
+const mockInvoke = vi.mocked(invoke);
 
 function makeMail(overrides: Partial<Mail> = {}): Mail {
   return {
@@ -25,6 +28,10 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
 }
 
 describe("MailBody", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
   it("renders body text", () => {
     render(<MailBody mail={makeMail()} />);
     expect(screen.getByText("本文テキスト")).toBeInTheDocument();
@@ -42,5 +49,52 @@ describe("MailBody", () => {
     expect(
       screen.queryByRole("button", { name: /添付ファイルを表示/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("cid参照を含む本文はget_inline_imagesの結果でdata URIに置換される", async () => {
+    mockInvoke.mockResolvedValueOnce([
+      { content_id: "logo123@example.com", data_uri: "data:image/png;base64,AAAA" },
+    ]);
+    const { container } = render(
+      <MailBody
+        mail={makeMail({
+          has_attachments: true,
+          body_html: '<img src="cid:logo123@example.com" alt="logo">',
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("img")?.getAttribute("src")).toBe(
+        "data:image/png;base64,AAAA",
+      );
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("get_inline_images", { mailId: "m1" });
+  });
+
+  it("cid参照がない本文ではget_inline_imagesを呼ばない", () => {
+    render(
+      <MailBody
+        mail={makeMail({ has_attachments: true, body_html: "<p>本文</p>" })}
+      />,
+    );
+    expect(mockInvoke).not.toHaveBeenCalledWith("get_inline_images", expect.anything());
+  });
+
+  it("get_inline_imagesが失敗しても本文表示は壊れない", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("network error"));
+    render(
+      <MailBody
+        mail={makeMail({
+          has_attachments: true,
+          body_html: '<img src="cid:missing@example.com">',
+        })}
+      />,
+    );
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("get_inline_images", { mailId: "m1" });
+    });
+    // cid未解決のままでもクラッシュしない
+    expect(document.querySelector("img")).toBeTruthy();
   });
 });
