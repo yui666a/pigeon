@@ -18,6 +18,9 @@ pub enum AppError {
     #[error("Mail not found: {0}")]
     MailNotFound(String),
 
+    #[error("Draft not found: {0}")]
+    DraftNotFound(String),
+
     #[error("Attachment not found: {0}")]
     AttachmentNotFound(String),
 

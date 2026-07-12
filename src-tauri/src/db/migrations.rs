@@ -211,6 +211,13 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    // v11 は別機能で予約済みのため欠番（マージ時に順序解決される）
+    if version < 12 {
+        migrate_v12(conn)?;
+        version = 12;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -397,6 +404,29 @@ fn migrate_v10(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v12(conn: &Connection) -> Result<(), AppError> {
+    // ローカル下書き保存（v1: IMAP Drafts同期は将来）
+    // 詳細: docs/superpowers/specs/2026-07-12-draft-save-design.md
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS drafts (
+            id          TEXT PRIMARY KEY,
+            account_id  TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            to_addr     TEXT NOT NULL DEFAULT '',
+            cc_addr     TEXT NOT NULL DEFAULT '',
+            bcc_addr    TEXT NOT NULL DEFAULT '',
+            subject     TEXT NOT NULL DEFAULT '',
+            body_text   TEXT NOT NULL DEFAULT '',
+            in_reply_to TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_drafts_account ON drafts(account_id);
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,7 +541,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -718,7 +748,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -741,7 +771,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -911,7 +941,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -1081,7 +1111,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -1170,7 +1200,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -1283,7 +1313,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -1403,6 +1433,65 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
+    }
+
+    #[test]
+    fn test_migrate_v12_creates_drafts_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='drafts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists, "drafts テーブルが作成される");
+
+        let version: i32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 12);
+    }
+
+    #[test]
+    fn test_drafts_defaults_and_cascade_on_account_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+
+        // 必須項目（id, account_id）だけ指定すれば残りはデフォルトで空文字になる
+        conn.execute(
+            "INSERT INTO drafts (id, account_id) VALUES ('d1', 'acc1')",
+            [],
+        )
+        .unwrap();
+
+        let (to_addr, subject): (String, String) = conn
+            .query_row(
+                "SELECT to_addr, subject FROM drafts WHERE id = 'd1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(to_addr, "");
+        assert_eq!(subject, "");
+
+        conn.execute("DELETE FROM accounts WHERE id = 'acc1'", [])
+            .unwrap();
+
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM drafts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "アカウント削除で下書きもCASCADE削除される");
     }
 }
