@@ -128,12 +128,18 @@ fn parse_request_target(request: &str) -> Option<&str> {
 
 #[tauri::command]
 pub async fn handle_oauth_callback(
+    app: AppHandle,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
     oauth_store: State<'_, OAuthStateStore>,
     url: String,
 ) -> Result<String, AppError> {
-    handle_oauth_callback_inner(&state, &secure_store.0, &oauth_store, &url).await
+    let account_id =
+        handle_oauth_callback_inner(&state, &secure_store.0, &oauth_store, &url).await?;
+    // OAuth 完了（新規追加・再認証とも）したアカウントの IDLE 監視を開始する。
+    // 再認証の場合は停止していた監視タスクがここで置き換え再開される
+    crate::mail_sync::idle::start_watching(&app, &account_id);
+    Ok(account_id)
 }
 
 async fn handle_oauth_callback_inner(

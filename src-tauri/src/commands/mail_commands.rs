@@ -48,6 +48,7 @@ pub async fn sync_account(
 /// For Google accounts, handles OAuth token refresh if needed.
 /// Returns (auth_type, username, credential) suitable for
 /// `imap_client::connect` and `smtp_client::send`.
+/// IDLE 監視タスク（mail_sync::idle）も専用接続の認証に再利用する。
 pub(crate) async fn resolve_imap_credentials(
     account: &Account,
     secure_store: &crate::secure_store::SecureStore,

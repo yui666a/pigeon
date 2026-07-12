@@ -16,6 +16,7 @@ use mail_sync::oauth::OAuthStateStore;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use state::DbState;
+use state::IdleWatchers;
 use state::SecureStoreState;
 use state::SyncLocks;
 use std::sync::Mutex;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(SecureStoreState(secure_store))
         .manage(OAuthStateStore::new())
         .manage(SyncLocks::new())
+        .manage(IdleWatchers::new())
         .manage(commands::classify_commands::PendingClassifications::new())
         .setup(|app| {
             // Register deep link handler for OAuth callback
@@ -69,6 +71,32 @@ pub fn run() {
                                 let _ = handle.emit("oauth-callback", url);
                             });
                         }
+                    }
+                });
+            }
+
+            // 起動時: 全アカウントの IMAP IDLE 監視を開始
+            // （スペック 2026-07-12-imap-idle-design.md）
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let account_ids: Vec<String> = {
+                        let db = app_handle.state::<DbState>();
+                        let conn = match db.0.lock() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        match db::accounts::list_accounts(&conn) {
+                            Ok(accounts) => accounts.into_iter().map(|a| a.id).collect(),
+                            Err(e) => {
+                                eprintln!("[warn] idle: failed to list accounts: {}", e);
+                                return;
+                            }
+                        }
+                    };
+                    for account_id in account_ids {
+                        mail_sync::idle::start_watching(&app_handle, &account_id);
                     }
                 });
             }

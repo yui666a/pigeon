@@ -12,6 +12,10 @@ interface SyncProgress {
   total: number;
 }
 
+interface NewMailEvent {
+  account_id: string;
+}
+
 interface MailState {
   threads: Thread[];
   selectedThread: Thread | null;
@@ -35,6 +39,7 @@ interface MailState {
   moveMail: (mailId: string, projectId: string) => Promise<void>;
   removeUnclassifiedMail: (mailId: string) => void;
   initSyncListener: () => Promise<() => void>;
+  initNewMailListener: () => Promise<() => void>;
 }
 
 function markReadInMails(mails: Mail[], mailId: string): Mail[] {
@@ -244,6 +249,16 @@ export const useMailStore = create<MailState>((set, get) => ({
         }
         void get().fetchUnclassified(p.account_id);
       }
+    });
+    return unlisten;
+  },
+
+  initNewMailListener: async () => {
+    // バックエンドの IMAP IDLE 監視が新着を検知したら、既存の同期経路で取り込む。
+    // 表示中アカウントと無関係に同期してよい（一覧への反映可否は sync-progress
+    // リスナーが判断する）。多重実行は syncing フラグと SyncLocks が抑止する
+    const unlisten = await listen<NewMailEvent>("new-mail-detected", (event) => {
+      void get().syncAccount(event.payload.account_id);
     });
     return unlisten;
   },

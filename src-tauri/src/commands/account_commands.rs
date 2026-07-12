@@ -1,19 +1,23 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::db::accounts;
 use crate::error::AppError;
+use crate::mail_sync::idle;
 use crate::models::account::{Account, AccountProvider, AuthType, CreateAccountRequest};
 use crate::secure_store::SecureStore;
 use crate::state::{DbState, SecureStoreState};
 
 #[tauri::command]
 pub fn create_account(
+    app: AppHandle,
     state: State<DbState>,
     secure_store: State<SecureStoreState>,
     request: CreateAccountRequest,
 ) -> Result<Account, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    let account = accounts::insert_account(&conn, &request)?;
+    let account = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        accounts::insert_account(&conn, &request)?
+    };
 
     // For PLAIN auth, save password to SecureStore
     if matches!(request.auth_type, AuthType::Plain) {
@@ -21,6 +25,9 @@ pub fn create_account(
             crate::commands::auth_commands::save_password(&secure_store.0, &account.id, password)?;
         }
     }
+
+    // 追加したアカウントの IDLE 監視を開始する
+    idle::start_watching(&app, &account.id);
 
     Ok(account)
 }
@@ -57,7 +64,9 @@ fn check_accounts_reauth(accounts: &mut [Account], secure_store: &SecureStore) {
 }
 
 #[tauri::command]
-pub fn remove_account(state: State<DbState>, id: String) -> Result<(), AppError> {
+pub fn remove_account(app: AppHandle, state: State<DbState>, id: String) -> Result<(), AppError> {
+    // 削除するアカウントの IDLE 監視を停止する
+    idle::stop_watching(&app, &id);
     let conn = state.0.lock().map_err(AppError::lock_err)?;
     Ok(accounts::delete_account(&conn, &id)?)
 }
