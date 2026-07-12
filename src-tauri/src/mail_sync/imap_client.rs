@@ -122,6 +122,30 @@ pub(crate) fn plan_batches(uids: Vec<u32>, since_uid: u32, batch_size: usize) ->
         .collect()
 }
 
+/// min_uid_exclusive 未満の UID を降順（新しい→古い）に並べ、先頭 limit 件までを
+/// batch_size ごとに分割する。バッチ内部の並びは降順を維持する。
+/// バックフィル（過去メールを新しい→古いの順に遡って取得）専用。
+/// 既存の plan_batches（昇順・下限フィルタ・無制限件数、通常同期用）とは向きが逆のため
+/// 分けている。
+pub(crate) fn plan_backfill_batches(
+    uids: Vec<u32>,
+    min_uid_exclusive: u32,
+    limit: usize,
+    batch_size: usize,
+) -> Vec<Vec<u32>> {
+    let mut filtered: Vec<u32> = uids
+        .into_iter()
+        .filter(|u| *u < min_uid_exclusive)
+        .collect();
+    filtered.sort_unstable_by(|a, b| b.cmp(a));
+    filtered.dedup();
+    filtered.truncate(limit);
+    filtered
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
 /// UID FETCH に渡す UID セット文字列（カンマ区切り）
 pub(crate) fn uid_set(batch: &[u32]) -> String {
     batch
@@ -261,6 +285,89 @@ pub async fn fetch_mails_batched(
         on_batch(mails, SyncProgress { done, total })?;
     }
     Ok(total)
+}
+
+/// バックフィルの取得結果。exhausted は「対象 UID が limit 件に満たなかった
+/// ＝これ以上サーバーに古いメールがない」ことを表す。
+pub struct BackfillResult {
+    pub fetched: usize,
+    pub exhausted: bool,
+}
+
+/// min_uid_exclusive 未満のメールを、新しい→古いの順に limit 件まで遡って取得する
+/// （過去メールのバックフィル）。fetch_mails_batched とは取得方向が逆（あちらは
+/// since_uid より新しい範囲を昇順で取る）ため独立した関数にしている。
+/// min_uid_exclusive <= 1 の場合はこれ以上遡る範囲がないため、対象なしとして即返す。
+pub async fn fetch_mails_backfill_batched(
+    session: &mut ImapSession,
+    folder: &str,
+    min_uid_exclusive: u32,
+    limit: u32,
+    mut on_batch: impl FnMut(Vec<FetchedMail>, SyncProgress) -> Result<(), AppError>,
+) -> Result<BackfillResult, AppError> {
+    if min_uid_exclusive <= 1 {
+        return Ok(BackfillResult {
+            fetched: 0,
+            exhausted: true,
+        });
+    }
+
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+
+    // min_uid_exclusive 未満の UID 一覧のみを軽量取得（本文なし）
+    let messages: Vec<_> = session
+        .uid_fetch(format!("1:{}", min_uid_exclusive - 1), "(UID)")
+        .await
+        .map_err(|e| AppError::Imap(format!("UID list fetch failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("UID list stream failed: {}", e)))?;
+    let uids: Vec<u32> = messages.iter().filter_map(|m| m.uid).collect();
+
+    let candidate_count = uids
+        .iter()
+        .filter(|u| **u < min_uid_exclusive)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let exhausted = candidate_count < limit as usize;
+
+    let batches = plan_backfill_batches(uids, min_uid_exclusive, limit as usize, SYNC_BATCH_SIZE);
+    let total: usize = batches.iter().map(|b| b.len()).sum();
+
+    let mut done = 0usize;
+    let mut fetched = 0usize;
+    for batch in batches {
+        let messages: Vec<_> = session
+            .uid_fetch(&uid_set(&batch), "(UID FLAGS RFC822)")
+            .await
+            .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("Batch stream failed: {}", e)))?;
+
+        let mut mails = Vec::with_capacity(messages.len());
+        for msg in &messages {
+            if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
+                if uid < min_uid_exclusive {
+                    let flags: Vec<Flag<'_>> = msg.flags().collect();
+                    mails.push(FetchedMail {
+                        uid,
+                        is_read: contains_seen(&flags),
+                        is_flagged: contains_flagged(&flags),
+                        flags: flags_to_string(&flags),
+                        body: body.to_vec(),
+                    });
+                }
+            }
+        }
+        done += batch.len();
+        fetched += mails.len();
+        on_batch(mails, SyncProgress { done, total })?;
+    }
+    Ok(BackfillResult { fetched, exhausted })
 }
 
 /// フォルダ全体の uid → (\Seen, \Flagged) マップを取得する（FLAGS のみの軽量 FETCH）。
@@ -651,6 +758,29 @@ mod tests {
         let batches = plan_batches(uids, 250, 100);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0], (251..=300).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn test_plan_backfill_batches_filters_sorts_descending_and_chunks() {
+        // min_uid_exclusive=20 未満だけを対象に、降順で3件ずつ分割
+        let uids = vec![5, 19, 20, 25, 1, 18, 12, 18]; // 昇順混在・下限以上・重複を含む
+        let batches = plan_backfill_batches(uids, 20, 100, 3);
+        assert_eq!(batches, vec![vec![19, 18, 12], vec![5, 1]]);
+    }
+
+    #[test]
+    fn test_plan_backfill_batches_truncates_to_limit_before_chunking() {
+        // 対象20件のうち新しい方から limit=5 件だけをバッチ化する
+        let uids: Vec<u32> = (1..=20).collect(); // 1..20 が min_uid_exclusive=21 未満で全部対象
+        let batches = plan_backfill_batches(uids, 21, 5, 2);
+        // 降順で先頭5件 = 20,19,18,17,16 のみが対象になり、2件ずつに分割される
+        assert_eq!(batches, vec![vec![20, 19], vec![18, 17], vec![16]]);
+    }
+
+    #[test]
+    fn test_plan_backfill_batches_empty_when_nothing_older() {
+        assert!(plan_backfill_batches(vec![1, 2, 3], 1, 100, 100).is_empty());
+        assert!(plan_backfill_batches(vec![], 100, 100, 100).is_empty());
     }
 
     #[test]
