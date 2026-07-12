@@ -415,6 +415,18 @@ pub fn get_unread_counts(
     mails::get_unread_counts(&conn, &account_id)
 }
 
+/// デスクトップ通知の件名プレビュー用に、直近の未読メール件名を返す
+/// （2026-07-12-desktop-notification-design.md「v2: 通知の強化」）。
+#[tauri::command]
+pub fn get_recent_unread_subjects(
+    state: State<DbState>,
+    account_id: String,
+    limit: u32,
+) -> Result<Vec<String>, AppError> {
+    let conn = state.0.lock().map_err(AppError::lock_err)?;
+    mails::get_recent_unread_subjects(&conn, &account_id, limit)
+}
+
 #[tauri::command]
 pub fn get_threads(
     state: State<DbState>,
