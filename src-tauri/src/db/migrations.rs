@@ -224,6 +224,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    if version < 14 {
+        migrate_v14(conn)?;
+        version = 14;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -445,6 +451,21 @@ fn migrate_v13(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v14(conn: &Connection) -> Result<(), AppError> {
+    // スレッド追従の除外トゥームストーン。ユーザーが分類を却下したメールを記録し、
+    // auto_follow_threads がスレッド追従で黙って再割り当てするのを防ぐ。
+    // メール削除時は ON DELETE CASCADE で自動的に消える。
+    // 詳細: docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS follow_exclusions (
+            mail_id TEXT PRIMARY KEY REFERENCES mails(id) ON DELETE CASCADE
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,7 +580,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -766,7 +787,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -789,7 +810,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -959,7 +980,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1129,7 +1150,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1218,7 +1239,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1331,7 +1352,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1451,7 +1472,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1471,7 +1492,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1511,5 +1532,44 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM drafts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0, "アカウント削除で下書きもCASCADE削除される");
+    }
+
+    #[test]
+    fn test_v14_follow_exclusions_table_and_cascade() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master
+                 WHERE type='table' AND name='follow_exclusions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists, "follow_exclusions テーブルが作成される");
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<m1@ex.com>', 'x@ex.com', 'y@ex.com', 'S', '2026-07-13T00:00:00', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO follow_exclusions (mail_id) VALUES ('m1')", [])
+            .unwrap();
+
+        // メール削除で除外行も CASCADE 削除される
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", []).unwrap();
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM follow_exclusions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "メール削除で除外トゥームストーンもCASCADE削除される");
     }
 }

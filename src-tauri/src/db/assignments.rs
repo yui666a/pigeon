@@ -63,6 +63,11 @@ pub fn approve_classification(
 
 /// Delete the assignment for a mail (reject classification).
 /// Returns `MailNotFound` if no assignment row exists for `mail_id`.
+///
+/// 却下は「このメールをこの案件に入れない」というユーザーの明示的な意思表示のため、
+/// スレッド追従の除外トゥームストーン（`follow_exclusions`）に記録する。これにより
+/// `auto_follow_threads` がスレッド仲間の割り当てを根拠に黙って再割り当てするのを防ぐ。
+/// ユーザーが後から手動で割り当て直す（`move_mail_to_project`）と除外は解除される。
 pub fn reject_classification(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
     let affected = conn.execute(
         "DELETE FROM mail_project_assignments WHERE mail_id = ?1",
@@ -71,6 +76,26 @@ pub fn reject_classification(conn: &Connection, mail_id: &str) -> Result<(), App
     if affected == 0 {
         return Err(AppError::MailNotFound(mail_id.to_string()));
     }
+    add_follow_exclusion(conn, mail_id)?;
+    Ok(())
+}
+
+/// スレッド追従の除外トゥームストーンにメールを記録する（冪等）。
+pub fn add_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO follow_exclusions (mail_id) VALUES (?1)",
+        params![mail_id],
+    )?;
+    Ok(())
+}
+
+/// スレッド追従の除外トゥームストーンからメールを取り除く（冪等）。
+/// ユーザーが手動で割り当て直したときに「意思を変えた」として除外を解く。
+pub fn remove_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM follow_exclusions WHERE mail_id = ?1",
+        params![mail_id],
+    )?;
     Ok(())
 }
 
@@ -241,6 +266,9 @@ pub fn move_mail_to_project(
             insert_correction(conn, mail_id, None, project_id)?;
         }
     }
+    // ユーザーが明示的に案件へ割り当てた＝過去の却下の意思を撤回したとみなし、
+    // スレッド追従の除外を解除する（以後はこのメールも追従対象に戻る）
+    remove_follow_exclusion(conn, mail_id)?;
     Ok(())
 }
 
@@ -260,6 +288,8 @@ pub fn move_mail_to_project(
 pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize, AppError> {
     let all_mails = mails::get_all_mails_by_account(conn, account_id)?;
     let threads = mails::build_threads(&all_mails);
+    // ユーザーが却下したメールは追従の対象外（トゥームストーン）。一度だけ読み出す
+    let excluded = get_follow_exclusions(conn, account_id)?;
 
     let mut followed = 0;
     for thread in &threads {
@@ -281,6 +311,10 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize,
         };
 
         for mail in &thread.mails {
+            // 却下済み（除外トゥームストーンあり）のメールは黙って再割り当てしない
+            if excluded.contains(&mail.id) {
+                continue;
+            }
             if get_assignment_info(conn, &mail.id)?.is_some() {
                 continue;
             }
@@ -289,6 +323,21 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize,
         }
     }
     Ok(followed)
+}
+
+/// アカウントに属するメールのうち、スレッド追従から除外されているメールIDの集合を返す。
+fn get_follow_exclusions(conn: &Connection, account_id: &str) -> Result<HashSet<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT fe.mail_id
+         FROM follow_exclusions fe
+         JOIN mails m ON m.id = fe.mail_id
+         WHERE m.account_id = ?1",
+    )?;
+    let excluded = stmt
+        .query_map(params![account_id], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(excluded)
 }
 
 #[cfg(test)]
@@ -897,5 +946,103 @@ mod tests {
         let info = get_assignment_info(&conn, "m2").unwrap().unwrap();
         assert_eq!(info.1, "ai");
         assert!(info.2.is_none(), "AI分類の確信度スコアと区別するためNone");
+    }
+
+    // --- reject 後のスレッド追従復活防止（トゥームストーン） ---
+
+    /// m1 割り当て済みスレッドの返信 m2 を追従 → 却下 → 再び一覧を開いても
+    /// 追従で黙って復活しないこと
+    #[test]
+    fn test_auto_follow_does_not_revive_rejected_mail() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        // 1回目の追従で m2 が proj1 に入る
+        assert_eq!(auto_follow_threads(&conn, "acc1").unwrap(), 1);
+        assert!(get_assignment_info(&conn, "m2").unwrap().is_some());
+
+        // ユーザーが m2 を却下（割り当て解除 + 除外トゥームストーン）
+        reject_classification(&conn, "m2").unwrap();
+        assert!(get_assignment_info(&conn, "m2").unwrap().is_none());
+
+        // 一覧を開き直しても（＝再度追従を走らせても）m2 は復活しない
+        assert_eq!(
+            auto_follow_threads(&conn, "acc1").unwrap(),
+            0,
+            "却下したメールはスレッド追従で再割り当てされない"
+        );
+        assert!(
+            get_assignment_info(&conn, "m2").unwrap().is_none(),
+            "却下の意思が自動処理で黙って取り消されてはならない"
+        );
+    }
+
+    /// 却下後もユーザーが手動で（move_mail_to_project）同じ案件へ割り当て直すのは許される
+    #[test]
+    fn test_manual_assign_after_reject_is_allowed() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+        auto_follow_threads(&conn, "acc1").unwrap();
+        reject_classification(&conn, "m2").unwrap();
+
+        // ユーザーが手動で割り当て直す（D&D 相当）
+        move_mail_to_project(&conn, "m2", "proj1").unwrap();
+        let info = get_assignment_info(&conn, "m2").unwrap().unwrap();
+        assert_eq!(info.0, "proj1", "手動割り当ては却下後も可能");
+    }
+
+    /// 手動で割り当て直すと除外トゥームストーンが解除され、以後は追従が再び有効になること
+    #[test]
+    fn test_manual_assign_clears_exclusion_and_reenables_follow() {
+        let conn = setup_db();
+        create_account(&conn, "acc1");
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        auto_follow_threads(&conn, "acc1").unwrap();
+        reject_classification(&conn, "m2").unwrap();
+        assert!(is_follow_excluded(&conn, "m2"), "却下で除外が付く");
+
+        // ユーザーが気を変えて m2 を手動割り当て → 除外解除
+        move_mail_to_project(&conn, "m2", "proj1").unwrap();
+        assert!(
+            !is_follow_excluded(&conn, "m2"),
+            "手動割り当てで除外トゥームストーンが解除される（以後は追従の対象に戻る）"
+        );
+    }
+
+    /// テスト補助: メールが追従除外トゥームストーンに載っているか
+    fn is_follow_excluded(conn: &Connection, mail_id: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) > 0 FROM follow_exclusions WHERE mail_id = ?1",
+            params![mail_id],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 }
