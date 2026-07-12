@@ -44,9 +44,10 @@ pub async fn sync_account(
     result
 }
 
-/// Resolve IMAP credentials for the given account.
+/// Resolve credentials for the given account (IMAP / SMTP 共用).
 /// For Google accounts, handles OAuth token refresh if needed.
-/// Returns (username, credential) suitable for `imap_client::connect`.
+/// Returns (auth_type, username, credential) suitable for
+/// `imap_client::connect` and `smtp_client::send`.
 pub(crate) async fn resolve_imap_credentials(
     account: &Account,
     secure_store: &crate::secure_store::SecureStore,
@@ -110,8 +111,7 @@ async fn sync_account_inner(
         let conn = state.0.lock().map_err(AppError::lock_err)?;
         let account = accounts::get_account(&conn, account_id)?;
         let max_uid = mails::get_max_uid(&conn, account_id, "INBOX")?;
-        let initial_limit =
-            crate::db::settings::get_u32_or(&conn, "initial_sync_limit", 5000);
+        let initial_limit = crate::db::settings::get_u32_or(&conn, "initial_sync_limit", 5000);
         (account, max_uid, initial_limit)
     };
 

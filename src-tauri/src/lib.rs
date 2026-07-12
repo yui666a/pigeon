@@ -84,12 +84,11 @@ pub fn run() {
                             Ok(c) => c,
                             Err(_) => return,
                         };
-                        let mut stmt = match conn
-                            .prepare("SELECT project_id FROM project_directories")
-                        {
-                            Ok(s) => s,
-                            Err(_) => return,
-                        };
+                        let mut stmt =
+                            match conn.prepare("SELECT project_id FROM project_directories") {
+                                Ok(s) => s,
+                                Err(_) => return,
+                            };
                         stmt.query_map([], |row| row.get(0))
                             .map(|rows| rows.filter_map(|r| r.ok()).collect())
                             .unwrap_or_default()
@@ -110,7 +109,10 @@ pub fn run() {
                     };
                     for project_id in targets {
                         if let Err(e) = project_context::rescan_project(
-                            &db.0, classifier.as_ref(), &project_id, false,
+                            &db.0,
+                            classifier.as_ref(),
+                            &project_id,
+                            false,
                         )
                         .await
                         {
@@ -149,6 +151,7 @@ pub fn run() {
             commands::classify_commands::get_unclassified_mails,
             commands::classify_commands::get_mails_by_project,
             commands::search_commands::search_mails,
+            commands::send_commands::send_mail,
             commands::directory_commands::link_project_directory,
             commands::directory_commands::unlink_project_directory,
             commands::directory_commands::get_project_directory,
