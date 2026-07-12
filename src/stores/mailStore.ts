@@ -37,6 +37,7 @@ interface MailState {
   markMailRead: (mail: Mail) => void;
   deleteMail: (mail: Mail) => Promise<void>;
   archiveMail: (mail: Mail) => Promise<void>;
+  unarchiveMail: (mail: Mail) => Promise<void>;
   fetchUnreadCounts: (accountId: string) => Promise<void>;
   fetchUnclassified: (accountId: string) => Promise<void>;
   moveMail: (mailId: string, projectId: string) => Promise<void>;
@@ -64,6 +65,36 @@ function removeMailFromThread(thread: Thread, mailId: string): Thread | null {
     mails,
     mail_count: mails.length,
     last_date: mails[mails.length - 1].date,
+  };
+}
+
+function setFolderInMails(mails: Mail[], mailId: string, folder: string): Mail[] {
+  return mails.map((m) => (m.id === mailId ? { ...m, folder } : m));
+}
+
+function setFolderInThread(thread: Thread, mailId: string, folder: string): Thread {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  return { ...thread, mails: setFolderInMails(thread.mails, mailId, folder) };
+}
+
+/** アーカイブ解除成功後に、表示用の全状態で該当メールの folder を更新する。
+ * 除去はしない: アーカイブ済みメールが見えるのは案件ビュー・検索であり、
+ * 解除後も同じ場所に表示され続けるのが自然なため（設計書「アーカイブ解除」） */
+function setFolderInState(
+  state: MailState,
+  mailId: string,
+  folder: string,
+): Partial<MailState> {
+  return {
+    threads: state.threads.map((t) => setFolderInThread(t, mailId, folder)),
+    selectedThread: state.selectedThread
+      ? setFolderInThread(state.selectedThread, mailId, folder)
+      : null,
+    selectedMail:
+      state.selectedMail?.id === mailId
+        ? { ...state.selectedMail, folder }
+        : state.selectedMail,
+    unclassifiedMails: setFolderInMails(state.unclassifiedMails, mailId, folder),
   };
 }
 
@@ -190,6 +221,19 @@ export const useMailStore = create<MailState>((set, get) => ({
     try {
       await invoke("archive_mail", { accountId: mail.account_id, mailId: mail.id });
       set((state) => removeMailFromState(state, mail.id));
+      void get().fetchUnreadCounts(mail.account_id);
+    } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  // アーカイブ解除。v1 はローカルの folder 更新のみ（サーバー反映はバック
+  // エンドが行わない: UID を追跡できないため。設計書「アーカイブ解除」参照）。
+  // 成功時のみ folder を 'INBOX' へ更新する（除去はしない）
+  unarchiveMail: async (mail) => {
+    try {
+      await invoke("unarchive_mail", { accountId: mail.account_id, mailId: mail.id });
+      set((state) => setFolderInState(state, mail.id, "INBOX"));
       void get().fetchUnreadCounts(mail.account_id);
     } catch (e) {
       useErrorStore.getState().addError(String(e));

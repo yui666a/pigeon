@@ -467,6 +467,66 @@ describe("mailStore", () => {
     });
   });
 
+  describe("unarchiveMail", () => {
+    it("invokes unarchive_mail and updates folder to INBOX in all state on success", async () => {
+      const m1 = makeMail("m1", { folder: "Archive" });
+      const m2 = makeMail("m2", { folder: "Archive" });
+      const thread = makeThread([m1, m2]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().unarchiveMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("unarchive_mail", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      const s = useMailStore.getState();
+      // 除去ではなく folder のローカル更新（案件ビュー・検索に表示され続ける）
+      expect(s.threads[0].mails.map((m) => m.folder)).toEqual([
+        "INBOX",
+        "Archive",
+      ]);
+      expect(s.selectedThread?.mails[0].folder).toBe("INBOX");
+      expect(s.selectedMail?.folder).toBe("INBOX");
+      expect(s.unclassifiedMails[0].folder).toBe("INBOX");
+    });
+
+    it("refreshes unread counts after success", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      const m1 = makeMail("m1", { folder: "Archive" });
+      useMailStore.setState({ threads: [makeThread([m1])] });
+
+      await useMailStore.getState().unarchiveMail(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
+    it("keeps local state unchanged when the backend fails", async () => {
+      const m1 = makeMail("m1", { folder: "Archive" });
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedMail: m1 });
+      mockInvoke.mockRejectedValue("Validation error: not archived");
+
+      await useMailStore.getState().unarchiveMail(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].folder).toBe("Archive");
+      expect(s.selectedMail?.folder).toBe("Archive");
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "get_unread_counts",
+        expect.anything(),
+      );
+    });
+  });
+
   describe("sync progress", () => {
     it("updates syncProgress on sync-progress events", async () => {
       await useMailStore.getState().initSyncListener();
