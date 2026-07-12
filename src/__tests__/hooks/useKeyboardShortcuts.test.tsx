@@ -25,6 +25,7 @@ function makeMail(id = "m1"): Mail {
     raw_size: null,
     uid: 1,
     flags: null,
+    is_read: false,
     fetched_at: "2026-07-10T10:00:00Z",
   };
 }
