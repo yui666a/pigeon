@@ -560,6 +560,57 @@ describe("mailStore", () => {
     });
   });
 
+  describe("markMailUnread", () => {
+    it("sets is_read=false, invokes mark_unread, and clears selection", async () => {
+      const m1 = makeMail("m1", { is_read: true });
+      const thread = makeThread([m1]);
+      useMailStore.setState({
+        threads: [thread],
+        selectedThread: thread,
+        selectedMail: m1,
+        unclassifiedMails: [m1],
+      });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().markMailUnread(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("mark_unread", {
+        accountId: "acc1",
+        mailId: "m1",
+      });
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].is_read).toBe(false);
+      expect(s.unclassifiedMails[0].is_read).toBe(false);
+      // 選択解除: 未読化した本文を表示したまま自動既読化が再度走るのを防ぐ
+      expect(s.selectedMail).toBeNull();
+    });
+
+    it("refreshes unread counts after success", async () => {
+      const m1 = makeMail("m1", { is_read: true });
+      useMailStore.setState({ threads: [makeThread([m1])] });
+      mockInvoke.mockResolvedValue(undefined);
+
+      await useMailStore.getState().markMailUnread(m1);
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_unread_counts", {
+        accountId: "acc1",
+      });
+    });
+
+    it("keeps local state unchanged when the server call fails", async () => {
+      const m1 = makeMail("m1", { is_read: true });
+      const thread = makeThread([m1]);
+      useMailStore.setState({ threads: [thread], selectedMail: m1 });
+      mockInvoke.mockRejectedValue("IMAP error: STORE failed");
+
+      await useMailStore.getState().markMailUnread(m1);
+
+      const s = useMailStore.getState();
+      expect(s.threads[0].mails[0].is_read).toBe(true);
+      expect(s.selectedMail?.id).toBe("m1");
+    });
+  });
+
   describe("unarchiveMail", () => {
     it("invokes unarchive_mail and updates folder to INBOX in all state on success", async () => {
       const m1 = makeMail("m1", { folder: "Archive" });
