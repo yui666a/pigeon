@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useComposeStore } from "../../stores/composeStore";
 import { useAccountStore } from "../../stores/accountStore";
 import { useErrorStore } from "../../stores/errorStore";
+import { useDraftStore } from "../../stores/draftStore";
 import type { Account } from "../../types/account";
-import type { Mail } from "../../types/mail";
+import type { Draft, Mail } from "../../types/mail";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -46,6 +47,7 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
     uid: 1,
     flags: null,
     is_read: false,
+    is_flagged: false,
     fetched_at: "2026-07-10T10:00:00Z",
     ...overrides,
   };
@@ -54,6 +56,7 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
 describe("composeStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     useComposeStore.setState({
       isOpen: false,
       mode: "new",
@@ -62,14 +65,18 @@ describe("composeStore", () => {
       bcc: "",
       subject: "",
       body: "",
+      format: "plain",
+      attachments: [],
       sending: false,
       replyToMailId: null,
+      draftId: null,
     });
     useAccountStore.setState({
       accounts: [makeAccount()],
       selectedAccountId: "acc1",
     });
     useErrorStore.setState({ toasts: [] });
+    useDraftStore.setState({ drafts: [], loading: false });
   });
 
   describe("openCompose", () => {
@@ -131,6 +138,8 @@ describe("composeStore", () => {
           subject: "Re: 打ち合わせの件",
           body_text: "返信本文",
           reply_to_mail_id: "m1",
+          body_html: null,
+          attachments: [],
         },
       });
       const s = useComposeStore.getState();
@@ -198,16 +207,159 @@ describe("composeStore", () => {
       expect(mockInvoke).not.toHaveBeenCalled();
       expect(useComposeStore.getState().isOpen).toBe(true);
     });
+
+    it("deletes the associated draft on successful send", async () => {
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === "send_mail") return Promise.resolve(undefined);
+        if (cmd === "delete_draft") return Promise.resolve(undefined);
+        return Promise.reject(new Error(`unexpected: ${cmd}`));
+      });
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({
+        to: "a@ex.com",
+        subject: "S",
+        body: "B",
+        draftId: "draft-1",
+      });
+
+      await useComposeStore.getState().send();
+
+      expect(mockInvoke).toHaveBeenCalledWith("delete_draft", {
+        id: "draft-1",
+      });
+    });
+
+    it("does not call delete_draft when there is no associated draft", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", subject: "S", body: "B" });
+
+      await useComposeStore.getState().send();
+
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "delete_draft",
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("openComposeFromDraft", () => {
+    it("restores fields from a draft and tracks its id", () => {
+      const draft: Draft = {
+        id: "draft-1",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "b@ex.com",
+        bcc_addr: "",
+        subject: "件名",
+        body_text: "本文",
+        in_reply_to: "m1",
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+
+      useComposeStore.getState().openComposeFromDraft(draft);
+
+      const s = useComposeStore.getState();
+      expect(s.isOpen).toBe(true);
+      expect(s.to).toBe("a@ex.com");
+      expect(s.cc).toBe("b@ex.com");
+      expect(s.subject).toBe("件名");
+      expect(s.body).toBe("本文");
+      expect(s.replyToMailId).toBe("m1");
+      expect(s.draftId).toBe("draft-1");
+    });
   });
 
   describe("closeCompose", () => {
-    it("closes and resets fields", () => {
+    it("closes and resets fields", async () => {
+      mockInvoke.mockResolvedValue({
+        id: "draft-1",
+        account_id: "acc1",
+        to_addr: "tanaka@example.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "Re: 打ち合わせの件",
+        body_text: "> こんにちは。",
+        in_reply_to: "m1",
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      });
       useComposeStore.getState().openCompose("reply", makeMail());
-      useComposeStore.getState().closeCompose();
+      await useComposeStore.getState().closeCompose();
       const s = useComposeStore.getState();
       expect(s.isOpen).toBe(false);
       expect(s.to).toBe("");
       expect(s.body).toBe("");
+    });
+
+    it("auto-saves as a draft when there is input", async () => {
+      const saved: Draft = {
+        id: "draft-new",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "S",
+        body_text: "B",
+        in_reply_to: null,
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+      mockInvoke.mockResolvedValue(saved);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", subject: "S", body: "B" });
+
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).toHaveBeenCalledWith("save_draft", {
+        req: expect.objectContaining({
+          id: null,
+          account_id: "acc1",
+          to_addr: "a@ex.com",
+          subject: "S",
+          body_text: "B",
+        }),
+      });
+      expect(useComposeStore.getState().isOpen).toBe(false);
+    });
+
+    it("does not save a draft when all fields are empty", async () => {
+      useComposeStore.getState().openCompose("new");
+
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).not.toHaveBeenCalledWith(
+        "save_draft",
+        expect.anything(),
+      );
+    });
+
+    it("reuses the same draft id across repeated saves (upsert)", async () => {
+      const firstSave: Draft = {
+        id: "draft-1",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "",
+        body_text: "",
+        in_reply_to: null,
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+      mockInvoke.mockResolvedValue(firstSave);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com" });
+      await useComposeStore.getState().closeCompose();
+
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({ to: "a@ex.com", draftId: "draft-1" });
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).toHaveBeenLastCalledWith("save_draft", {
+        req: expect.objectContaining({ id: "draft-1" }),
+      });
     });
   });
 
@@ -217,6 +369,111 @@ describe("composeStore", () => {
       useComposeStore.getState().setField("subject", "件名");
       expect(useComposeStore.getState().to).toBe("x@ex.com");
       expect(useComposeStore.getState().subject).toBe("件名");
+    });
+  });
+
+  describe("setFormat", () => {
+    it("converts plain body to paragraph HTML when switching to rich", () => {
+      useComposeStore.setState({ format: "plain", body: "1行目\n2行目" });
+      useComposeStore.getState().setFormat("rich");
+      const s = useComposeStore.getState();
+      expect(s.format).toBe("rich");
+      expect(s.body).toBe("<p>1行目</p><p>2行目</p>");
+    });
+
+    it("converts rich HTML back to plain text when switching to plain", () => {
+      useComposeStore.setState({
+        format: "rich",
+        body: "<p>こんにちは</p><p>世界</p>",
+      });
+      useComposeStore.getState().setFormat("plain");
+      const s = useComposeStore.getState();
+      expect(s.format).toBe("plain");
+      // マルチバイトが保持されること
+      expect(s.body).toBe("こんにちは\n世界");
+    });
+
+    it("is a no-op when the format is unchanged", () => {
+      useComposeStore.setState({ format: "plain", body: "そのまま" });
+      useComposeStore.getState().setFormat("plain");
+      expect(useComposeStore.getState().body).toBe("そのまま");
+    });
+  });
+
+  describe("attachments", () => {
+    it("adds attachments and de-duplicates by path", () => {
+      useComposeStore.getState().addAttachments([
+        { path: "/a.pdf", name: "a.pdf", size: 100 },
+        { path: "/b.png", name: "b.png", size: 200 },
+      ]);
+      useComposeStore
+        .getState()
+        .addAttachments([{ path: "/a.pdf", name: "a.pdf", size: 100 }]);
+      expect(useComposeStore.getState().attachments).toHaveLength(2);
+    });
+
+    it("removes an attachment by path", () => {
+      useComposeStore.getState().addAttachments([
+        { path: "/a.pdf", name: "a.pdf", size: 100 },
+        { path: "/b.png", name: "b.png", size: 200 },
+      ]);
+      useComposeStore.getState().removeAttachment("/a.pdf");
+      const s = useComposeStore.getState();
+      expect(s.attachments).toHaveLength(1);
+      expect(s.attachments[0].path).toBe("/b.png");
+    });
+  });
+
+  describe("rich send", () => {
+    it("sends body_html and empty body_text with attachment paths when rich", async () => {
+      mockInvoke.mockResolvedValue(undefined);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({
+        to: "a@ex.com",
+        subject: "S",
+        format: "rich",
+        body: "<p>本文</p>",
+        attachments: [{ path: "/a.pdf", name: "a.pdf", size: 10 }],
+      });
+
+      await useComposeStore.getState().send();
+
+      expect(mockInvoke).toHaveBeenCalledWith("send_mail", {
+        req: expect.objectContaining({
+          body_text: "",
+          body_html: "<p>本文</p>",
+          attachments: ["/a.pdf"],
+        }),
+      });
+    });
+
+    it("saves a rich draft as plain text (drafts table holds body_text only)", async () => {
+      const saved: Draft = {
+        id: "draft-r",
+        account_id: "acc1",
+        to_addr: "a@ex.com",
+        cc_addr: "",
+        bcc_addr: "",
+        subject: "S",
+        body_text: "こんにちは\n世界",
+        in_reply_to: null,
+        created_at: "2026-07-13T00:00:00Z",
+        updated_at: "2026-07-13T00:00:00Z",
+      };
+      mockInvoke.mockResolvedValue(saved);
+      useComposeStore.getState().openCompose("new");
+      useComposeStore.setState({
+        to: "a@ex.com",
+        subject: "S",
+        format: "rich",
+        body: "<p>こんにちは</p><p>世界</p>",
+      });
+
+      await useComposeStore.getState().closeCompose();
+
+      expect(mockInvoke).toHaveBeenCalledWith("save_draft", {
+        req: expect.objectContaining({ body_text: "こんにちは\n世界" }),
+      });
     });
   });
 });

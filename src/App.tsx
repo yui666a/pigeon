@@ -4,6 +4,7 @@ import { Sidebar } from "./components/sidebar/Sidebar";
 import { ThreadList } from "./components/thread-list/ThreadList";
 import { UnclassifiedList } from "./components/thread-list/UnclassifiedList";
 import { SearchResults } from "./components/thread-list/SearchResults";
+import { DraftList } from "./components/thread-list/DraftList";
 import { MailView } from "./components/mail-view/MailView";
 import { DragOverlay } from "./components/common/DragOverlay";
 import { ToastContainer } from "./components/common/ToastContainer";
@@ -33,6 +34,8 @@ function App() {
           <SearchResults />
         ) : viewMode === "unclassified" ? (
           <UnclassifiedList />
+        ) : viewMode === "drafts" ? (
+          <DraftList />
         ) : (
           <ThreadList viewMode={viewMode} />
         )}

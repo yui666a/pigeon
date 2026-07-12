@@ -23,6 +23,7 @@ function makeMail(id: string, overrides: Partial<Mail> = {}): Mail {
     uid: 1,
     flags: null,
     is_read: true,
+    is_flagged: false,
     fetched_at: "2026-04-13T00:00:00",
     ...overrides,
   };
@@ -82,6 +83,20 @@ describe("ThreadItem", () => {
     const subject = screen.getByText("テストスレッド");
     expect(subject.className).not.toContain("font-bold");
     expect(subject.className).toContain("font-medium");
+  });
+
+  it("shows a star when the thread contains a flagged mail", () => {
+    const thread = makeThread({
+      mails: [makeMail("m1"), makeMail("m2", { is_flagged: true })],
+    });
+    render(<ThreadItem thread={thread} selected={false} onClick={vi.fn()} />);
+    expect(screen.getByText("★")).toBeInTheDocument();
+  });
+
+  it("hides the star when no mail in the thread is flagged", () => {
+    const thread = makeThread({ mails: [makeMail("m1"), makeMail("m2")] });
+    render(<ThreadItem thread={thread} selected={false} onClick={vi.fn()} />);
+    expect(screen.queryByText("★")).not.toBeInTheDocument();
   });
 
   it("calls onClick when clicked", () => {

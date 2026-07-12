@@ -2,10 +2,13 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock searchStore
+const mockSetSelectedIndex = vi.fn();
 const mockSearchStore = {
   query: "",
   results: [] as import("../types/mail").SearchResult[],
   searching: false,
+  selectedIndex: -1,
+  setSelectedIndex: mockSetSelectedIndex,
 };
 vi.mock("../stores/searchStore", () => ({
   useSearchStore: (selector: (s: typeof mockSearchStore) => unknown) =>
@@ -46,6 +49,7 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
     uid: 1,
     flags: null,
     is_read: false,
+    is_flagged: false,
     fetched_at: "2026-04-13T00:00:00",
     ...overrides,
   };
@@ -56,6 +60,7 @@ describe("SearchResults", () => {
     mockSearchStore.query = "";
     mockSearchStore.results = [];
     mockSearchStore.searching = false;
+    mockSearchStore.selectedIndex = -1;
     vi.clearAllMocks();
   });
 
@@ -116,7 +121,9 @@ describe("SearchResults", () => {
     expect(container.querySelector("b")?.textContent).toBe("safe");
   });
 
-  it("clears selectedThread and sets selectedMail on click", () => {
+  it("clears selectedThread and sets selectedMail when selectedIndex is set", () => {
+    // クリックは setSelectedIndex を呼び、右ペインへの反映は selectedIndex の
+    // 変化を監視する effect が担う（j/k ナビと同じ経路に統一するため）
     const mail = makeMail({ subject: "Click Me" });
     const result: SearchResult = {
       mail,
@@ -126,14 +133,90 @@ describe("SearchResults", () => {
     };
     mockSearchStore.query = "click";
     mockSearchStore.results = [result];
+    mockSearchStore.selectedIndex = 0;
     render(<SearchResults />);
-
-    fireEvent.click(screen.getByText("Click Me"));
 
     // Must clear thread first to prevent MailView from showing stale MailTabs
     expect(mockSelectThread).toHaveBeenCalledWith(null);
     expect(mockSelectMail).toHaveBeenCalledWith(mail);
     // selectThread(null) must be called before selectMail
+    const threadCallOrder = mockSelectThread.mock.invocationCallOrder[0];
+    const mailCallOrder = mockSelectMail.mock.invocationCallOrder[0];
+    expect(threadCallOrder).toBeLessThan(mailCallOrder);
+  });
+
+  it("sets selectedIndex on click for j/k nav to resume from there", () => {
+    const results: SearchResult[] = [
+      {
+        mail: makeMail({ id: "m1", subject: "First" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+      {
+        mail: makeMail({ id: "m2", subject: "Second" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+    ];
+    mockSearchStore.query = "x";
+    mockSearchStore.results = results;
+    render(<SearchResults />);
+
+    fireEvent.click(screen.getByText("Second"));
+
+    expect(mockSetSelectedIndex).toHaveBeenCalledWith(1);
+  });
+
+  it("highlights the selected row", () => {
+    const results: SearchResult[] = [
+      {
+        mail: makeMail({ id: "m1", subject: "First" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+      {
+        mail: makeMail({ id: "m2", subject: "Second" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+    ];
+    mockSearchStore.query = "x";
+    mockSearchStore.results = results;
+    mockSearchStore.selectedIndex = 1;
+    render(<SearchResults />);
+
+    const selected = screen.getByText("Second").closest("button");
+    const notSelected = screen.getByText("First").closest("button");
+    expect(selected?.getAttribute("aria-selected")).toBe("true");
+    expect(notSelected?.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("selecting via j/k reflects to the right pane (selectThread(null) then selectMail)", () => {
+    const results: SearchResult[] = [
+      {
+        mail: makeMail({ id: "m1", subject: "First" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+      {
+        mail: makeMail({ id: "m2", subject: "Second" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+    ];
+    mockSearchStore.query = "x";
+    mockSearchStore.results = results;
+    mockSearchStore.selectedIndex = 1;
+    render(<SearchResults />);
+
+    expect(mockSelectThread).toHaveBeenCalledWith(null);
+    expect(mockSelectMail).toHaveBeenCalledWith(results[1].mail);
     const threadCallOrder = mockSelectThread.mock.invocationCallOrder[0];
     const mailCallOrder = mockSelectMail.mock.invocationCallOrder[0];
     expect(threadCallOrder).toBeLessThan(mailCallOrder);

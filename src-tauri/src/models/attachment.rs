@@ -10,4 +10,7 @@ pub struct Attachment {
     pub size: Option<i64>,
     /// キャッシュファイルの絶対パス。ファイルが消えている場合はキャッシュミス扱い
     pub file_path: Option<String>,
+    /// Content-ID ヘッダの値（`<` `>` を除去済み）。
+    /// 本文中の `<img src="cid:...">` から参照される場合にセットされる
+    pub content_id: Option<String>,
 }

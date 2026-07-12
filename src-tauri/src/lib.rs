@@ -156,6 +156,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::attachment_commands::list_attachments,
             commands::attachment_commands::save_attachment,
+            commands::inline_image_commands::get_inline_images,
             commands::account_commands::create_account,
             commands::account_commands::get_accounts,
             commands::account_commands::remove_account,
@@ -165,7 +166,10 @@ pub fn run() {
             commands::mail_commands::get_threads,
             commands::mail_commands::get_threads_by_project,
             commands::mail_commands::mark_read,
+            commands::flag_commands::set_flagged,
+            commands::flag_commands::mark_unread,
             commands::mail_commands::get_unread_counts,
+            commands::mail_commands::get_recent_unread_subjects,
             commands::project_commands::create_project,
             commands::project_commands::get_projects,
             commands::project_commands::update_project,
@@ -182,6 +186,10 @@ pub fn run() {
             commands::classify_commands::get_mails_by_project,
             commands::search_commands::search_mails,
             commands::send_commands::send_mail,
+            commands::send_commands::stat_file,
+            commands::draft_commands::save_draft,
+            commands::draft_commands::get_drafts,
+            commands::draft_commands::delete_draft,
             commands::directory_commands::link_project_directory,
             commands::directory_commands::unlink_project_directory,
             commands::directory_commands::get_project_directory,
@@ -197,6 +205,9 @@ pub fn run() {
             commands::mail_commands::delete_mail,
             commands::mail_commands::archive_mail,
             commands::mail_commands::unarchive_mail,
+            commands::bulk_commands::bulk_delete_mails,
+            commands::bulk_commands::bulk_archive_mails,
+            commands::bulk_commands::bulk_move_mails,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
