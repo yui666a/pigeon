@@ -9,7 +9,7 @@ use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use crate::error::AppError;
 use crate::models::account::AuthType;
 
-type ImapSession = Session<TlsStream<Compat<TcpStream>>>;
+pub(crate) type ImapSession = Session<TlsStream<Compat<TcpStream>>>;
 
 pub async fn connect(
     host: &str,
@@ -142,6 +142,8 @@ pub struct FetchedMail {
     pub uid: u32,
     /// サーバー側で \Seen が付いているか
     pub is_read: bool,
+    /// サーバー側で \Flagged が付いているか
+    pub is_flagged: bool,
     /// サーバーフラグの文字列表現（例: "\Seen \Answered"）。フラグなしは None
     pub flags: Option<String>,
     pub body: Vec<u8>,
@@ -150,6 +152,11 @@ pub struct FetchedMail {
 /// FLAGS に \Seen が含まれるか
 pub(crate) fn contains_seen(flags: &[Flag<'_>]) -> bool {
     flags.iter().any(|f| *f == Flag::Seen)
+}
+
+/// FLAGS に \Flagged が含まれるか
+pub(crate) fn contains_flagged(flags: &[Flag<'_>]) -> bool {
+    flags.iter().any(|f| *f == Flag::Flagged)
 }
 
 /// FLAGS を DB 保存用の文字列にする（空なら None）
@@ -243,6 +250,7 @@ pub async fn fetch_mails_batched(
                     mails.push(FetchedMail {
                         uid,
                         is_read: contains_seen(&flags),
+                        is_flagged: contains_flagged(&flags),
                         flags: flags_to_string(&flags),
                         body: body.to_vec(),
                     });
@@ -255,12 +263,12 @@ pub async fn fetch_mails_batched(
     Ok(total)
 }
 
-/// フォルダ全体の uid → \Seen マップを取得する（FLAGS のみの軽量 FETCH）。
-/// 他クライアントで変更された既読状態をローカル DB に取り込むための再同期に使う。
-pub async fn fetch_seen_map(
+/// フォルダ全体の uid → (\Seen, \Flagged) マップを取得する（FLAGS のみの軽量 FETCH）。
+/// 他クライアントで変更された既読・スター状態をローカル DB に取り込むための再同期に使う。
+pub async fn fetch_flag_map(
     session: &mut ImapSession,
     folder: &str,
-) -> Result<HashMap<u32, bool>, AppError> {
+) -> Result<HashMap<u32, (bool, bool)>, AppError> {
     let mailbox = session
         .select(folder)
         .await
@@ -280,10 +288,38 @@ pub async fn fetch_seen_map(
         .filter_map(|m| {
             m.uid.map(|uid| {
                 let flags: Vec<Flag<'_>> = m.flags().collect();
-                (uid, contains_seen(&flags))
+                (uid, (contains_seen(&flags), contains_flagged(&flags)))
             })
         })
         .collect())
+}
+
+/// 指定 UID のメールに指定フラグ（例: "\\Seen"）を付与・除去する（STORE の共通処理）。
+/// mark_read / mark_unread / set_flagged のサーバー反映がすべてこの形なので集約する。
+async fn store_flag_delta(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    flag: &str,
+    add: bool,
+) -> Result<(), AppError> {
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+    let query = format!(
+        "{}FLAGS.SILENT ({})",
+        if add { "+" } else { "-" },
+        flag
+    );
+    let _updates: Vec<_> = session
+        .uid_store(uid.to_string(), &query)
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE stream failed: {}", e)))?;
+    Ok(())
 }
 
 /// 指定 UID のメールに \Seen フラグを付ける（既読のサーバー反映）。
@@ -292,18 +328,26 @@ pub async fn store_seen_flag(
     folder: &str,
     uid: u32,
 ) -> Result<(), AppError> {
-    session
-        .select(folder)
-        .await
-        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
-    let _updates: Vec<_> = session
-        .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Seen)")
-        .await
-        .map_err(|e| AppError::Imap(format!("UID STORE failed: {}", e)))?
-        .try_collect()
-        .await
-        .map_err(|e| AppError::Imap(format!("UID STORE stream failed: {}", e)))?;
-    Ok(())
+    store_flag_delta(session, folder, uid, "\\Seen", true).await
+}
+
+/// 指定 UID のメールから \Seen フラグを外す（未読に戻すサーバー反映）。
+pub async fn remove_seen_flag(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    store_flag_delta(session, folder, uid, "\\Seen", false).await
+}
+
+/// 指定 UID のメールの \Flagged を付与・除去する（スター/フラグのサーバー反映）。
+pub async fn store_flagged(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    flagged: bool,
+) -> Result<(), AppError> {
+    store_flag_delta(session, folder, uid, "\\Flagged", flagged).await
 }
 
 /// UID 指定で元メール（RFC822 全文）を1通取得する。
@@ -522,6 +566,28 @@ pub async fn archive_message_remote(
     result
 }
 
+/// フォルダ属性に \Sent (RFC 6154 SPECIAL-USE) が含まれるか
+pub(crate) fn has_sent_attribute(attrs: &[NameAttribute<'_>]) -> bool {
+    attrs.iter().any(|a| *a == NameAttribute::Sent)
+}
+
+/// LIST 応答から SPECIAL-USE (RFC 6154) の \Sent 属性を持つフォルダを探す。
+/// Gmail はロケールに依らずこの属性を返す（例: "[Gmail]/送信済みメール"）。
+/// 非対応サーバーでは None（呼び出し側が settings の sent_folder にフォールバックする）
+pub async fn find_sent_folder(session: &mut ImapSession) -> Result<Option<String>, AppError> {
+    let folders: Vec<_> = session
+        .list(None, Some("*"))
+        .await
+        .map_err(|e| AppError::Imap(format!("List folders failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("List stream failed: {}", e)))?;
+    Ok(folders
+        .iter()
+        .find(|f| has_sent_attribute(f.attributes()))
+        .map(|f| f.name().to_string()))
+}
+
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
     let folders: Vec<_> = session
         .list(None, Some("*"))
@@ -602,6 +668,14 @@ mod tests {
     }
 
     #[test]
+    fn test_contains_flagged_detects_flagged_flag() {
+        use async_imap::types::Flag;
+        assert!(contains_flagged(&[Flag::Answered, Flag::Flagged]));
+        assert!(!contains_flagged(&[Flag::Answered, Flag::Seen]));
+        assert!(!contains_flagged(&[]));
+    }
+
+    #[test]
     fn test_flags_to_string_formats_system_flags() {
         use async_imap::types::Flag;
         assert_eq!(
@@ -636,5 +710,24 @@ mod tests {
             NameAttribute::Marked,
         ]));
         assert!(!has_trash_attribute(&[]));
+    }
+
+    #[test]
+    fn test_has_sent_attribute_detects_sent() {
+        assert!(has_sent_attribute(&[
+            NameAttribute::NoInferiors,
+            NameAttribute::Sent,
+        ]));
+    }
+
+    #[test]
+    fn test_has_sent_attribute_ignores_other_special_use() {
+        // \Trash や \Junk は送信済みではない
+        assert!(!has_sent_attribute(&[
+            NameAttribute::Trash,
+            NameAttribute::Junk,
+            NameAttribute::Drafts,
+        ]));
+        assert!(!has_sent_attribute(&[]));
     }
 }

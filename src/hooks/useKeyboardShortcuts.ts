@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { SEARCH_INPUT_ID } from "../components/sidebar/SearchBar";
 import { useComposeStore } from "../stores/composeStore";
 import { useMailStore } from "../stores/mailStore";
+import { useSearchStore } from "../stores/searchStore";
+import { useUiStore } from "../stores/uiStore";
 import type { ComposeMode } from "../utils/composePrefill";
 import type { Mail } from "../types/mail";
 
@@ -34,11 +36,17 @@ function targetMail(): Mail | null {
 }
 
 /**
- * 選択中スレッド内のメールを前後に移動する。境界で止まる（ループしない）。
+ * 検索結果ビュー表示中は検索結果リスト内を、それ以外はスレッド内メールを
+ * 前後に移動する。境界で止まる（ループしない）。
  * スレッド未選択時はスレッド一覧を移動する（未選択からの「次」= 先頭）。
  * 選択は selectMail / selectThread 経由のため、既存の既読化フローに乗る。
  */
 function navigateMail(direction: 1 | -1): void {
+  if (useUiStore.getState().viewMode === "search") {
+    useSearchStore.getState().moveSelection(direction);
+    return;
+  }
+
   const { selectedThread, selectedMail, threads, selectMail, selectThread } =
     useMailStore.getState();
 
@@ -63,7 +71,7 @@ function navigateMail(direction: 1 | -1): void {
 /**
  * メール操作のキーボードショートカット（App直下で有効化する）。
  * n: 新規作成 / r: 返信 / a: 全員に返信 / f: 転送 / e: アーカイブ /
- * j・k: 次・前のメール / /: 検索にフォーカス
+ * j・k: 次・前のメール（検索結果表示中は検索結果内を移動） / /: 検索にフォーカス
  */
 export function useKeyboardShortcuts() {
   useEffect(() => {

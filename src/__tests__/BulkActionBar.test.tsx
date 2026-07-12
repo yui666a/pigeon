@@ -1,0 +1,87 @@
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { BulkActionBar } from "../components/thread-list/BulkActionBar";
+import type { Project } from "../types/project";
+
+function makeProject(id: string, name: string): Project {
+  return {
+    id,
+    account_id: "acc1",
+    name,
+    description: null,
+    color: null,
+    is_archived: false,
+    created_at: "2026-07-13T00:00:00",
+    updated_at: "2026-07-13T00:00:00",
+  };
+}
+
+describe("BulkActionBar", () => {
+  it("renders nothing when no thread is selected", () => {
+    const { container } = render(
+      <BulkActionBar
+        selectedCount={0}
+        projects={[]}
+        onDelete={() => {}}
+        onArchive={() => {}}
+        onMove={() => {}}
+        onClear={() => {}}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("shows the selected count", () => {
+    render(
+      <BulkActionBar
+        selectedCount={3}
+        projects={[]}
+        onDelete={() => {}}
+        onArchive={() => {}}
+        onMove={() => {}}
+        onClear={() => {}}
+      />,
+    );
+    expect(screen.getByText("3 件選択中")).toBeInTheDocument();
+  });
+
+  it("calls onDelete/onArchive/onClear when the respective buttons are clicked", () => {
+    const onDelete = vi.fn();
+    const onArchive = vi.fn();
+    const onClear = vi.fn();
+    render(
+      <BulkActionBar
+        selectedCount={2}
+        projects={[]}
+        onDelete={onDelete}
+        onArchive={onArchive}
+        onMove={() => {}}
+        onClear={onClear}
+      />,
+    );
+    fireEvent.click(screen.getByText("削除"));
+    fireEvent.click(screen.getByText("アーカイブ"));
+    fireEvent.click(screen.getByText("選択解除"));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onClear).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onMove with the selected project id", () => {
+    const onMove = vi.fn();
+    render(
+      <BulkActionBar
+        selectedCount={1}
+        projects={[makeProject("p1", "Project A")]}
+        onDelete={() => {}}
+        onArchive={() => {}}
+        onMove={onMove}
+        onClear={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("案件へ移動"), {
+      target: { value: "p1" },
+    });
+    expect(onMove).toHaveBeenCalledWith("p1");
+  });
+});

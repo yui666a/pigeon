@@ -20,7 +20,12 @@ pub struct Mail {
     pub uid: u32,
     pub flags: Option<String>,
     pub is_read: bool,
+    pub is_flagged: bool,
     pub fetched_at: String,
+    /// uid がサーバー実 UID として確定しているか。サーバー取得行は true、
+    /// 送信時にローカル保存する Sent 行（推定 uid）は false。
+    /// Sent 同期の watermark 計算（確定行のみの max uid）に使う。
+    pub uid_confirmed: bool,
 }
 
 /// アカウント内の未読件数の集計（folder='INBOX' のみ対象）

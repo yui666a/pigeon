@@ -13,7 +13,7 @@ use crate::models::attachment::Attachment;
 use crate::state::{DbState, SecureStoreState};
 
 /// 添付キャッシュのルート: {data_dir}/Pigeon/attachments
-fn attachments_cache_root() -> PathBuf {
+pub(crate) fn attachments_cache_root() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Pigeon")
@@ -95,6 +95,7 @@ pub(crate) fn cache_attachments(
             &att.mime_type,
             att.data.len() as i64,
             &path.to_string_lossy(),
+            att.content_id.as_deref(),
         )?);
     }
     Ok(result)
@@ -135,8 +136,7 @@ pub async fn list_attachments(
 
     // 2. IMAP から元メールを取得（DBロックは保持しない）
     let (auth_type, username, credential) =
-        crate::commands::mail_commands::resolve_imap_credentials(&account, &secure_store.0)
-            .await?;
+        crate::commands::mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?;
     let mut session = imap_client::connect(
         &account.imap_host,
         account.imap_port,
@@ -195,10 +195,34 @@ mod tests {
         JVBERi0xLjQK\r\n\
         --BOUNDARY--\r\n";
 
+    const EMAIL_WITH_INLINE_IMAGE: &[u8] = b"From: sender@example.com\r\n\
+        To: recipient@example.com\r\n\
+        Subject: Inline Image\r\n\
+        Message-ID: <inline@example.com>\r\n\
+        Date: Mon, 13 Jul 2026 10:00:00 +0900\r\n\
+        MIME-Version: 1.0\r\n\
+        Content-Type: multipart/related; boundary=\"BOUNDARY\"\r\n\
+        \r\n\
+        --BOUNDARY\r\n\
+        Content-Type: text/html\r\n\
+        \r\n\
+        <html><body><img src=\"cid:logo123@example.com\"></body></html>\r\n\
+        --BOUNDARY\r\n\
+        Content-Type: image/png; name=\"logo.png\"\r\n\
+        Content-Disposition: inline; filename=\"logo.png\"\r\n\
+        Content-ID: <logo123@example.com>\r\n\
+        Content-Transfer-Encoding: base64\r\n\
+        \r\n\
+        iVBORw0KGgo=\r\n\
+        --BOUNDARY--\r\n";
+
     #[test]
     fn test_sanitize_filename_plain() {
         assert_eq!(sanitize_filename(Some("report.pdf"), 0), "report.pdf");
-        assert_eq!(sanitize_filename(Some("日本語 資料.xlsx"), 0), "日本語 資料.xlsx");
+        assert_eq!(
+            sanitize_filename(Some("日本語 資料.xlsx"), 0),
+            "日本語 資料.xlsx"
+        );
     }
 
     #[test]
@@ -245,6 +269,22 @@ mod tests {
             result[0].file_path.as_deref(),
             Some(cached_path.to_string_lossy().as_ref())
         );
+        assert!(
+            result[0].content_id.is_none(),
+            "通常添付は content_id を持たない"
+        );
+    }
+
+    #[test]
+    fn test_cache_attachments_records_content_id_for_inline_image() {
+        let conn = setup_db();
+        insert_test_mail(&conn, "m1", "Inline image");
+        let tmp = tempfile::tempdir().unwrap();
+
+        let result = cache_attachments(&conn, tmp.path(), "m1", EMAIL_WITH_INLINE_IMAGE).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].filename, "logo.png");
+        assert_eq!(result[0].content_id.as_deref(), Some("logo123@example.com"));
     }
 
     #[test]
@@ -313,6 +353,7 @@ mod tests {
             mime_type: "application/pdf".into(),
             size: Some(1),
             file_path: Some("/nonexistent/gone.pdf".into()),
+            content_id: None,
         };
         let err = copy_attachment_to(&att, Path::new("/tmp/out.pdf")).unwrap_err();
         assert!(matches!(err, AppError::AttachmentCacheMissing(_)));
@@ -352,6 +393,10 @@ mod tests {
         assert_eq!(result.len(), 2);
         let names: Vec<&str> = result.iter().map(|a| a.filename.as_str()).collect();
         assert!(names.contains(&"a.txt"));
-        assert!(names.contains(&"2-a.txt"), "同名は連番プレフィックスで回避: {:?}", names);
+        assert!(
+            names.contains(&"2-a.txt"),
+            "同名は連番プレフィックスで回避: {:?}",
+            names
+        );
     }
 }
