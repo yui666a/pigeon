@@ -334,6 +334,28 @@ pub async fn fetch_mail_raw(
         .ok_or_else(|| AppError::Imap(format!("Mail not found on server (uid={})", uid)))
 }
 
+/// 送信済みメールを指定フォルダへ保存する（IMAP APPEND）。
+/// 接続→APPEND→logout までを行う。呼び出し側でベストエフォート扱いにすること
+pub async fn append_message(
+    host: &str,
+    port: u16,
+    auth_type: &AuthType,
+    username: &str,
+    credential: &str,
+    folder: &str,
+    raw_message: &[u8],
+) -> Result<(), AppError> {
+    let mut session = connect(host, port, auth_type, username, credential).await?;
+    let result = session
+        .append(folder, Some("(\\Seen)"), None, raw_message)
+        .await
+        .map_err(|e| AppError::Imap(format!("APPEND to {} failed: {}", folder, e)));
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed after append: {}", e);
+    }
+    result
+}
+
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
     let folders: Vec<_> = session
         .list(None, Some("*"))
