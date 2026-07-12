@@ -27,6 +27,17 @@ export interface UnreadCounts {
   unclassified: number;
 }
 
+/** Tauri `send_mail` command の入力（Rust側 SendMailRequest と対応） */
+export interface SendMailRequest {
+  account_id: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body_text: string;
+  reply_to_mail_id: string | null;
+}
+
 export interface SearchResult {
   mail: Mail;
   project_id: string | null;
