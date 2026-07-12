@@ -199,6 +199,14 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
         set_schema_version(conn, version)?;
     }
 
+    // v9〜v12 は並行開発中の他エージェントが使用するため本ブランチでは割り当てない
+
+    if version < 13 {
+        migrate_v13(conn)?;
+        version = 13;
+        set_schema_version(conn, version)?;
+    }
+
     let _ = version;
 
     Ok(())
@@ -355,6 +363,18 @@ fn migrate_v8(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v13(conn: &Connection) -> Result<(), AppError> {
+    // インライン画像（cid:）の本文内表示。Content-ID を持つ添付を判別するためのカラム
+    // 詳細: docs/superpowers/specs/2026-07-13-inline-cid-images-design.md
+    conn.execute_batch(
+        "
+        ALTER TABLE attachments ADD COLUMN content_id TEXT;
+        CREATE INDEX IF NOT EXISTS idx_attachments_content_id ON attachments(mail_id, content_id);
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,7 +489,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -676,7 +696,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -699,7 +719,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -869,7 +889,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -1039,7 +1059,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -1152,7 +1172,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 13);
     }
 
     #[test]
