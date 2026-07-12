@@ -36,6 +36,17 @@ pub struct SendMailRequest {
     pub attachments: Vec<String>,
 }
 
+/// 添付候補ファイルのサイズ（バイト）を返す。
+/// フロントは合計サイズの表示・超過警告に使う（送信時の上限検証は Rust の
+/// build_message が担う二重防御。設計書 2026-07-13-rich-compose-design.md）。
+/// plugin-fs を導入せず、既存の「パスを Rust へ渡す」方式に揃えた command
+#[tauri::command]
+pub fn stat_file(path: String) -> Result<u64, AppError> {
+    std::fs::metadata(&path)
+        .map(|m| m.len())
+        .map_err(|e| AppError::FileIo(format!("ファイル情報の取得に失敗 {}: {}", path, e)))
+}
+
 /// 返信元メールから (In-Reply-To, References) を導出する
 pub(crate) fn derive_threading_headers(
     reply_source: Option<&Mail>,
@@ -327,6 +338,23 @@ mod tests {
         assert_eq!(atts[0].filename, "report.pdf");
         assert_eq!(atts[0].content_type, "application/pdf");
         assert_eq!(atts[0].data, b"%PDF-1.4");
+    }
+
+    #[test]
+    fn test_stat_file_returns_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        std::fs::write(&path, b"12345").unwrap();
+        let size = stat_file(path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(size, 5);
+    }
+
+    #[test]
+    fn test_stat_file_missing_errors() {
+        assert!(matches!(
+            stat_file("/nonexistent/path/x.bin".into()),
+            Err(AppError::FileIo(_))
+        ));
     }
 
     #[test]
