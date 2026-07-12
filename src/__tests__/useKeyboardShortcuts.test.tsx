@@ -33,6 +33,7 @@ function makeMail(id: string): Mail {
     uid: 1,
     flags: null,
     is_read: true,
+    is_flagged: false,
     fetched_at: "2026-07-12T00:00:00",
   };
 }
