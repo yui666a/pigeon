@@ -356,6 +356,133 @@ pub async fn append_message(
     result
 }
 
+/// EXPUNGE を実行する。UIDPLUS 対応サーバーでは UID EXPUNGE で対象 UID のみを
+/// 削除し、非対応なら通常 EXPUNGE にフォールバックする（設計書
+/// 2026-07-12-mail-delete-archive-design.md「EXPUNGE の方式」参照）。
+async fn expunge_uid(session: &mut ImapSession, uid: u32) -> Result<(), AppError> {
+    let supports_uidplus = session
+        .capabilities()
+        .await
+        .map(|caps| caps.has_str("UIDPLUS"))
+        .unwrap_or(false);
+    if supports_uidplus {
+        let _removed: Vec<_> = session
+            .uid_expunge(uid.to_string())
+            .await
+            .map_err(|e| AppError::Imap(format!("UID EXPUNGE failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("UID EXPUNGE stream failed: {}", e)))?;
+    } else {
+        let _removed: Vec<_> = session
+            .expunge()
+            .await
+            .map_err(|e| AppError::Imap(format!("EXPUNGE failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("EXPUNGE stream failed: {}", e)))?;
+    }
+    Ok(())
+}
+
+/// 指定 UID のメールをフォルダから完全に削除する
+/// （SELECT → \Deleted 付与 → EXPUNGE）。
+pub async fn delete_message(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+    let _updates: Vec<_> = session
+        .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("UID STORE stream failed: {}", e)))?;
+    expunge_uid(session, uid).await
+}
+
+/// 指定 UID のメールを dest フォルダへ UID COPY する。
+/// フォルダ不在等で COPY が失敗した場合は CREATE を試みて 1 回だけ再試行する。
+pub async fn copy_message(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    dest: &str,
+) -> Result<(), AppError> {
+    session
+        .select(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+    if session.uid_copy(uid.to_string(), dest).await.is_ok() {
+        return Ok(());
+    }
+    // アーカイブフォルダが未作成の可能性: CREATE して再試行
+    // （既存フォルダへの CREATE は NO が返るだけなので失敗は無視してよい）
+    if let Err(e) = session.create(dest).await {
+        eprintln!("[warn] CREATE {} failed (may already exist): {}", dest, e);
+    }
+    session
+        .uid_copy(uid.to_string(), dest)
+        .await
+        .map_err(|e| AppError::Imap(format!("UID COPY to {} failed: {}", dest, e)))
+}
+
+/// メールをサーバーから削除する（接続 → 削除 → logout）。
+/// 破壊的操作のため呼び出し側は成功を確認してからローカルへ反映すること。
+#[allow(clippy::too_many_arguments)]
+pub async fn delete_message_remote(
+    host: &str,
+    port: u16,
+    auth_type: &AuthType,
+    username: &str,
+    credential: &str,
+    folder: &str,
+    uid: u32,
+) -> Result<(), AppError> {
+    let mut session = connect(host, port, auth_type, username, credential).await?;
+    let result = delete_message(&mut session, folder, uid).await;
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed after delete: {}", e);
+    }
+    result
+}
+
+/// メールをサーバー上でアーカイブする（接続 → [COPY →] 削除 → logout）。
+/// copy_dest が Some ならアーカイブフォルダへ COPY してから元を削除し（other）、
+/// None なら削除のみ（Gmail: INBOX ラベル剥がしがアーカイブ相当）。
+#[allow(clippy::too_many_arguments)]
+pub async fn archive_message_remote(
+    host: &str,
+    port: u16,
+    auth_type: &AuthType,
+    username: &str,
+    credential: &str,
+    folder: &str,
+    uid: u32,
+    copy_dest: Option<&str>,
+) -> Result<(), AppError> {
+    let mut session = connect(host, port, auth_type, username, credential).await?;
+    let result = {
+        let copy_result = match copy_dest {
+            Some(dest) => copy_message(&mut session, folder, uid, dest).await,
+            None => Ok(()),
+        };
+        match copy_result {
+            Ok(()) => delete_message(&mut session, folder, uid).await,
+            Err(e) => Err(e),
+        }
+    };
+    if let Err(e) = session.logout().await {
+        eprintln!("[warn] IMAP logout failed after archive: {}", e);
+    }
+    result
+}
+
 pub async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, AppError> {
     let folders: Vec<_> = session
         .list(None, Some("*"))
