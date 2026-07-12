@@ -49,6 +49,7 @@ pub fn make_mail(id: &str, message_id: &str, subject: &str, date: &str) -> Mail 
             .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b))),
         flags: None,
         is_read: false,
+        is_flagged: false,
         fetched_at: "2026-04-13T00:00:00".into(),
     }
 }
