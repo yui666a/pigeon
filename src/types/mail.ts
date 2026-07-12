@@ -38,6 +38,32 @@ export interface SendMailRequest {
   reply_to_mail_id: string | null;
 }
 
+/** ローカル下書き（v1: IMAP Draftsフォルダとの同期は将来） */
+export interface Draft {
+  id: string;
+  account_id: string;
+  to_addr: string;
+  cc_addr: string;
+  bcc_addr: string;
+  subject: string;
+  body_text: string;
+  in_reply_to: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Tauri `save_draft` command の入力（Rust側 SaveDraftRequest と対応） */
+export interface SaveDraftRequest {
+  id: string | null;
+  account_id: string;
+  to_addr: string;
+  cc_addr: string;
+  bcc_addr: string;
+  subject: string;
+  body_text: string;
+  in_reply_to: string | null;
+}
+
 export interface SearchResult {
   mail: Mail;
   project_id: string | null;
