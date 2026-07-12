@@ -181,6 +181,26 @@ pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppE
     Ok((folder, uid))
 }
 
+/// 直近の未読メール（INBOX）の件名を新しい順に最大 limit 件返す。
+/// デスクトップ通知の件名プレビュー用（2026-07-12-desktop-notification-design.md
+/// 「v2: 通知の強化」）。
+pub fn get_recent_unread_subjects(
+    conn: &Connection,
+    account_id: &str,
+    limit: u32,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT subject FROM mails
+         WHERE account_id = ?1 AND folder = 'INBOX' AND is_read = 0
+         ORDER BY date DESC LIMIT ?2",
+    )?;
+    let subjects = stmt
+        .query_map(params![account_id, limit], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(subjects)
+}
+
 /// プロジェクト毎 + 未分類の未読件数を集計する（INBOX のみ対象）。
 pub fn get_unread_counts(conn: &Connection, account_id: &str) -> Result<UnreadCounts, AppError> {
     let mut stmt = conn.prepare(
@@ -598,6 +618,48 @@ mod tests {
         let counts = get_unread_counts(&conn, "acc1").unwrap();
         assert!(counts.by_project.is_empty());
         assert_eq!(counts.unclassified, 0);
+    }
+
+    #[test]
+    fn test_get_recent_unread_subjects_orders_by_date_desc_and_limits() {
+        let conn = setup_db();
+        let mut m1 = make_mail("m1", "<m1@example.com>", "Oldest", "2026-07-12T09:00:00");
+        m1.is_read = false;
+        let mut m2 = make_mail("m2", "<m2@example.com>", "Middle", "2026-07-12T10:00:00");
+        m2.is_read = false;
+        let mut m3 = make_mail("m3", "<m3@example.com>", "Newest", "2026-07-12T11:00:00");
+        m3.is_read = false;
+        insert_mail(&conn, &m1).unwrap();
+        insert_mail(&conn, &m2).unwrap();
+        insert_mail(&conn, &m3).unwrap();
+
+        let subjects = get_recent_unread_subjects(&conn, "acc1", 2).unwrap();
+        assert_eq!(subjects, vec!["Newest".to_string(), "Middle".to_string()]);
+    }
+
+    #[test]
+    fn test_get_recent_unread_subjects_excludes_read_and_other_folders() {
+        let conn = setup_db();
+        let mut read_mail = make_mail("m1", "<m1@example.com>", "Read", "2026-07-12T10:00:00");
+        read_mail.is_read = true;
+        let mut sent_mail = make_mail("m2", "<m2@example.com>", "Sent", "2026-07-12T11:00:00");
+        sent_mail.is_read = false;
+        sent_mail.folder = "Sent".into();
+        let mut unread = make_mail("m3", "<m3@example.com>", "Unread", "2026-07-12T12:00:00");
+        unread.is_read = false;
+        insert_mail(&conn, &read_mail).unwrap();
+        insert_mail(&conn, &sent_mail).unwrap();
+        insert_mail(&conn, &unread).unwrap();
+
+        let subjects = get_recent_unread_subjects(&conn, "acc1", 10).unwrap();
+        assert_eq!(subjects, vec!["Unread".to_string()]);
+    }
+
+    #[test]
+    fn test_get_recent_unread_subjects_empty() {
+        let conn = setup_db();
+        let subjects = get_recent_unread_subjects(&conn, "acc1", 3).unwrap();
+        assert!(subjects.is_empty());
     }
 
     #[test]
