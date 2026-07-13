@@ -163,6 +163,7 @@ pub fn run() {
             commands::auth_commands::start_oauth,
             commands::auth_commands::handle_oauth_callback,
             commands::mail_commands::sync_account,
+            commands::mail_commands::backfill_account,
             commands::mail_commands::get_threads,
             commands::mail_commands::get_threads_by_project,
             commands::mail_commands::mark_read,

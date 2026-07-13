@@ -139,6 +139,19 @@ pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<
     Ok(uid)
 }
 
+/// folder 内の最小 uid を返す（行が無ければ 0）。バックフィルの起点
+/// （ここ未満の UID をサーバーへ遡って問い合わせる）に使う。
+pub fn get_min_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<u32, AppError> {
+    let uid: u32 = conn
+        .query_row(
+            "SELECT COALESCE(MIN(uid), 0) FROM mails WHERE account_id = ?1 AND folder = ?2",
+            params![account_id, folder],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(uid)
+}
+
 /// uid_confirmed=1 の行のみで folder 内の max uid を返す（差分同期の watermark 用）。
 /// Sent フォルダでは送信時ローカル保存分の uid は推定値（uid_confirmed=0）で、
 /// サーバー実 uid より大きくなりがち。これを watermark に含めると実 uid が推定 max 以下の
@@ -1226,6 +1239,20 @@ mod tests {
         mail.uid = 42;
         insert_mail(&conn, &mail).unwrap();
         assert_eq!(get_max_uid(&conn, "acc1", "INBOX").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_get_min_uid() {
+        // バックフィルの起点（ここより古いUIDをサーバーへ問い合わせる）
+        let conn = setup_db();
+        assert_eq!(get_min_uid(&conn, "acc1", "INBOX").unwrap(), 0);
+        let mut m1 = make_mail("m1", "<msg1@example.com>", "Test1", "2026-04-13T10:00:00");
+        m1.uid = 42;
+        insert_mail(&conn, &m1).unwrap();
+        let mut m2 = make_mail("m2", "<msg2@example.com>", "Test2", "2026-04-13T11:00:00");
+        m2.uid = 10;
+        insert_mail(&conn, &m2).unwrap();
+        assert_eq!(get_min_uid(&conn, "acc1", "INBOX").unwrap(), 10);
     }
 
     #[test]

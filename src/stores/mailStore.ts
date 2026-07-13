@@ -17,6 +17,11 @@ interface NewMailEvent {
   account_id: string;
 }
 
+interface BackfillOutcome {
+  fetched: number;
+  exhausted: boolean;
+}
+
 interface MailState {
   threads: Thread[];
   selectedThread: Thread | null;
@@ -29,8 +34,13 @@ interface MailState {
   error: string | null;
   syncProgress: SyncProgress | null;
   unreadCounts: UnreadCounts;
+  backfilling: boolean;
+  backfillProgress: SyncProgress | null;
+  /** account_id -> これ以上サーバーに古いメールが無いか（ボタン無効化の判定用） */
+  backfillExhausted: Record<string, boolean>;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
   syncAccount: (accountId: string) => Promise<number>;
+  backfillAccount: (accountId: string, limit: number) => Promise<void>;
   setThreads: (threads: Thread[]) => void;
   selectThread: (thread: Thread | null) => void;
   selectMail: (mail: Mail | null) => void;
@@ -46,6 +56,7 @@ interface MailState {
   removeUnclassifiedMail: (mailId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
+  initBackfillListener: () => Promise<() => void>;
   bulkDeleteMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
   bulkArchiveMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
   bulkMoveMails: (mailIds: string[], projectId: string) => Promise<BulkResult | null>;
@@ -171,6 +182,9 @@ export const useMailStore = create<MailState>((set, get) => ({
   error: null,
   syncProgress: null,
   unreadCounts: { by_project: {}, unclassified: 0 },
+  backfilling: false,
+  backfillProgress: null,
+  backfillExhausted: {},
 
   fetchThreads: async (accountId, folder) => {
     try {
@@ -204,6 +218,38 @@ export const useMailStore = create<MailState>((set, get) => ({
         useErrorStore.getState().addError(errorMsg);
       }
       return 0;
+    }
+  },
+
+  // ローカル最古メールより古いメールを、新しい→古いの順に limit 件まで遡って取得する
+  // （バックログ項目8）。バックエンドの SyncLocks を通常同期と共有しているため多重実行は
+  // 防がれるが、無駄な invoke を出さない前段ガードとして backfilling フラグも見る
+  // （syncAccount と同型）
+  backfillAccount: async (accountId, limit) => {
+    if (get().backfilling) return;
+    set({ backfilling: true, error: null });
+    try {
+      const outcome = await invoke<BackfillOutcome>("backfill_account", {
+        accountId,
+        limit,
+      });
+      set((state) => ({
+        backfilling: false,
+        backfillProgress: null,
+        backfillExhausted: { ...state.backfillExhausted, [accountId]: outcome.exhausted },
+      }));
+      // 表示中アカウント・ビューのみ再取得する（syncAccount の sync-progress
+      // リスナーと同じ「別アカウント表示中は上書きしない」方針）
+      const selectedAccountId = useAccountStore.getState().selectedAccountId;
+      if (selectedAccountId === accountId) {
+        if (useUiStore.getState().viewMode === "threads") {
+          void get().fetchThreads(accountId, "INBOX");
+        }
+        void get().fetchUnclassified(accountId);
+      }
+    } catch (e) {
+      set({ error: String(e), backfilling: false, backfillProgress: null });
+      useErrorStore.getState().addError(String(e));
     }
   },
 
@@ -407,6 +453,13 @@ export const useMailStore = create<MailState>((set, get) => ({
         }
         void get().fetchUnclassified(p.account_id);
       }
+    });
+    return unlisten;
+  },
+
+  initBackfillListener: async () => {
+    const unlisten = await listen<SyncProgress>("backfill-progress", (event) => {
+      set({ backfillProgress: event.payload });
     });
     return unlisten;
   },
