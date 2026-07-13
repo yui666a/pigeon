@@ -1,13 +1,9 @@
 use async_trait::async_trait;
 use gcp_auth::{CustomServiceAccount, TokenProvider};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
-use crate::classifier::{parse, prompt, LlmClassifier, TextGenerator};
+use crate::classifier::{build_http_client, LlmClassifier, TextGenerator};
 use crate::error::AppError;
-use crate::models::classifier::{
-    ClassifyAction, ClassifyResult, CorrectionEntry, MailSummary, ProjectSummary,
-};
 
 /// Vertex 上では anthropic_version はヘッダではなくボディに入れ、値はこの固定文字列。
 const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
@@ -34,10 +30,7 @@ impl ClaudeVertexClassifier {
     ) -> Result<Self, AppError> {
         let service_account = CustomServiceAccount::from_json(sa_json)
             .map_err(|e| AppError::MissingApiKey(format!("claude_vertex (invalid SA JSON: {e})")))?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| AppError::HttpRequest(e.to_string()))?;
+        let client = build_http_client()?;
         Ok(Self {
             service_account,
             project_id: project_id.into(),
@@ -167,29 +160,9 @@ impl TextGenerator for ClaudeVertexClassifier {
     }
 }
 
+/// classify は trait のデフォルト実装（generate_text 経由）を使う。
 #[async_trait]
 impl LlmClassifier for ClaudeVertexClassifier {
-    async fn classify(
-        &self,
-        mail: &MailSummary,
-        projects: &[ProjectSummary],
-        corrections: &[CorrectionEntry],
-    ) -> Result<ClassifyResult, AppError> {
-        let user_prompt = prompt::build_user_prompt(mail, projects, corrections);
-        let content = self.chat(prompt::SYSTEM_PROMPT, &user_prompt).await?;
-        match parse::parse_classify_result(&content) {
-            Ok(result) => Ok(result),
-            Err(_) => Ok(ClassifyResult {
-                action: ClassifyAction::Unclassified,
-                confidence: 0.0,
-                reason: format!(
-                    "LLMの応答を解析できませんでした。生の応答: {}",
-                    &content[..content.len().min(100)]
-                ),
-            }),
-        }
-    }
-
     /// 専用の軽量エンドポイントが無いため、最小のダミーメッセージを rawPredict に投げて
     /// 疎通・認証・権限をまとめて検証する。
     async fn health_check(&self) -> Result<(), AppError> {
