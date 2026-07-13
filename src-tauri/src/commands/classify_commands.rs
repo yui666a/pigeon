@@ -1,10 +1,10 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::classifier::factory::build_classifier;
-use crate::classifier::service::{self, PendingClassifications};
+use crate::classifier::service::{self, ClassifyBatches, PendingClassifications};
 use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
-use crate::models::classifier::ClassifyResponse;
+use crate::models::classifier::{ClassifyBatchOutcome, ClassifyResponse};
 use crate::models::mail::Mail;
 use crate::models::project::{CreateProjectRequest, Project};
 use crate::state::{DbState, SecureStoreState};
@@ -27,6 +27,62 @@ pub async fn classify_mail(
 ) -> Result<ClassifyResponse, AppError> {
     let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
     service::classify_one(&db.0, classifier.as_ref(), &pending, &mail_id).await
+}
+
+/// classify-progress イベントの payload
+#[derive(Clone, serde::Serialize)]
+struct ClassifyProgressEvent {
+    account_id: String,
+    current: usize,
+    total: usize,
+}
+
+/// 未分類メールのバッチ分類を開始/再開する。
+///
+/// 1 invoke で「次の停止点（create 提案）または完了/キャンセル」まで進む。
+/// ループの本体は `classifier::service::classify_batch` にあり、ここでは
+/// 分類器の構築と classify-progress イベントの emit のみを行う
+/// （`sync_account` / `sync_service` と同じ分業）。
+#[tauri::command]
+pub async fn classify_batch(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    secure_store: State<'_, SecureStoreState>,
+    account_id: String,
+) -> Result<ClassifyBatchOutcome, AppError> {
+    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    service::classify_batch(
+        &db.0,
+        classifier.as_ref(),
+        &pending,
+        &batches,
+        &account_id,
+        |current, total| {
+            // 進捗はベストエフォート（emit 失敗で分類は止めない）
+            let _ = app.emit(
+                "classify-progress",
+                ClassifyProgressEvent {
+                    account_id: account_id.clone(),
+                    current,
+                    total,
+                },
+            );
+        },
+    )
+    .await
+}
+
+/// 実行中/承認待ちのバッチ分類を中止する。
+/// 実行中ならフラグを立てて次のメール処理前に中断させ、
+/// 承認待ちで停止中ならバッチを即破棄する。
+#[tauri::command]
+pub fn cancel_classification(
+    batches: State<ClassifyBatches>,
+    account_id: String,
+) -> Result<(), AppError> {
+    batches.cancel(&account_id)
 }
 
 /// Approve an AI classification (user confirms the assigned project).

@@ -1,8 +1,12 @@
 # 逐次分類（新規プロジェクト提案の1件ずつ承認）設計書
 
 - 作成日: 2026-07-12
-- ステータス: 実装済み
-- 関連: `2026-04-13-phase2-ai-classification-design.md`, `2026-07-11-classification-accuracy-improvement-design.md`
+- ステータス: 置き換え済み（ループの置き場所のみ変更。ワークフロー意味論は維持）
+  - バッチ分類ループは `2026-07-13-classify-batch-backend-design.md` で
+    バックエンドの `classify_batch` ユースケースへ戻した。本書の要望 1〜3
+    （create は1件ずつ承認・承認案件の即時反映・新案件込みで継続）は
+    そのまま引き継がれている。
+- 関連: `2026-04-13-phase2-ai-classification-design.md`, `2026-07-11-classification-accuracy-improvement-design.md`, `2026-07-13-classify-batch-backend-design.md`
 
 ## 1. 目的
 
