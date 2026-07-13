@@ -24,28 +24,54 @@ pub fn insert_account_with_id(
     get_account(conn, id)
 }
 
+/// accounts テーブルの1行を Account へ変換する共通マッパー。
+/// カラム順は `SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port,
+/// auth_type, provider, created_at` に一致させること。
+///
+/// 未知の auth_type / provider は Plain / Other にフォールバックするが、
+/// 黙って丸めると OAuth アカウントが Plain 扱いになり原因不明の認証失敗に
+/// つながるため（B-10）、必ず警告ログを残す。エラー化しないのは、新しい値を
+/// 書く将来バージョンの DB を旧バージョンで開いた場合にアカウント一覧全体が
+/// 読めなくなるのを避けるため。
+fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
+    let id: String = row.get(0)?;
+    let auth_str: String = row.get(7)?;
+    let provider_str: String = row.get(8)?;
+    let auth_type = AuthType::try_from(auth_str.as_str()).unwrap_or_else(|e| {
+        eprintln!(
+            "[warn] account {}: {} — falling back to auth_type=plain",
+            id, e
+        );
+        AuthType::Plain
+    });
+    let provider = AccountProvider::try_from(provider_str.as_str()).unwrap_or_else(|e| {
+        eprintln!(
+            "[warn] account {}: {} — falling back to provider=other",
+            id, e
+        );
+        AccountProvider::Other
+    });
+    Ok(Account {
+        id,
+        name: row.get(1)?,
+        email: row.get(2)?,
+        imap_host: row.get(3)?,
+        imap_port: row.get::<_, u32>(4)? as u16,
+        smtp_host: row.get(5)?,
+        smtp_port: row.get::<_, u32>(6)? as u16,
+        auth_type,
+        provider,
+        created_at: row.get(9)?,
+        needs_reauth: false,
+    })
+}
+
 pub fn get_account(conn: &Connection, id: &str) -> Result<Account, AppError> {
     conn.query_row(
         "SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, auth_type, provider, created_at
          FROM accounts WHERE id = ?1",
         params![id],
-        |row| {
-            let auth_str: String = row.get(7)?;
-            let provider_str: String = row.get(8)?;
-            Ok(Account {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                email: row.get(2)?,
-                imap_host: row.get(3)?,
-                imap_port: row.get::<_, u32>(4)? as u16,
-                smtp_host: row.get(5)?,
-                smtp_port: row.get::<_, u32>(6)? as u16,
-                auth_type: AuthType::try_from(auth_str.as_str()).unwrap_or(AuthType::Plain),
-                provider: AccountProvider::try_from(provider_str.as_str()).unwrap_or(AccountProvider::Other),
-                created_at: row.get(9)?,
-                needs_reauth: false,
-            })
-        },
+        row_to_account,
     ).map_err(|_| AppError::AccountNotFound(id.to_string()))
 }
 
@@ -55,26 +81,8 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>, AppError> {
          FROM accounts ORDER BY created_at",
     )?;
     let accounts = stmt
-        .query_map([], |row| {
-            let auth_str: String = row.get(7)?;
-            let provider_str: String = row.get(8)?;
-            Ok(Account {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                email: row.get(2)?,
-                imap_host: row.get(3)?,
-                imap_port: row.get::<_, u32>(4)? as u16,
-                smtp_host: row.get(5)?,
-                smtp_port: row.get::<_, u32>(6)? as u16,
-                auth_type: AuthType::try_from(auth_str.as_str()).unwrap_or(AuthType::Plain),
-                provider: AccountProvider::try_from(provider_str.as_str())
-                    .unwrap_or(AccountProvider::Other),
-                created_at: row.get(9)?,
-                needs_reauth: false,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map([], row_to_account)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(accounts)
 }
 
@@ -105,24 +113,7 @@ pub fn account_exists_by_email(
         "SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, auth_type, provider, created_at
          FROM accounts WHERE email = ?1",
     )?;
-    let mut rows = stmt.query_map(params![email], |row| {
-        let auth_str: String = row.get(7)?;
-        let provider_str: String = row.get(8)?;
-        Ok(Account {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            email: row.get(2)?,
-            imap_host: row.get(3)?,
-            imap_port: row.get::<_, u32>(4)? as u16,
-            smtp_host: row.get(5)?,
-            smtp_port: row.get::<_, u32>(6)? as u16,
-            auth_type: AuthType::try_from(auth_str.as_str()).unwrap_or(AuthType::Plain),
-            provider: AccountProvider::try_from(provider_str.as_str())
-                .unwrap_or(AccountProvider::Other),
-            created_at: row.get(9)?,
-            needs_reauth: false,
-        })
-    })?;
+    let mut rows = stmt.query_map(params![email], row_to_account)?;
     match rows.next() {
         Some(Ok(account)) => Ok(Some(account)),
         Some(Err(e)) => Err(AppError::Database(e)),

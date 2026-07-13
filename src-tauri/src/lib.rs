@@ -118,9 +118,21 @@ pub fn run() {
                                 Ok(s) => s,
                                 Err(_) => return,
                             };
-                        stmt.query_map([], |row| row.get(0))
-                            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                            .unwrap_or_default()
+                        // バックグラウンドスキャンはベストエフォートだが、行の読み落としを
+                        // 黙って空扱いにせず、失敗は警告ログを残してスキップする（B-10）
+                        let rows = stmt
+                            .query_map([], |row| row.get(0))
+                            .and_then(|rows| rows.collect::<rusqlite::Result<Vec<String>>>());
+                        match rows {
+                            Ok(t) => t,
+                            Err(e) => {
+                                eprintln!(
+                                    "[warn] startup scan: failed to read project_directories: {}",
+                                    e
+                                );
+                                return;
+                            }
+                        }
                     };
                     if targets.is_empty() {
                         return;

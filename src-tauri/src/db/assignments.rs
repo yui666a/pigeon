@@ -129,8 +129,7 @@ pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec
     ))?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
 
@@ -145,8 +144,7 @@ pub fn get_mails_by_project(conn: &Connection, project_id: &str) -> Result<Vec<M
     ))?;
     let mails = stmt
         .query_map(params![project_id], row_to_mail)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
 
@@ -166,8 +164,7 @@ pub fn get_recent_subjects(
     )?;
     let subjects = stmt
         .query_map(params![project_id, limit], |row| row.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(subjects)
 }
 
@@ -189,8 +186,7 @@ pub fn get_top_senders(
     )?;
     let senders = stmt
         .query_map(params![project_id, limit], |row| row.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(senders)
 }
 
@@ -256,8 +252,7 @@ pub fn get_recent_corrections(
                 to_project: row.get(2)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(corrections)
 }
 
@@ -363,8 +358,7 @@ fn get_assignment_map(
     )?;
     let map = stmt
         .query_map(params![account_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
     Ok(map)
 }
 
@@ -378,8 +372,7 @@ fn get_follow_exclusions(conn: &Connection, account_id: &str) -> Result<HashSet<
     )?;
     let excluded = stmt
         .query_map(params![account_id], |row| row.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
     Ok(excluded)
 }
 

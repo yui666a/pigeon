@@ -41,8 +41,7 @@ pub async fn classify_mail(
         let conn = db.0.lock().map_err(AppError::lock_err)?;
         let mail = mails::get_mail_by_id(&conn, &mail_id)?;
         let project_summaries = projects::build_project_summaries(&conn, &mail.account_id, false)?;
-        let corrections =
-            assignments::get_recent_corrections(&conn, &mail.account_id, 20).unwrap_or_default();
+        let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)?;
         let classifier = build_classifier(&conn, &secure_store.0)?;
         (mail, project_summaries, corrections, classifier)
     };

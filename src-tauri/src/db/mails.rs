@@ -1,7 +1,7 @@
 use crate::db::assignments;
 use crate::error::AppError;
 use crate::models::mail::{Mail, Thread, UnreadCounts};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 
 /// Column list for SELECT queries on the mails table (no table prefix).
@@ -156,8 +156,7 @@ pub fn get_mails_by_account(
     ))?;
     let mails = stmt
         .query_map(params![account_id, folder], row_to_mail)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
 
@@ -173,32 +172,29 @@ pub fn get_all_mails_by_account(
     ))?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
 
 pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<u32, AppError> {
-    let uid: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(uid), 0) FROM mails WHERE account_id = ?1 AND folder = ?2",
-            params![account_id, folder],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    // 集計クエリは常に1行返す（行なしは COALESCE で 0）。エラーは同期 watermark を
+    // 誤って 0 に丸めないようそのまま伝播する（B-10）
+    let uid: u32 = conn.query_row(
+        "SELECT COALESCE(MAX(uid), 0) FROM mails WHERE account_id = ?1 AND folder = ?2",
+        params![account_id, folder],
+        |row| row.get(0),
+    )?;
     Ok(uid)
 }
 
 /// folder 内の最小 uid を返す（行が無ければ 0）。バックフィルの起点
 /// （ここ未満の UID をサーバーへ遡って問い合わせる）に使う。
 pub fn get_min_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<u32, AppError> {
-    let uid: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MIN(uid), 0) FROM mails WHERE account_id = ?1 AND folder = ?2",
-            params![account_id, folder],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let uid: u32 = conn.query_row(
+        "SELECT COALESCE(MIN(uid), 0) FROM mails WHERE account_id = ?1 AND folder = ?2",
+        params![account_id, folder],
+        |row| row.get(0),
+    )?;
     Ok(uid)
 }
 
@@ -213,14 +209,12 @@ pub fn get_max_confirmed_uid(
     account_id: &str,
     folder: &str,
 ) -> Result<u32, AppError> {
-    let uid: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(uid), 0) FROM mails
-             WHERE account_id = ?1 AND folder = ?2 AND uid_confirmed = 1",
-            params![account_id, folder],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let uid: u32 = conn.query_row(
+        "SELECT COALESCE(MAX(uid), 0) FROM mails
+         WHERE account_id = ?1 AND folder = ?2 AND uid_confirmed = 1",
+        params![account_id, folder],
+        |row| row.get(0),
+    )?;
     Ok(uid)
 }
 
@@ -287,7 +281,7 @@ pub fn get_mail_id_by_message_id(
             params![account_id, folder, message_id],
             |row| row.get::<_, String>(0),
         )
-        .ok();
+        .optional()?;
     Ok(id)
 }
 
@@ -306,7 +300,7 @@ fn find_uid_occupant(
             params![account_id, folder, uid],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
-        .ok();
+        .optional()?;
     Ok(row)
 }
 
@@ -414,13 +408,12 @@ fn merge_duplicate_sent_rows(
 
 /// 指定メールに案件割り当てが1件以上あるか。
 fn has_project_assignment(conn: &Connection, mail_id: &str) -> Result<bool, AppError> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM mail_project_assignments WHERE mail_id = ?1)",
-            params![mail_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
+    // EXISTS は常に1行返すため「行なし」ケースはなく、エラーはそのまま伝播する
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM mail_project_assignments WHERE mail_id = ?1)",
+        params![mail_id],
+        |row| row.get(0),
+    )?;
     Ok(exists)
 }
 
@@ -491,8 +484,7 @@ pub fn get_recent_unread_subjects(
     )?;
     let subjects = stmt
         .query_map(params![account_id, limit], |row| row.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(subjects)
 }
 
@@ -508,8 +500,7 @@ pub fn get_unread_counts(conn: &Connection, account_id: &str) -> Result<UnreadCo
         .query_map(params![account_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
 
     let unclassified: u32 = conn.query_row(
         "SELECT COUNT(*) FROM mails m
@@ -686,8 +677,7 @@ pub fn get_thread_metas_by_account(
                 date: row.get(5)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(metas)
 }
 
@@ -1505,6 +1495,23 @@ mod tests {
         mail.uid = 42;
         insert_mail(&conn, &mail).unwrap();
         assert_eq!(get_max_uid(&conn, "acc1", "INBOX").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_get_max_uid_propagates_real_errors() {
+        // B-10: 「行なし」は Ok(0) だが、DB 破損等の実エラーを 0 に丸めてはいけない。
+        // watermark が誤って 0 になると全件再取得や取りこぼしを誘発するため Err で伝播する
+        let conn = setup_db();
+        assert_eq!(get_max_uid(&conn, "acc1", "INBOX").unwrap(), 0, "行なしは Ok(0)");
+
+        // 実エラーを注入: mails テーブル自体を破壊する
+        conn.execute_batch("DROP TABLE mails").unwrap();
+        assert!(
+            get_max_uid(&conn, "acc1", "INBOX").is_err(),
+            "実エラーは 0 に丸めず Err で伝播する"
+        );
+        assert!(get_min_uid(&conn, "acc1", "INBOX").is_err());
+        assert!(get_max_confirmed_uid(&conn, "acc1", "INBOX").is_err());
     }
 
     #[test]

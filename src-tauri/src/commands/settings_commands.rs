@@ -28,16 +28,16 @@ pub(crate) fn load_llm_settings(
     store: &SecureStore,
 ) -> Result<LlmSettings, AppError> {
     Ok(LlmSettings {
-        provider: settings::get_or_default(conn, "llm_provider", "ollama"),
-        ollama_endpoint: settings::get_or_default(conn, "ollama_endpoint", "http://localhost:11434"),
-        ollama_model: settings::get_or_default(conn, "ollama_model", "llama3.1:8b"),
-        claude_model: settings::get_or_default(conn, "claude_model", "claude-haiku-4-5"),
+        provider: settings::get_or_default(conn, "llm_provider", "ollama")?,
+        ollama_endpoint: settings::get_or_default(conn, "ollama_endpoint", "http://localhost:11434")?,
+        ollama_model: settings::get_or_default(conn, "ollama_model", "llama3.1:8b")?,
+        claude_model: settings::get_or_default(conn, "claude_model", "claude-haiku-4-5")?,
         claude_api_key_set: secret_is_set(store, CLAUDE_API_KEY)?,
-        vertex_project_id: settings::get_or_default(conn, "vertex_project_id", ""),
-        vertex_location: settings::get_or_default(conn, "vertex_location", DEFAULT_VERTEX_LOCATION),
-        vertex_model: settings::get_or_default(conn, "vertex_model", DEFAULT_VERTEX_MODEL),
+        vertex_project_id: settings::get_or_default(conn, "vertex_project_id", "")?,
+        vertex_location: settings::get_or_default(conn, "vertex_location", DEFAULT_VERTEX_LOCATION)?,
+        vertex_model: settings::get_or_default(conn, "vertex_model", DEFAULT_VERTEX_MODEL)?,
         vertex_sa_json_set: secret_is_set(store, VERTEX_SA_JSON)?,
-        gemini_model: settings::get_or_default(conn, "gemini_model", DEFAULT_GEMINI_MODEL),
+        gemini_model: settings::get_or_default(conn, "gemini_model", DEFAULT_GEMINI_MODEL)?,
     })
 }
 

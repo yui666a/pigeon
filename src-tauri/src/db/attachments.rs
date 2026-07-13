@@ -56,8 +56,7 @@ pub fn get_by_mail_id(conn: &Connection, mail_id: &str) -> Result<Vec<Attachment
     )?;
     let attachments = stmt
         .query_map(params![mail_id], row_to_attachment)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(attachments)
 }
 
