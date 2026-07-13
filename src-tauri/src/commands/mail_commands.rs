@@ -194,8 +194,7 @@ async fn sync_folder_into(
         initial_limit,
         |batch, progress| {
             // バッチ単位でロックを取り、挿入してから進捗を通知する
-            {
-                let conn = state.0.lock().map_err(AppError::lock_err)?;
+            state.with_conn(|conn| {
                 for fetched in batch {
                     if let Some(mail) = mime_parser::parse_mime(
                         &fetched.body,
@@ -207,9 +206,9 @@ async fn sync_folder_into(
                         fetched.flags,
                     ) {
                         let inserted = match strategy {
-                            MergeStrategy::InsertOrIgnore => mails::insert_mail(&conn, &mail)?,
+                            MergeStrategy::InsertOrIgnore => mails::insert_mail(conn, &mail)?,
                             MergeStrategy::UpsertByMessageId => {
-                                mails::upsert_sent_mail(&conn, &mail)?
+                                mails::upsert_sent_mail(conn, &mail)?
                             }
                         };
                         // 既存行の無視・uid 更新のみは新規取り込みに数えない
@@ -218,7 +217,8 @@ async fn sync_folder_into(
                         }
                     }
                 }
-            }
+                Ok(())
+            })?;
             on_progress(progress.done, progress.total);
             Ok(())
         },
@@ -238,32 +238,25 @@ async fn sync_sent_folder(
     account_id: &str,
     initial_limit: u32,
 ) -> u32 {
-    let sent_since = {
-        let conn = match state.0.lock() {
-            Ok(c) => c,
-            Err(_) => return 0,
-        };
-        // 送信時の推定 uid（uid_confirmed=0）を watermark に含めるとサーバー行が
-        // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）。
-        // 読み出し失敗を watermark=0 に丸めると全件再取得になるため、
-        // この関数のベストエフォート方針に合わせて警告ログを出して同期をスキップする
-        match mails::get_max_confirmed_uid(&conn, account_id, "Sent") {
+    // 送信時の推定 uid（uid_confirmed=0）を watermark に含めるとサーバー行が
+    // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）。
+    // 読み出し失敗を watermark=0 に丸めると全件再取得になるため、
+    // この関数のベストエフォート方針に合わせて警告ログを出して同期をスキップする
+    let sent_since =
+        match state.with_conn(|conn| mails::get_max_confirmed_uid(conn, account_id, "Sent")) {
             Ok(uid) => uid,
             Err(e) => {
                 eprintln!("[warn] Sent watermark read failed: {}", e);
                 return 0;
             }
-        }
-    };
+        };
 
     let server_folder = match imap_client::find_sent_folder(session).await {
         Ok(Some(name)) => name,
         Ok(None) => {
-            let conn = match state.0.lock() {
-                Ok(c) => c,
-                Err(_) => return 0,
-            };
-            match crate::db::settings::get_or_default(&conn, "sent_folder", "Sent") {
+            match state
+                .with_conn(|conn| crate::db::settings::get_or_default(conn, "sent_folder", "Sent"))
+            {
                 Ok(folder) => folder,
                 Err(e) => {
                     eprintln!("[warn] sent_folder setting read failed: {}", e);
@@ -304,13 +297,12 @@ async fn sync_account_inner(
     account_id: &str,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<u32, AppError> {
-    let (account, max_uid, initial_limit) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let account = accounts::get_account(&conn, account_id)?;
-        let max_uid = mails::get_max_uid(&conn, account_id, "INBOX")?;
-        let initial_limit = crate::db::settings::get_u32_or(&conn, "initial_sync_limit", 5000)?;
-        (account, max_uid, initial_limit)
-    };
+    let (account, max_uid, initial_limit) = state.with_conn(|conn| {
+        let account = accounts::get_account(conn, account_id)?;
+        let max_uid = mails::get_max_uid(conn, account_id, "INBOX")?;
+        let initial_limit = crate::db::settings::get_u32_or(conn, "initial_sync_limit", 5000)?;
+        Ok((account, max_uid, initial_limit))
+    })?;
 
     let (auth_type, username, credential) =
         resolve_imap_credentials(&account, secure_store).await?;
@@ -345,10 +337,7 @@ async fn sync_account_inner(
         match imap_client::fetch_flag_map(&mut session, "INBOX").await {
             Ok(flag_map) => {
                 let update_result = state
-                    .0
-                    .lock()
-                    .map_err(AppError::lock_err)
-                    .and_then(|conn| mails::update_flag_state(&conn, account_id, "INBOX", &flag_map));
+                    .with_conn(|conn| mails::update_flag_state(conn, account_id, "INBOX", &flag_map));
                 if let Err(e) = update_result {
                     eprintln!("[warn] flag-state DB update failed: {}", e);
                 }
@@ -387,8 +376,7 @@ async fn backfill_folder_into(
         min_uid_exclusive,
         limit,
         |batch, progress| {
-            {
-                let conn = state.0.lock().map_err(AppError::lock_err)?;
+            state.with_conn(|conn| {
                 for m in batch {
                     if let Some(mail) = mime_parser::parse_mime(
                         &m.body,
@@ -399,12 +387,13 @@ async fn backfill_folder_into(
                         m.is_flagged,
                         m.flags,
                     ) {
-                        if mails::insert_mail(&conn, &mail)? {
+                        if mails::insert_mail(conn, &mail)? {
                             fetched += 1;
                         }
                     }
                 }
-            }
+                Ok(())
+            })?;
             on_progress(progress.done, progress.total);
             Ok(())
         },
@@ -423,12 +412,11 @@ async fn backfill_account_inner(
     limit: u32,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<BackfillOutcome, AppError> {
-    let (account, min_uid) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let account = accounts::get_account(&conn, account_id)?;
-        let min_uid = mails::get_min_uid(&conn, account_id, "INBOX")?;
-        (account, min_uid)
-    };
+    let (account, min_uid) = state.with_conn(|conn| {
+        let account = accounts::get_account(conn, account_id)?;
+        let min_uid = mails::get_min_uid(conn, account_id, "INBOX")?;
+        Ok((account, min_uid))
+    })?;
 
     // min_uid=0 はローカルにメールが1件もない（通常の初回同期に任せる範囲）。
     // バックフィルの対象がそもそも存在しないため、接続せずに終える
@@ -482,10 +470,7 @@ pub fn mark_read(
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let (folder, uid) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::mark_read(&conn, &mail_id)?
-    };
+    let (folder, uid) = state.with_conn(|conn| mails::mark_read(conn, &mail_id))?;
 
     // サーバー反映は同期処理と独立の都度接続で行い、UI をブロックしない
     tauri::async_runtime::spawn(async move {
@@ -508,11 +493,9 @@ async fn push_seen_flag(
 ) -> Result<(), AppError> {
     use tauri::Manager;
 
-    let account = {
-        let db = app.state::<DbState>();
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        accounts::get_account(&conn, account_id)?
-    };
+    let account = app
+        .state::<DbState>()
+        .with_conn(|conn| accounts::get_account(conn, account_id))?;
     let secure_store = app.state::<SecureStoreState>();
     let (auth_type, username, credential) =
         resolve_imap_credentials(&account, &secure_store.0).await?;
@@ -561,12 +544,9 @@ pub(crate) async fn delete_mail_inner(
     creds: &tokio::sync::OnceCell<ImapCredentials>,
     mail_id: &str,
 ) -> Result<(), AppError> {
-    let mail = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::get_mail_by_id(&conn, mail_id)?
-    };
-
     // サーバー処理中は DB ロックを保持しない
+    let mail = state.with_conn(|conn| mails::get_mail_by_id(conn, mail_id))?;
+
     if plan_delete(&mail.folder) == DeletePlan::Server {
         let (auth_type, username, credential) = creds
             .get_or_try_init(|| resolve_imap_credentials(account, secure_store))
@@ -584,10 +564,7 @@ pub(crate) async fn delete_mail_inner(
     }
 
     // サーバー成功後にのみローカルへ反映する（設計書「エラー・順序の原則」）
-    {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::delete_mail(&conn, mail_id)?;
-    }
+    state.with_conn(|conn| mails::delete_mail(conn, mail_id))?;
     // DB削除成功後、添付キャッシュをベストエフォートで掃除する
     // （失敗しても削除自体は成功扱い。孤児化したディスクリークの防止）
     crate::commands::attachment_commands::remove_attachment_cache_for_mail(mail_id);
@@ -602,10 +579,7 @@ pub async fn delete_mail(
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let account = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        accounts::get_account(&conn, &account_id)?
-    };
+    let account = state.with_conn(|conn| accounts::get_account(conn, &account_id))?;
     // 資格情報は遅延解決（Sent の削除はローカルのみで IMAP 認証が不要）
     let creds = tokio::sync::OnceCell::new();
     delete_mail_inner(&state, &secure_store.0, &account, &creds, &mail_id).await
@@ -623,10 +597,7 @@ pub(crate) async fn archive_mail_inner(
     creds: &tokio::sync::OnceCell<ImapCredentials>,
     mail_id: &str,
 ) -> Result<(), AppError> {
-    let mail = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::get_mail_by_id(&conn, mail_id)?
-    };
+    let mail = state.with_conn(|conn| mails::get_mail_by_id(conn, mail_id))?;
 
     let plan = plan_archive(&account.provider, &mail.folder, archive_folder);
     if plan != ArchivePlan::LocalOnly {
@@ -650,8 +621,7 @@ pub(crate) async fn archive_mail_inner(
         .await?;
     }
 
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    mails::update_folder(&conn, mail_id, "Archive")
+    state.with_conn(|conn| mails::update_folder(conn, mail_id, "Archive"))
 }
 
 /// メールをアーカイブする（単体）。
@@ -662,12 +632,11 @@ pub async fn archive_mail(
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let (account, archive_folder) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let account = accounts::get_account(&conn, &account_id)?;
-        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive")?;
-        (account, archive_folder)
-    };
+    let (account, archive_folder) = state.with_conn(|conn| {
+        let account = accounts::get_account(conn, &account_id)?;
+        let archive_folder = settings::get_or_default(conn, "archive_folder", "Archive")?;
+        Ok((account, archive_folder))
+    })?;
     // 資格情報は遅延解決（Sent のアーカイブはローカルのみで IMAP 認証が不要）
     let creds = tokio::sync::OnceCell::new();
     archive_mail_inner(
@@ -691,8 +660,7 @@ pub fn unarchive_mail(
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    unarchive_mail_inner(&conn, &account_id, &mail_id)
+    state.with_conn(|conn| unarchive_mail_inner(conn, &account_id, &mail_id))
 }
 
 fn unarchive_mail_inner(
@@ -716,8 +684,7 @@ pub fn get_unread_counts(
     state: State<DbState>,
     account_id: String,
 ) -> Result<UnreadCounts, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    mails::get_unread_counts(&conn, &account_id)
+    state.with_conn(|conn| mails::get_unread_counts(conn, &account_id))
 }
 
 /// デスクトップ通知の件名プレビュー用に、直近の未読メール件名を返す
@@ -728,8 +695,7 @@ pub fn get_recent_unread_subjects(
     account_id: String,
     limit: u32,
 ) -> Result<Vec<String>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    mails::get_recent_unread_subjects(&conn, &account_id, limit)
+    state.with_conn(|conn| mails::get_recent_unread_subjects(conn, &account_id, limit))
 }
 
 #[tauri::command]
@@ -738,8 +704,8 @@ pub fn get_threads(
     account_id: String,
     folder: String,
 ) -> Result<Vec<Thread>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    let all_mails = mails::get_mails_by_account(&conn, &account_id, &folder)?;
+    let all_mails =
+        state.with_conn(|conn| mails::get_mails_by_account(conn, &account_id, &folder))?;
     Ok(mails::build_threads(&all_mails))
 }
 
@@ -748,8 +714,7 @@ pub fn get_threads_by_project(
     state: State<DbState>,
     project_id: String,
 ) -> Result<Vec<Thread>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    mails::get_threads_by_project(&conn, &project_id)
+    state.with_conn(|conn| mails::get_threads_by_project(conn, &project_id))
 }
 
 #[cfg(test)]

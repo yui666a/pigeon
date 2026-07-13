@@ -74,14 +74,13 @@ pub async fn classify_mail(
     mail_id: String,
 ) -> Result<ClassifyResponse, AppError> {
     // Load mail and settings while holding the lock briefly.
-    let (mail, project_summaries, corrections, classifier) = {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        let mail = mails::get_mail_by_id(&conn, &mail_id)?;
-        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id, false)?;
-        let corrections = assignments::get_recent_corrections(&conn, &mail.account_id, 20)?;
-        let classifier = build_classifier(&conn, &secure_store.0)?;
-        (mail, project_summaries, corrections, classifier)
-    };
+    let (mail, project_summaries, corrections, classifier) = db.with_conn(|conn| {
+        let mail = mails::get_mail_by_id(conn, &mail_id)?;
+        let project_summaries = projects::build_project_summaries(conn, &mail.account_id, false)?;
+        let corrections = assignments::get_recent_corrections(conn, &mail.account_id, 20)?;
+        let classifier = build_classifier(conn, &secure_store.0)?;
+        Ok((mail, project_summaries, corrections, classifier))
+    })?;
 
     let mail_summary = MailSummary::from_mail(&mail);
 
@@ -94,10 +93,7 @@ pub async fn classify_mail(
         .await?;
 
     // Persist / queue pending
-    {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        persist_classify_result(&conn, &pending, &mail_id, &result)?;
-    }
+    db.with_conn(|conn| persist_classify_result(conn, &pending, &mail_id, &result))?;
 
     Ok(ClassifyResponse { mail_id, result })
 }
@@ -132,8 +128,7 @@ pub fn approve_classification(
     mail_id: String,
     project_id: String,
 ) -> Result<(), AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    approve_classification_inner(&conn, &pending, &mail_id, &project_id)
+    db.with_conn(|conn| approve_classification_inner(conn, &pending, &mail_id, &project_id))
 }
 
 fn approve_classification_inner(
@@ -156,24 +151,25 @@ pub fn approve_new_project(
     project_name: String,
     description: Option<String>,
 ) -> Result<Project, AppError> {
-    let mut conn = db.0.lock().map_err(AppError::lock_err)?;
+    let project = db.with_conn_mut(|conn| {
+        // Load mail to get account_id
+        let mail = mails::get_mail_by_id(conn, &mail_id)?;
 
-    // Load mail to get account_id
-    let mail = mails::get_mail_by_id(&conn, &mail_id)?;
+        let tx = conn.transaction()?;
 
-    let tx = conn.transaction()?;
+        let req = CreateProjectRequest {
+            account_id: mail.account_id.clone(),
+            name: project_name,
+            description,
+            color: None,
+        };
+        let project = projects::insert_project(&tx, &req)?;
 
-    let req = CreateProjectRequest {
-        account_id: mail.account_id.clone(),
-        name: project_name,
-        description,
-        color: None,
-    };
-    let project = projects::insert_project(&tx, &req)?;
+        assignments::assign_mail(&tx, &mail_id, &project.id, "user", Some(1.0))?;
 
-    assignments::assign_mail(&tx, &mail_id, &project.id, "user", Some(1.0))?;
-
-    tx.commit()?;
+        tx.commit()?;
+        Ok(project)
+    })?;
 
     // Remove from pending map
     pending.remove(&mail_id)?;
@@ -191,8 +187,7 @@ pub fn reject_classification(
     pending.remove(&mail_id)?;
 
     // Also remove from DB assignments if present
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    let result = assignments::reject_classification(&conn, &mail_id);
+    let result = db.with_conn(|conn| assignments::reject_classification(conn, &mail_id));
     match result {
         Ok(()) => Ok(()),
         // MailNotFound means there was no assignment -- that's fine after removing from pending
@@ -207,8 +202,7 @@ pub fn get_unclassified_mails(
     db: State<DbState>,
     account_id: String,
 ) -> Result<Vec<Mail>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    assignments::get_unclassified_mails(&conn, &account_id)
+    db.with_conn(|conn| assignments::get_unclassified_mails(conn, &account_id))
 }
 
 /// 未分類メールをスレッド単位で返す（未分類一覧のスレッド表示用）。
@@ -224,8 +218,7 @@ pub fn get_unclassified_threads(
     pending: State<PendingClassifications>,
     account_id: String,
 ) -> Result<Vec<crate::models::mail::Thread>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    get_unclassified_threads_inner(&conn, &pending, &account_id)
+    db.with_conn(|conn| get_unclassified_threads_inner(conn, &pending, &account_id))
 }
 
 fn get_unclassified_threads_inner(
@@ -250,8 +243,7 @@ pub fn move_mail(
     mail_id: String,
     project_id: String,
 ) -> Result<(), AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    move_mail_inner(&conn, &pending, &mail_id, &project_id)
+    db.with_conn(|conn| move_mail_inner(conn, &pending, &mail_id, &project_id))
 }
 
 /// `move_mail` の本体。`bulk_move_mails` からも1件ずつ再利用される。
@@ -269,8 +261,7 @@ pub(crate) fn move_mail_inner(
 /// Get all mails assigned to a specific project.
 #[tauri::command]
 pub fn get_mails_by_project(db: State<DbState>, project_id: String) -> Result<Vec<Mail>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    assignments::get_mails_by_project(&conn, &project_id)
+    db.with_conn(|conn| assignments::get_mails_by_project(conn, &project_id))
 }
 
 #[cfg(test)]

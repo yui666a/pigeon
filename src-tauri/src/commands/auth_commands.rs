@@ -210,46 +210,46 @@ async fn handle_oauth_callback_inner(
 
     // 再認証判定 → 重複メール判定 → アカウント挿入は、間に別コマンドの書き込みが
     // 割り込むと判定が古くなる（TOCTOU）ため、単一のロックスコープで行う
-    let conn = db_state.0.lock().map_err(AppError::lock_err)?;
-
-    // Check if this is a reauth (account already exists in DB)
-    if accounts::get_account(&conn, &pending.account_id).is_ok() {
-        // Reauth: only save token, skip DB insert
-        save_oauth_token(secure_store, &pending.account_id, &token_data)?;
-        return Ok(pending.account_id);
-    }
-
-    // Check for duplicate email
-    if let Some(existing) = accounts::account_exists_by_email(&conn, &email)? {
-        return Err(AppError::DuplicateAccount(format!(
-            "Account with email {} already exists (id: {})",
-            email, existing.id
-        )));
-    }
-
-    // Save tokens to SecureStore
-    save_oauth_token(secure_store, &pending.account_id, &token_data)?;
-
-    // Save account to DB
-    let req = CreateAccountRequest {
-        name: email.clone(),
-        email: email.clone(),
-        imap_host: oauth::GOOGLE_IMAP_HOST.into(),
-        imap_port: oauth::GOOGLE_IMAP_PORT,
-        smtp_host: oauth::GOOGLE_SMTP_HOST.into(),
-        smtp_port: oauth::GOOGLE_SMTP_PORT,
-        auth_type: AuthType::Oauth2,
-        provider: AccountProvider::Google,
-        password: None,
-    };
-    match accounts::insert_account_with_id(&conn, &pending.account_id, &req) {
-        Ok(account) => Ok(account.id),
-        Err(e) => {
-            // Compensating action: remove token from SecureStore if DB insert fails
-            let _ = secure_store.delete(&format!("oauth_{}", pending.account_id));
-            Err(e)
+    db_state.with_conn(|conn| {
+        // Check if this is a reauth (account already exists in DB)
+        if accounts::get_account(conn, &pending.account_id).is_ok() {
+            // Reauth: only save token, skip DB insert
+            save_oauth_token(secure_store, &pending.account_id, &token_data)?;
+            return Ok(pending.account_id.clone());
         }
-    }
+
+        // Check for duplicate email
+        if let Some(existing) = accounts::account_exists_by_email(conn, &email)? {
+            return Err(AppError::DuplicateAccount(format!(
+                "Account with email {} already exists (id: {})",
+                email, existing.id
+            )));
+        }
+
+        // Save tokens to SecureStore
+        save_oauth_token(secure_store, &pending.account_id, &token_data)?;
+
+        // Save account to DB
+        let req = CreateAccountRequest {
+            name: email.clone(),
+            email: email.clone(),
+            imap_host: oauth::GOOGLE_IMAP_HOST.into(),
+            imap_port: oauth::GOOGLE_IMAP_PORT,
+            smtp_host: oauth::GOOGLE_SMTP_HOST.into(),
+            smtp_port: oauth::GOOGLE_SMTP_PORT,
+            auth_type: AuthType::Oauth2,
+            provider: AccountProvider::Google,
+            password: None,
+        };
+        match accounts::insert_account_with_id(conn, &pending.account_id, &req) {
+            Ok(account) => Ok(account.id),
+            Err(e) => {
+                // Compensating action: remove token from SecureStore if DB insert fails
+                let _ = secure_store.delete(&format!("oauth_{}", pending.account_id));
+                Err(e)
+            }
+        }
+    })
 }
 
 pub fn save_oauth_token(

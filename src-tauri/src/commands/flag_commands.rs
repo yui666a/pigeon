@@ -17,10 +17,7 @@ pub fn set_flagged(
     mail_id: String,
     flagged: bool,
 ) -> Result<(), AppError> {
-    let (folder, uid) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::set_flagged(&conn, &mail_id, flagged)?
-    };
+    let (folder, uid) = state.with_conn(|conn| mails::set_flagged(conn, &mail_id, flagged))?;
 
     if is_local_only_folder(&folder) {
         return Ok(());
@@ -46,10 +43,7 @@ pub fn mark_unread(
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let (folder, uid) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::mark_unread(&conn, &mail_id)?
-    };
+    let (folder, uid) = state.with_conn(|conn| mails::mark_unread(conn, &mail_id))?;
 
     if is_local_only_folder(&folder) {
         return Ok(());
@@ -76,11 +70,9 @@ async fn push_flagged(
 ) -> Result<(), AppError> {
     use tauri::Manager;
 
-    let account = {
-        let db = app.state::<DbState>();
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        accounts::get_account(&conn, account_id)?
-    };
+    let account = app
+        .state::<DbState>()
+        .with_conn(|conn| accounts::get_account(conn, account_id))?;
     let secure_store = app.state::<crate::state::SecureStoreState>();
     let (auth_type, username, credential) =
         resolve_imap_credentials(&account, &secure_store.0).await?;
@@ -109,11 +101,9 @@ async fn push_unseen_flag(
 ) -> Result<(), AppError> {
     use tauri::Manager;
 
-    let account = {
-        let db = app.state::<DbState>();
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        accounts::get_account(&conn, account_id)?
-    };
+    let account = app
+        .state::<DbState>()
+        .with_conn(|conn| accounts::get_account(conn, account_id))?;
     let secure_store = app.state::<crate::state::SecureStoreState>();
     let (auth_type, username, credential) =
         resolve_imap_credentials(&account, &secure_store.0).await?;

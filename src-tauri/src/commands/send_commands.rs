@@ -176,16 +176,15 @@ pub async fn send_mail(
     req: SendMailRequest,
 ) -> Result<(), AppError> {
     // 1. アカウントと返信元メールを取得
-    let (account, reply_source, sent_folder) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let account = accounts::get_account(&conn, &req.account_id)?;
+    let (account, reply_source, sent_folder) = state.with_conn(|conn| {
+        let account = accounts::get_account(conn, &req.account_id)?;
         let reply_source = match &req.reply_to_mail_id {
-            Some(id) => Some(mails::get_mail_by_id(&conn, id)?),
+            Some(id) => Some(mails::get_mail_by_id(conn, id)?),
             None => None,
         };
-        let sent_folder = settings::get_or_default(&conn, "sent_folder", "Sent")?;
-        (account, reply_source, sent_folder)
-    };
+        let sent_folder = settings::get_or_default(conn, "sent_folder", "Sent")?;
+        Ok((account, reply_source, sent_folder))
+    })?;
 
     // 2. 添付ファイルの読み込み → メッセージ構築（サイズ・アドレス検証含む）
     let attachments = read_attachments(&req.attachments)?;
@@ -231,12 +230,15 @@ pub async fn send_mail(
     // 6. ローカルDBに挿入（FTS5はトリガーで自動反映）。
     //    SMTP送信は成功しているためベストエフォート: ロック取得を含め失敗しても
     //    Err を返さない（persist_sent_local_best_effort のドキュメント参照）
-    match state.0.lock() {
-        Ok(conn) => persist_sent_local_best_effort(&conn, &account, &outgoing, raw.len()),
-        Err(e) => eprintln!(
+    let persisted = state.with_conn(|conn| {
+        persist_sent_local_best_effort(conn, &account, &outgoing, raw.len());
+        Ok(())
+    });
+    if let Err(e) = persisted {
+        eprintln!(
             "[warn] mail sent but local Sent insert skipped (DB lock failed): {}",
             e
-        ),
+        );
     }
 
     Ok(())

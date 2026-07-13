@@ -11,6 +11,5 @@ pub fn search_mails(
     account_id: String,
     query: String,
 ) -> Result<Vec<SearchResult>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    search::search_mails(&conn, &account_id, &query, 100)
+    state.with_conn(|conn| search::search_mails(conn, &account_id, &query, 100))
 }

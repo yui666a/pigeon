@@ -13,20 +13,18 @@ pub fn create_project(
     description: Option<String>,
     color: Option<String>,
 ) -> Result<Project, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
     let req = CreateProjectRequest {
         account_id,
         name,
         description,
         color,
     };
-    projects::insert_project(&conn, &req)
+    state.with_conn(|conn| projects::insert_project(conn, &req))
 }
 
 #[tauri::command]
 pub fn get_projects(state: State<DbState>, account_id: String) -> Result<Vec<Project>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    projects::list_projects(&conn, &account_id)
+    state.with_conn(|conn| projects::list_projects(conn, &account_id))
 }
 
 #[tauri::command]
@@ -37,25 +35,22 @@ pub fn update_project(
     description: Option<String>,
     color: Option<String>,
 ) -> Result<Project, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
     let req = UpdateProjectRequest {
         name,
         description,
         color,
     };
-    projects::update_project(&conn, &id, &req)
+    state.with_conn(|conn| projects::update_project(conn, &id, &req))
 }
 
 #[tauri::command]
 pub fn archive_project(state: State<DbState>, id: String) -> Result<(), AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    projects::archive_project(&conn, &id)
+    state.with_conn(|conn| projects::archive_project(conn, &id))
 }
 
 #[tauri::command]
 pub fn delete_project(state: State<DbState>, id: String) -> Result<(), AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    projects::delete_project(&conn, &id)
+    state.with_conn(|conn| projects::delete_project(conn, &id))
 }
 
 /// Merge source project into target: reassign all mails, log corrections, delete source.
@@ -66,8 +61,7 @@ pub fn merge_projects(
     source_id: String,
     target_id: String,
 ) -> Result<u32, AppError> {
-    let mut conn = state.0.lock().map_err(AppError::lock_err)?;
-    projects::merge_projects(&mut conn, &source_id, &target_id)
+    state.with_conn_mut(|conn| projects::merge_projects(conn, &source_id, &target_id))
 }
 
 #[cfg(test)]

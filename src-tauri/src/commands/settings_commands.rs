@@ -89,8 +89,7 @@ pub fn get_llm_settings(
     db: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
 ) -> Result<LlmSettings, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    load_llm_settings(&conn, &secure_store.0)
+    db.with_conn(|conn| load_llm_settings(conn, &secure_store.0))
 }
 
 #[tauri::command]
@@ -109,21 +108,22 @@ pub fn set_llm_settings(
     vertex_sa_json: Option<String>,
     gemini_model: String,
 ) -> Result<(), AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    store_llm_settings(
-        &conn,
-        &secure_store.0,
-        &provider,
-        &ollama_endpoint,
-        &ollama_model,
-        &claude_model,
-        claude_api_key,
-        &vertex_project_id,
-        &vertex_location,
-        &vertex_model,
-        vertex_sa_json,
-        &gemini_model,
-    )
+    db.with_conn(|conn| {
+        store_llm_settings(
+            conn,
+            &secure_store.0,
+            &provider,
+            &ollama_endpoint,
+            &ollama_model,
+            &claude_model,
+            claude_api_key,
+            &vertex_project_id,
+            &vertex_location,
+            &vertex_model,
+            vertex_sa_json,
+            &gemini_model,
+        )
+    })
 }
 
 /// 画面上の（まだ保存していない）設定で接続を検証する。
