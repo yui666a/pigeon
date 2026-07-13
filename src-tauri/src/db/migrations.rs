@@ -148,89 +148,43 @@ fn migrate_v3(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 1マイグレーション = (適用後のスキーマバージョン, 適用関数)
+type Migration = (i32, fn(&Connection) -> Result<(), AppError>);
+
+/// バージョン昇順に並べたマイグレーション一覧。
+/// 追記時はこの配列の末尾に1行足すだけでよい。
+/// v11 は別機能で予約済みのため欠番（マージ時に順序解決される）
+const MIGRATIONS: &[Migration] = &[
+    (1, migrate_v1),
+    (2, migrate_v2),
+    (3, migrate_v3),
+    (4, migrate_v4),
+    (5, migrate_v5),
+    (6, migrate_v6),
+    (7, migrate_v7),
+    (8, migrate_v8),
+    (9, migrate_v9),
+    (10, migrate_v10),
+    (12, migrate_v12),
+    (13, migrate_v13),
+    (14, migrate_v14),
+];
+
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
-    let mut version = get_schema_version(conn)?;
+    apply_migrations(conn, MIGRATIONS)
+}
 
-    if version < 1 {
-        migrate_v1(conn)?;
-        version = 1;
-        set_schema_version(conn, version)?;
+/// マイグレーション一覧を順に適用する。
+fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<(), AppError> {
+    let version = get_schema_version(conn)?;
+
+    for &(target_version, migrate) in migrations {
+        if version >= target_version {
+            continue;
+        }
+        migrate(conn)?;
+        set_schema_version(conn, target_version)?;
     }
-
-    if version < 2 {
-        migrate_v2(conn)?;
-        version = 2;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 3 {
-        migrate_v3(conn)?;
-        version = 3;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 4 {
-        migrate_v4(conn)?;
-        version = 4;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 5 {
-        migrate_v5(conn)?;
-        version = 5;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 6 {
-        migrate_v6(conn)?;
-        version = 6;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 7 {
-        migrate_v7(conn)?;
-        version = 7;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 8 {
-        migrate_v8(conn)?;
-        version = 8;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 9 {
-        migrate_v9(conn)?;
-        version = 9;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 10 {
-        migrate_v10(conn)?;
-        version = 10;
-        set_schema_version(conn, version)?;
-    }
-
-    // v11 は別機能で予約済みのため欠番（マージ時に順序解決される）
-    if version < 12 {
-        migrate_v12(conn)?;
-        version = 12;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 13 {
-        migrate_v13(conn)?;
-        version = 13;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 14 {
-        migrate_v14(conn)?;
-        version = 14;
-        set_schema_version(conn, version)?;
-    }
-
-    let _ = version;
 
     Ok(())
 }
