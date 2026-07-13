@@ -95,6 +95,56 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
     Ok(affected > 0)
 }
 
+/// 送信直後の Sent ローカル行を、フォルダ内 max(uid)+1 の仮 uid で挿入し、
+/// 採番した uid を返す。
+///
+/// 採番と挿入を単一の INSERT ... SELECT 文で行うことで原子化する。
+/// `get_max_uid + 1` → `insert_mail` の2段構えでは、間に並行する送信や
+/// Sent 同期が同じ uid を採番して UNIQUE(account_id, folder, uid) 違反で
+/// 挿入に失敗し得る（TOCTOU）。
+///
+/// `mail.uid` / `mail.uid_confirmed` は無視される: uid はこの関数が採番し、
+/// 仮採番のため常に uid_confirmed=0 で保存する（Sent 同期の message_id マージで
+/// サーバー実 uid へ後追い確定される。設計書 2026-07-12-sent-sync-uidplus-design.md）。
+pub fn insert_sent_mail_with_next_uid(conn: &Connection, mail: &Mail) -> Result<u32, AppError> {
+    conn.execute(
+        "INSERT INTO mails
+         (id, account_id, folder, message_id, in_reply_to, \"references\",
+          from_addr, to_addr, cc_addr, subject, body_text, body_html,
+          date, has_attachments, raw_size, uid, flags, is_read, is_flagged, fetched_at, uid_confirmed)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                (SELECT COALESCE(MAX(uid), 0) + 1 FROM mails WHERE account_id = ?2 AND folder = ?3),
+                ?16, ?17, ?18, ?19, 0",
+        params![
+            mail.id,
+            mail.account_id,
+            mail.folder,
+            mail.message_id,
+            mail.in_reply_to,
+            mail.references,
+            mail.from_addr,
+            mail.to_addr,
+            mail.cc_addr,
+            mail.subject,
+            mail.body_text,
+            mail.body_html,
+            mail.date,
+            mail.has_attachments,
+            mail.raw_size,
+            mail.flags,
+            mail.is_read,
+            mail.is_flagged,
+            mail.fetched_at,
+        ],
+    )?;
+    let uid: u32 = conn.query_row(
+        "SELECT uid FROM mails WHERE id = ?1",
+        params![mail.id],
+        |row| row.get(0),
+    )?;
+    Ok(uid)
+}
+
 pub fn get_mails_by_account(
     conn: &Connection,
     account_id: &str,
@@ -671,6 +721,77 @@ mod tests {
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].id, "m1", "既存行が残る（REPLACEで消さない）");
         assert_eq!(mails[0].subject, "Original");
+    }
+
+    #[test]
+    fn test_insert_sent_mail_with_next_uid_assigns_sequential_uids() {
+        // 逐次呼び出しで uid が重複せず単調増加すること（B-6: 採番+挿入の原子化）
+        let conn = setup_db();
+
+        let mut m1 = make_mail("s1", "<s1@example.com>", "Sent 1", "2026-07-13T10:00:00");
+        m1.folder = "Sent".into();
+        let uid1 = insert_sent_mail_with_next_uid(&conn, &m1).unwrap();
+        assert_eq!(uid1, 1, "空フォルダでは 1 から採番される");
+
+        let mut m2 = make_mail("s2", "<s2@example.com>", "Sent 2", "2026-07-13T10:01:00");
+        m2.folder = "Sent".into();
+        let uid2 = insert_sent_mail_with_next_uid(&conn, &m2).unwrap();
+        assert_eq!(uid2, 2, "連続採番で衝突しない");
+
+        let mails = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(mails.len(), 2);
+    }
+
+    #[test]
+    fn test_insert_sent_mail_with_next_uid_continues_from_existing_max() {
+        // 既存 max との関係: フォルダ内の最大 uid + 1 が採番されること
+        let conn = setup_db();
+        let mut existing = make_mail("s0", "<s0@example.com>", "Synced", "2026-07-13T09:00:00");
+        existing.folder = "Sent".into();
+        existing.uid = 41;
+        insert_mail(&conn, &existing).unwrap();
+
+        let mut mail = make_mail("s1", "<s1@example.com>", "Sent", "2026-07-13T10:00:00");
+        mail.folder = "Sent".into();
+        let uid = insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
+        assert_eq!(uid, 42);
+
+        let loaded = get_mail_by_id(&conn, "s1").unwrap();
+        assert_eq!(loaded.uid, 42, "採番された uid が永続化される");
+    }
+
+    #[test]
+    fn test_insert_sent_mail_with_next_uid_ignores_caller_uid_and_marks_unconfirmed() {
+        // 呼び出し側の uid 値は無視され、仮採番として uid_confirmed=0 で保存されること
+        let conn = setup_db();
+        let mut mail = make_mail("s1", "<s1@example.com>", "Sent", "2026-07-13T10:00:00");
+        mail.folder = "Sent".into();
+        mail.uid = 9999;
+        mail.uid_confirmed = true;
+
+        let uid = insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
+        assert_eq!(uid, 1, "mail.uid の値は採番に影響しない");
+
+        let loaded = get_mail_by_id(&conn, "s1").unwrap();
+        assert_eq!(loaded.uid, 1);
+        assert!(
+            !loaded.uid_confirmed,
+            "採番 uid は推定値なので常に uid_confirmed=0"
+        );
+    }
+
+    #[test]
+    fn test_insert_sent_mail_with_next_uid_is_scoped_per_folder() {
+        // 他フォルダの uid は採番に影響しないこと
+        let conn = setup_db();
+        let mut inbox = make_mail("i1", "<i1@example.com>", "Inbox", "2026-07-13T09:00:00");
+        inbox.uid = 100; // folder=INBOX
+        insert_mail(&conn, &inbox).unwrap();
+
+        let mut mail = make_mail("s1", "<s1@example.com>", "Sent", "2026-07-13T10:00:00");
+        mail.folder = "Sent".into();
+        let uid = insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
+        assert_eq!(uid, 1, "INBOX の max uid は Sent の採番に影響しない");
     }
 
     #[test]

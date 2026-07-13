@@ -113,13 +113,9 @@ pub(crate) fn build_outgoing(
 }
 
 /// 送信済みメールのローカルDBレコードを構築する（folder='Sent'）。
-/// uid は同フォルダ内の max_uid + 1（UNIQUE(account_id, folder, uid) を満たすため）
-pub(crate) fn build_sent_record(
-    account: &Account,
-    outgoing: &OutgoingMail,
-    uid: u32,
-    raw_size: usize,
-) -> Mail {
+/// uid はここでは 0 のプレースホルダ。挿入時に `insert_sent_mail_with_next_uid` が
+/// フォルダ内 max(uid)+1 を原子的に採番する（TOCTOU による UNIQUE 衝突の防止）
+pub(crate) fn build_sent_record(account: &Account, outgoing: &OutgoingMail, raw_size: usize) -> Mail {
     let now = chrono::Utc::now().to_rfc3339();
     Mail {
         id: uuid::Uuid::new_v4().to_string(),
@@ -141,14 +137,35 @@ pub(crate) fn build_sent_record(
         date: now.clone(),
         has_attachments: !outgoing.attachments.is_empty(),
         raw_size: Some(raw_size as i64),
-        uid,
+        // 挿入時に insert_sent_mail_with_next_uid が採番するプレースホルダ
+        uid: 0,
         flags: Some("\\Seen".into()),
         // 自分が送ったメールは常に既読
         is_read: true,
         is_flagged: false,
         fetched_at: now,
-        // 送信時の uid は get_max_uid+1 の推定値。Sent 同期で後追い確定するまで未確定
+        // 送信時の uid は max_uid+1 の推定値。Sent 同期で後追い確定するまで未確定
         uid_confirmed: false,
+    }
+}
+
+/// SMTP 送信成功後のローカル Sent 反映（ベストエフォート）。
+/// この時点で送信自体は完了しているため、DB挿入の失敗を Err として伝播しない。
+/// Err を返すとUIが「送信失敗」を表示し、ユーザーの再送で二重送信になるため、
+/// 失敗は警告ログに留める。未反映分は次回 Sent 同期の message_id マージ
+/// （`upsert_sent_mail`）でサーバーの Sent フォルダから復元される
+pub(crate) fn persist_sent_local_best_effort(
+    conn: &rusqlite::Connection,
+    account: &Account,
+    outgoing: &OutgoingMail,
+    raw_size: usize,
+) {
+    let record = build_sent_record(account, outgoing, raw_size);
+    if let Err(e) = mails::insert_sent_mail_with_next_uid(conn, &record) {
+        eprintln!(
+            "[warn] mail sent but local Sent insert failed (message_id={}): {}",
+            outgoing.message_id, e
+        );
     }
 }
 
@@ -211,12 +228,15 @@ pub async fn send_mail(
         }
     }
 
-    // 6. ローカルDBに挿入（FTS5はトリガーで自動反映）
-    {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let uid = mails::get_max_uid(&conn, &account.id, "Sent")? + 1;
-        let record = build_sent_record(&account, &outgoing, uid, raw.len());
-        mails::insert_mail(&conn, &record)?;
+    // 6. ローカルDBに挿入（FTS5はトリガーで自動反映）。
+    //    SMTP送信は成功しているためベストエフォート: ロック取得を含め失敗しても
+    //    Err を返さない（persist_sent_local_best_effort のドキュメント参照）
+    match state.0.lock() {
+        Ok(conn) => persist_sent_local_best_effort(&conn, &account, &outgoing, raw.len()),
+        Err(e) => eprintln!(
+            "[warn] mail sent but local Sent insert skipped (DB lock failed): {}",
+            e
+        ),
     }
 
     Ok(())
@@ -301,9 +321,10 @@ mod tests {
             ..make_request()
         };
         let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>", vec![]);
-        let record = build_sent_record(&account, &outgoing, 5, 1234);
+        let record = build_sent_record(&account, &outgoing, 1234);
         assert_eq!(record.folder, "Sent");
-        assert_eq!(record.uid, 5);
+        assert_eq!(record.uid, 0, "uid は挿入時採番のプレースホルダ");
+        assert!(!record.uid_confirmed);
         assert_eq!(record.message_id, "<mid@pigeon.local>");
         assert_eq!(record.from_addr, "me@example.com");
         assert_eq!(record.to_addr, "tanaka@example.com");
@@ -326,7 +347,7 @@ mod tests {
             data: vec![0u8; 3],
         };
         let outgoing = build_outgoing(&account, &req, None, "<mid@pigeon.local>", vec![att]);
-        let record = build_sent_record(&account, &outgoing, 1, 100);
+        let record = build_sent_record(&account, &outgoing, 100);
         assert_eq!(record.body_html.as_deref(), Some("<p>hi</p>"));
         assert!(record.has_attachments);
     }
@@ -370,32 +391,58 @@ mod tests {
     fn test_build_sent_record_empty_cc_is_none() {
         let account = make_account();
         let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
-        let record = build_sent_record(&account, &outgoing, 1, 100);
+        let record = build_sent_record(&account, &outgoing, 100);
         assert!(record.cc_addr.is_none());
     }
 
     #[test]
+    fn test_persist_sent_local_best_effort_inserts_record() {
+        let conn = crate::test_helpers::setup_db();
+        let account = make_account();
+        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+
+        persist_sent_local_best_effort(&conn, &account, &outgoing, 100);
+
+        let mails = mails::get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(mails.len(), 1);
+        assert_eq!(mails[0].message_id, "<mid@pigeon.local>");
+        assert_eq!(mails[0].uid, 1);
+        assert!(!mails[0].uid_confirmed);
+    }
+
+    #[test]
+    fn test_persist_sent_local_best_effort_swallows_db_failure() {
+        // B-7: SMTP送信成功後のローカルDB挿入失敗はErrにしない（再送による二重送信防止）。
+        // mailsテーブルを壊してDB失敗を誘発しても、panicもErr伝播もしないこと
+        let conn = crate::test_helpers::setup_db();
+        conn.execute_batch("DROP TABLE mails").unwrap();
+        let account = make_account();
+        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+
+        persist_sent_local_best_effort(&conn, &account, &outgoing, 100);
+    }
+
+    #[test]
     fn test_sent_record_roundtrips_through_db() {
-        // 挿入 → 取得で同じ内容が得られ、uid の採番が単調増加すること
+        // 挿入 → 取得で同じ内容が得られ、uid が原子的採番で単調増加すること
         let conn = crate::test_helpers::setup_db();
         let account = make_account();
         let outgoing = build_outgoing(&account, &make_request(), None, "<mid1@pigeon.local>", vec![]);
 
-        let uid1 = mails::get_max_uid(&conn, "acc1", "Sent").unwrap() + 1;
-        let rec1 = build_sent_record(&account, &outgoing, uid1, 100);
-        assert!(mails::insert_mail(&conn, &rec1).unwrap());
+        let rec1 = build_sent_record(&account, &outgoing, 100);
+        let uid1 = mails::insert_sent_mail_with_next_uid(&conn, &rec1).unwrap();
 
-        let uid2 = mails::get_max_uid(&conn, "acc1", "Sent").unwrap() + 1;
-        assert_eq!(uid2, uid1 + 1);
         let outgoing2 = OutgoingMail {
             message_id: "<mid2@pigeon.local>".into(),
             ..outgoing
         };
-        let rec2 = build_sent_record(&account, &outgoing2, uid2, 100);
-        assert!(mails::insert_mail(&conn, &rec2).unwrap());
+        let rec2 = build_sent_record(&account, &outgoing2, 100);
+        let uid2 = mails::insert_sent_mail_with_next_uid(&conn, &rec2).unwrap();
+        assert_eq!(uid2, uid1 + 1);
 
         let loaded = mails::get_mail_by_id(&conn, &rec1.id).unwrap();
         assert_eq!(loaded.message_id, "<mid1@pigeon.local>");
         assert_eq!(loaded.folder, "Sent");
+        assert_eq!(loaded.uid, uid1);
     }
 }

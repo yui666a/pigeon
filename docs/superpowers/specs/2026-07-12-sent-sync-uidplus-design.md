@@ -100,7 +100,10 @@ uid 衝突（C2）を成立させないためには送信時の推定 uid とサ
 
 - **書き込み経路**: サーバーから取得した行（INBOX/Sent の同期挿入、`parse_mime` 由来）は
   uid がサーバー実 UID なので `uid_confirmed = 1`。送信時にローカル保存する Sent 行
-  （`build_sent_record`、uid は `get_max_uid+1` の推定値）は `uid_confirmed = 0`。
+  （`build_sent_record`、uid はフォルダ内 `max(uid)+1` の推定値）は `uid_confirmed = 0`。
+  推定 uid の採番と挿入は `insert_sent_mail_with_next_uid` が単一の INSERT ... SELECT で
+  原子的に行う（`get_max_uid+1` → `insert_mail` の2段構えでは、間に並行する送信・
+  Sent 同期が同じ uid を採番して UNIQUE 衝突し得るため）。
   `upsert_sent_mail` の message_id 一致更新（`confirm_uid`）は uid をサーバー値に置き換えると
   同時に `uid_confirmed = 1` にする。
 - **既存行の埋め戻し**: 本マイグレーション以前は Sent 同期が存在せず、全 Sent 行が送信時の
