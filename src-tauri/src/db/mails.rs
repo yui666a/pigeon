@@ -5,6 +5,23 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+// スレッド判定アルゴリズムは DB 非依存のドメインロジックとして
+// `crate::threading` に分離した。既存呼び出し側（`db::mails::group_mail_ids_into_threads`
+// 等）の互換のためここから再エクスポートする。
+pub use crate::threading::{group_mail_ids_into_threads, ThreadMailMeta};
+
+// Sent マージの業務ロジック（uid の仮採番・後追い確定・重複統合）は
+// `db::sent_sync` に分離した。既存呼び出し側（`db::mails::upsert_sent_mail` 等）の
+// 互換のためここから再エクスポートする。
+pub use crate::db::sent_sync::{insert_sent_mail_with_next_uid, upsert_sent_mail};
+
+/// 互換ラッパー: 実体は `crate::threading::build_threads`（所有権を取る版）。
+/// 借用スライスしか持たない既存の commands 層呼び出しのためにクローンして委譲する。
+/// 所有権を渡せる呼び出し側は `crate::threading::build_threads` を直接使うこと。
+pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
+    crate::threading::build_threads(mails.to_vec())
+}
+
 /// mails テーブルのカラム名の唯一の定義。
 /// SELECT 句（`MAIL_COLUMNS` / `MAIL_COLUMNS_PREFIXED`）・INSERT 句・
 /// `MAIL_COLUMN_COUNT` はすべてここから導出する。カラム追加時は
@@ -125,56 +142,6 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
     Ok(affected > 0)
 }
 
-/// 送信直後の Sent ローカル行を、フォルダ内 max(uid)+1 の仮 uid で挿入し、
-/// 採番した uid を返す。
-///
-/// 採番と挿入を単一の INSERT ... SELECT 文で行うことで原子化する。
-/// `get_max_uid + 1` → `insert_mail` の2段構えでは、間に並行する送信や
-/// Sent 同期が同じ uid を採番して UNIQUE(account_id, folder, uid) 違反で
-/// 挿入に失敗し得る（TOCTOU）。
-///
-/// `mail.uid` / `mail.uid_confirmed` は無視される: uid はこの関数が採番し、
-/// 仮採番のため常に uid_confirmed=0 で保存する（Sent 同期の message_id マージで
-/// サーバー実 uid へ後追い確定される。設計書 2026-07-12-sent-sync-uidplus-design.md）。
-pub fn insert_sent_mail_with_next_uid(conn: &Connection, mail: &Mail) -> Result<u32, AppError> {
-    conn.execute(
-        &format!(
-            "INSERT INTO mails ({})
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                    (SELECT COALESCE(MAX(uid), 0) + 1 FROM mails WHERE account_id = ?2 AND folder = ?3),
-                    ?16, ?17, ?18, ?19, 0",
-            *MAIL_COLUMNS
-        ),
-        params![
-            mail.id,
-            mail.account_id,
-            mail.folder,
-            mail.message_id,
-            mail.in_reply_to,
-            mail.references,
-            mail.from_addr,
-            mail.to_addr,
-            mail.cc_addr,
-            mail.subject,
-            mail.body_text,
-            mail.body_html,
-            mail.date,
-            mail.has_attachments,
-            mail.raw_size,
-            mail.flags,
-            mail.is_read,
-            mail.is_flagged,
-            mail.fetched_at,
-        ],
-    )?;
-    let uid: u32 = conn.query_row(
-        "SELECT uid FROM mails WHERE id = ?1",
-        params![mail.id],
-        |row| row.get(0),
-    )?;
-    Ok(uid)
-}
-
 pub fn get_mails_by_account(
     conn: &Connection,
     account_id: &str,
@@ -186,22 +153,6 @@ pub fn get_mails_by_account(
     ))?;
     let mails = stmt
         .query_map(params![account_id, folder], row_to_mail)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(mails)
-}
-
-/// アカウントの全フォルダのメールを返す（スレッド追従の判定用）。
-/// スレッド判定にはSent/Archive等、INBOX以外のメールもリンクの手がかりとして必要
-pub fn get_all_mails_by_account(
-    conn: &Connection,
-    account_id: &str,
-) -> Result<Vec<Mail>, AppError> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM mails WHERE account_id = ?1 ORDER BY date DESC",
-        *MAIL_COLUMNS
-    ))?;
-    let mails = stmt
-        .query_map(params![account_id], row_to_mail)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
@@ -315,138 +266,6 @@ pub fn get_mail_id_by_message_id(
     Ok(id)
 }
 
-/// account_id + folder + uid を占有している行の (id, message_id) を返す（無ければ None）。
-/// UNIQUE(account_id, folder, uid) 衝突の相手を特定するのに使う。
-fn find_uid_occupant(
-    conn: &Connection,
-    account_id: &str,
-    folder: &str,
-    uid: u32,
-) -> Result<Option<(String, String)>, AppError> {
-    let row = conn
-        .query_row(
-            "SELECT id, message_id FROM mails
-             WHERE account_id = ?1 AND folder = ?2 AND uid = ?3",
-            params![account_id, folder, uid],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?;
-    Ok(row)
-}
-
-/// 行を uid=サーバー値・uid_confirmed=1 に確定させる。行は残るため案件割り当ては維持。
-/// 対象が存在しなければ MailNotFound。
-/// 注意: (account_id, folder, uid) の UNIQUE 衝突は呼び出し側で事前に解消すること。
-pub fn confirm_uid(conn: &Connection, mail_id: &str, uid: u32) -> Result<(), AppError> {
-    let affected = conn.execute(
-        "UPDATE mails SET uid = ?1, uid_confirmed = 1 WHERE id = ?2",
-        params![uid, mail_id],
-    )?;
-    if affected == 0 {
-        return Err(AppError::MailNotFound(mail_id.to_string()));
-    }
-    Ok(())
-}
-
-/// Sent 同期用のマージ挿入。サーバー同期行 `mail`（正しい uid・uid_confirmed=true）を
-/// ローカルへ取り込む。同一 (account_id, 'Sent', message_id) の送信時ローカル行があれば
-/// その行の uid をサーバー値へ確定して二重行を防ぎ、案件割り当てを保持する。
-///
-/// uid 確定時に別行が同じ (account_id, 'Sent', uid) を占有していると UNIQUE 衝突するため
-/// （送信時の推定 uid とサーバー実 uid が同値を取り合うケース。設計書「C2」）、
-/// 衝突を検出して解消する:
-/// - 占有行が同一 message_id（同一メールの重複行）: 案件割り当てを持つ側を残して他方を削除し統合
-/// - 占有行が異なる message_id: この行の取り込みをスキップして警告（バッチは継続させる）
-///
-/// 戻り値は「新規の取り込みが起きたか」（同期件数の集計用。確定・統合・スキップは false）。
-///
-/// 判定（SELECT）から書き込み（DELETE/UPDATE/INSERT）までを1トランザクションで包む。
-/// 特に `merge_duplicate_sent_rows` は DELETE → UPDATE の複数書き込みのため、
-/// 途中失敗で削除だけが残ると案件割り当ての保持という設計意図が崩れる。
-pub fn upsert_sent_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
-    let tx = conn.unchecked_transaction()?;
-    let inserted = upsert_sent_mail_in_tx(&tx, mail)?;
-    tx.commit()?;
-    Ok(inserted)
-}
-
-/// `upsert_sent_mail` の本体。呼び出し側でトランザクション境界を張ること。
-fn upsert_sent_mail_in_tx(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
-    let existing_by_mid =
-        get_mail_id_by_message_id(conn, &mail.account_id, &mail.folder, &mail.message_id)?;
-
-    // uid スロットの占有行（自分自身・message_id 一致行は除外して判定する）
-    let occupant = find_uid_occupant(conn, &mail.account_id, &mail.folder, mail.uid)?
-        .filter(|(occ_id, _)| Some(occ_id) != existing_by_mid.as_ref());
-
-    match existing_by_mid {
-        Some(existing_id) => {
-            // 送信時ローカル行が既にある → uid をサーバー値へ確定
-            if let Some((occ_id, occ_mid)) = occupant {
-                if occ_mid == mail.message_id {
-                    // 同一メールの重複行が uid スロットを占有 → 統合（割り当て保持側を残す）
-                    merge_duplicate_sent_rows(conn, &existing_id, &occ_id, mail.uid)?;
-                    return Ok(false);
-                }
-                // 異なるメールが占有 → 誤操作防止のためスキップ（バッチは継続）
-                eprintln!(
-                    "[warn] Sent uid {} occupied by different message ({}); skipping confirm for {}",
-                    mail.uid, occ_mid, mail.message_id
-                );
-                return Ok(false);
-            }
-            confirm_uid(conn, &existing_id, mail.uid)?;
-            Ok(false)
-        }
-        None => {
-            // 送信時ローカル行が無い（他クライアント送信）
-            if let Some((_occ_id, occ_mid)) = occupant {
-                // 未知メールなのに uid スロットが別メールで埋まっている → スキップ（バッチ継続）
-                eprintln!(
-                    "[warn] Sent uid {} occupied by different message ({}); skipping import of {}",
-                    mail.uid, occ_mid, mail.message_id
-                );
-                return Ok(false);
-            }
-            insert_mail(conn, mail)
-        }
-    }
-}
-
-/// 同一メール（同一 message_id）の重複 Sent 行を統合する。案件割り当てを持つ側を残し、
-/// 他方を削除して、残した行を uid=サーバー値・uid_confirmed=1 に確定する。
-/// 両方とも割り当てを持たなければ keep_id を残す。
-fn merge_duplicate_sent_rows(
-    conn: &Connection,
-    keep_candidate: &str,
-    other_candidate: &str,
-    uid: u32,
-) -> Result<(), AppError> {
-    let keep_has = has_project_assignment(conn, keep_candidate)?;
-    let other_has = has_project_assignment(conn, other_candidate)?;
-    // 割り当てを持つ側を優先して残す（CASCADE で割り当てを失わないため）
-    let (keep, drop) = if other_has && !keep_has {
-        (other_candidate, keep_candidate)
-    } else {
-        (keep_candidate, other_candidate)
-    };
-    // 先に重複行を消してから uid を確定（UNIQUE 衝突を避ける順序）
-    delete_mail(conn, drop)?;
-    confirm_uid(conn, keep, uid)?;
-    Ok(())
-}
-
-/// 指定メールに案件割り当てが1件以上あるか。
-fn has_project_assignment(conn: &Connection, mail_id: &str) -> Result<bool, AppError> {
-    // EXISTS は常に1行返すため「行なし」ケースはなく、エラーはそのまま伝播する
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM mail_project_assignments WHERE mail_id = ?1)",
-        params![mail_id],
-        |row| row.get(0),
-    )?;
-    Ok(exists)
-}
-
 /// mails の bool 1カラムを更新し、サーバー反映に必要な (folder, uid) を返す共通処理
 /// （mark_read / mark_unread / set_flagged の本体）。対象が存在しなければ MailNotFound。
 /// `column` は SQL に直接埋め込むため、このモジュール内の固定リテラルのみ渡すこと。
@@ -538,147 +357,18 @@ pub fn get_unread_counts(conn: &Connection, account_id: &str) -> Result<UnreadCo
     })
 }
 
-pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
-    let mut by_message_id: HashMap<&str, usize> = HashMap::new();
-    for (i, mail) in mails.iter().enumerate() {
-        by_message_id.insert(&mail.message_id, i);
-    }
-
-    let mut thread_root: Vec<usize> = (0..mails.len()).collect();
-
-    for (i, mail) in mails.iter().enumerate() {
-        if let Some(ref reply_to) = mail.in_reply_to {
-            if let Some(&parent_idx) = by_message_id.get(reply_to.as_str()) {
-                let root_i = find_root(&thread_root, i);
-                let root_p = find_root(&thread_root, parent_idx);
-                if root_i != root_p {
-                    thread_root[root_i] = root_p;
-                }
-            }
-        }
-        if let Some(ref refs) = mail.references {
-            for ref_id in refs.split_whitespace() {
-                if let Some(&ref_idx) = by_message_id.get(ref_id) {
-                    let root_i = find_root(&thread_root, i);
-                    let root_r = find_root(&thread_root, ref_idx);
-                    if root_i != root_r {
-                        thread_root[root_i] = root_r;
-                    }
-                }
-            }
-        }
-    }
-
-    let normalized: Vec<String> = mails
-        .iter()
-        .map(|m| normalize_subject(&m.subject))
-        .collect();
-    for i in 0..mails.len() {
-        if mails[i].in_reply_to.is_some() || mails[i].references.is_some() {
-            continue;
-        }
-        for j in 0..i {
-            if normalized[i] == normalized[j] {
-                let root_i = find_root(&thread_root, i);
-                let root_j = find_root(&thread_root, j);
-                if root_i != root_j {
-                    thread_root[root_i] = root_j;
-                }
-                break;
-            }
-        }
-    }
-
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-    for i in 0..mails.len() {
-        let root = find_root(&thread_root, i);
-        groups.entry(root).or_default().push(i);
-    }
-
-    let mut threads: Vec<Thread> = groups
-        .into_values()
-        .map(|indices| {
-            let mut thread_mails: Vec<Mail> = indices.iter().map(|&i| mails[i].clone()).collect();
-            thread_mails.sort_by(|a, b| a.date.cmp(&b.date));
-            let from_addrs: Vec<String> = thread_mails
-                .iter()
-                .map(|m| m.from_addr.clone())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
-            let last_date = thread_mails
-                .last()
-                .map(|m| m.date.clone())
-                .unwrap_or_default();
-            let subject = thread_mails
-                .first()
-                .map(|m| m.subject.clone())
-                .unwrap_or_default();
-            let thread_id = thread_mails
-                .first()
-                .map(|m| m.message_id.clone())
-                .unwrap_or_default();
-            Thread {
-                thread_id,
-                subject,
-                last_date,
-                mail_count: thread_mails.len(),
-                from_addrs,
-                mails: thread_mails,
-            }
-        })
-        .collect();
-
-    threads.sort_by(|a, b| b.last_date.cmp(&a.last_date));
-    threads
-}
-
 pub fn get_threads_by_project(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<Thread>, AppError> {
     let mails = assignments::get_mails_by_project(conn, project_id)?;
-    Ok(build_threads(&mails))
+    // 所有権を渡してクローンなしでスレッドへ組み立てる
+    Ok(crate::threading::build_threads(mails))
 }
 
-fn find_root(roots: &[usize], mut i: usize) -> usize {
-    while roots[i] != i {
-        i = roots[i];
-    }
-    i
-}
-
-fn normalize_subject(subject: &str) -> String {
-    let mut s = subject.trim();
-    loop {
-        let lower = s.to_lowercase();
-        if lower.starts_with("re:") || lower.starts_with("fw:") {
-            s = s[3..].trim_start();
-        } else if lower.starts_with("fwd:") {
-            s = s[4..].trim_start();
-        } else {
-            break;
-        }
-    }
-    s.to_lowercase()
-}
-
-/// スレッド判定（`build_threads` のアルゴリズム）に必要な最小カラムのみの軽量メールデータ。
-/// `auto_follow_threads` のように本文を使わない処理が、body_text/body_html を
-/// 読み込まずに済ませるための構造体。
-#[derive(Debug, Clone)]
-pub struct ThreadMailMeta {
-    pub id: String,
-    pub message_id: String,
-    pub in_reply_to: Option<String>,
-    pub references: Option<String>,
-    pub subject: String,
-    pub date: String,
-}
-
-/// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す。
-/// 対象範囲・順序（date DESC）は `get_all_mails_by_account` と同一だが、
-/// 本文カラム（body_text/body_html）を読まないため大幅に軽い。
+/// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す（date DESC）。
+/// スレッド判定には Sent/Archive 等、INBOX 以外のメールもリンクの手がかりとして
+/// 必要なためフォルダ横断で取得する。本文カラム（body_text/body_html）は読まない。
 pub fn get_thread_metas_by_account(
     conn: &Connection,
     account_id: &str,
@@ -702,47 +392,6 @@ pub fn get_thread_metas_by_account(
     Ok(metas)
 }
 
-/// 軽量メタをスレッドに分割し、スレッドごとのメールID集合を返す。
-///
-/// 判定は `build_threads` に委譲する（In-Reply-To/References によるグラフ結合 +
-/// 件名フォールバック。設計書 2026-07-13-thread-follow-classify-design.md の
-/// 「判定ロジックの重複実装はしない」に従う）。`build_threads` はスレッド分割に
-/// message_id / in_reply_to / references / subject / date しか使わないため、
-/// 残りのフィールドはプレースホルダで埋めた Mail に変換して渡す。
-pub fn group_mail_ids_into_threads(metas: &[ThreadMailMeta]) -> Vec<Vec<String>> {
-    let mails: Vec<Mail> = metas
-        .iter()
-        .map(|meta| Mail {
-            id: meta.id.clone(),
-            message_id: meta.message_id.clone(),
-            in_reply_to: meta.in_reply_to.clone(),
-            references: meta.references.clone(),
-            subject: meta.subject.clone(),
-            date: meta.date.clone(),
-            // 以下はスレッド分割に関与しないプレースホルダ
-            account_id: String::new(),
-            folder: String::new(),
-            from_addr: String::new(),
-            to_addr: String::new(),
-            cc_addr: None,
-            body_text: None,
-            body_html: None,
-            has_attachments: false,
-            raw_size: None,
-            uid: 0,
-            flags: None,
-            is_read: false,
-            is_flagged: false,
-            fetched_at: String::new(),
-            uid_confirmed: false,
-        })
-        .collect();
-    build_threads(&mails)
-        .into_iter()
-        .map(|thread| thread.mails.into_iter().map(|m| m.id).collect())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,45 +405,6 @@ mod tests {
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].subject, "Hello");
-    }
-
-    #[test]
-    fn test_get_all_mails_by_account_spans_folders() {
-        // スレッド追従の判定にはINBOX以外（Sent/Archive）のメールも
-        // スレッドの手がかりとして必要なため、フォルダ横断で取得できること
-        let conn = setup_db();
-        let inbox = make_mail("m1", "<msg1@example.com>", "Inbox Mail", "2026-04-13T10:00:00");
-        let mut sent = make_mail("m2", "<msg2@example.com>", "Sent Mail", "2026-04-13T11:00:00");
-        sent.folder = "Sent".into();
-        let mut archived =
-            make_mail("m3", "<msg3@example.com>", "Archived Mail", "2026-04-13T09:00:00");
-        archived.folder = "Archive".into();
-        insert_mail(&conn, &inbox).unwrap();
-        insert_mail(&conn, &sent).unwrap();
-        insert_mail(&conn, &archived).unwrap();
-
-        let mails = get_all_mails_by_account(&conn, "acc1").unwrap();
-        assert_eq!(mails.len(), 3);
-    }
-
-    #[test]
-    fn test_get_all_mails_by_account_excludes_other_accounts() {
-        let conn = setup_db();
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
-             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
-            [],
-        )
-        .unwrap();
-        let mine = make_mail("m1", "<msg1@example.com>", "Mine", "2026-04-13T10:00:00");
-        let mut theirs = make_mail("m2", "<msg2@example.com>", "Theirs", "2026-04-13T10:00:00");
-        theirs.account_id = "acc2".into();
-        insert_mail(&conn, &mine).unwrap();
-        insert_mail(&conn, &theirs).unwrap();
-
-        let mails = get_all_mails_by_account(&conn, "acc1").unwrap();
-        assert_eq!(mails.len(), 1);
-        assert_eq!(mails[0].id, "m1");
     }
 
     #[test]
@@ -813,77 +423,6 @@ mod tests {
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].id, "m1", "既存行が残る（REPLACEで消さない）");
         assert_eq!(mails[0].subject, "Original");
-    }
-
-    #[test]
-    fn test_insert_sent_mail_with_next_uid_assigns_sequential_uids() {
-        // 逐次呼び出しで uid が重複せず単調増加すること（B-6: 採番+挿入の原子化）
-        let conn = setup_db();
-
-        let mut m1 = make_mail("s1", "<s1@example.com>", "Sent 1", "2026-07-13T10:00:00");
-        m1.folder = "Sent".into();
-        let uid1 = insert_sent_mail_with_next_uid(&conn, &m1).unwrap();
-        assert_eq!(uid1, 1, "空フォルダでは 1 から採番される");
-
-        let mut m2 = make_mail("s2", "<s2@example.com>", "Sent 2", "2026-07-13T10:01:00");
-        m2.folder = "Sent".into();
-        let uid2 = insert_sent_mail_with_next_uid(&conn, &m2).unwrap();
-        assert_eq!(uid2, 2, "連続採番で衝突しない");
-
-        let mails = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
-        assert_eq!(mails.len(), 2);
-    }
-
-    #[test]
-    fn test_insert_sent_mail_with_next_uid_continues_from_existing_max() {
-        // 既存 max との関係: フォルダ内の最大 uid + 1 が採番されること
-        let conn = setup_db();
-        let mut existing = make_mail("s0", "<s0@example.com>", "Synced", "2026-07-13T09:00:00");
-        existing.folder = "Sent".into();
-        existing.uid = 41;
-        insert_mail(&conn, &existing).unwrap();
-
-        let mut mail = make_mail("s1", "<s1@example.com>", "Sent", "2026-07-13T10:00:00");
-        mail.folder = "Sent".into();
-        let uid = insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
-        assert_eq!(uid, 42);
-
-        let loaded = get_mail_by_id(&conn, "s1").unwrap();
-        assert_eq!(loaded.uid, 42, "採番された uid が永続化される");
-    }
-
-    #[test]
-    fn test_insert_sent_mail_with_next_uid_ignores_caller_uid_and_marks_unconfirmed() {
-        // 呼び出し側の uid 値は無視され、仮採番として uid_confirmed=0 で保存されること
-        let conn = setup_db();
-        let mut mail = make_mail("s1", "<s1@example.com>", "Sent", "2026-07-13T10:00:00");
-        mail.folder = "Sent".into();
-        mail.uid = 9999;
-        mail.uid_confirmed = true;
-
-        let uid = insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
-        assert_eq!(uid, 1, "mail.uid の値は採番に影響しない");
-
-        let loaded = get_mail_by_id(&conn, "s1").unwrap();
-        assert_eq!(loaded.uid, 1);
-        assert!(
-            !loaded.uid_confirmed,
-            "採番 uid は推定値なので常に uid_confirmed=0"
-        );
-    }
-
-    #[test]
-    fn test_insert_sent_mail_with_next_uid_is_scoped_per_folder() {
-        // 他フォルダの uid は採番に影響しないこと
-        let conn = setup_db();
-        let mut inbox = make_mail("i1", "<i1@example.com>", "Inbox", "2026-07-13T09:00:00");
-        inbox.uid = 100; // folder=INBOX
-        insert_mail(&conn, &inbox).unwrap();
-
-        let mut mail = make_mail("s1", "<s1@example.com>", "Sent", "2026-07-13T10:00:00");
-        mail.folder = "Sent".into();
-        let uid = insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
-        assert_eq!(uid, 1, "INBOX の max uid は Sent の採番に影響しない");
     }
 
     #[test]
@@ -1224,249 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn test_confirm_uid_changes_uid_sets_confirmed_and_keeps_assignment() {
-        use crate::db::{assignments, projects};
-        use crate::models::project::CreateProjectRequest;
-
-        let conn = setup_db();
-        let mut sent = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        sent.folder = "Sent".into();
-        sent.uid = 1; // 送信時の推定値
-        sent.uid_confirmed = false;
-        insert_mail(&conn, &sent).unwrap();
-        let req = CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Proj".into(),
-            description: None,
-            color: None,
-        };
-        let proj = projects::insert_project(&conn, &req).unwrap();
-        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
-
-        // サーバー同期で得た正しい uid に確定
-        confirm_uid(&conn, "s1", 4242).unwrap();
-
-        let stored = get_mail_by_id(&conn, "s1").unwrap();
-        assert_eq!(stored.uid, 4242);
-        assert!(stored.uid_confirmed, "確定フラグが立つ");
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "uid 確定では案件割り当てが維持される");
-    }
-
-    #[test]
-    fn test_confirm_uid_missing_returns_not_found() {
-        let conn = setup_db();
-        assert!(matches!(
-            confirm_uid(&conn, "nonexistent", 1),
-            Err(AppError::MailNotFound(_))
-        ));
-    }
-
-    #[test]
-    fn test_upsert_sent_mail_updates_existing_uid_no_duplicate() {
-        use crate::db::{assignments, projects};
-        use crate::models::project::CreateProjectRequest;
-
-        let conn = setup_db();
-        // 送信時ローカル保存分（推定 uid=1・未確定）
-        let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        local.folder = "Sent".into();
-        local.uid = 1;
-        local.uid_confirmed = false;
-        insert_mail(&conn, &local).unwrap();
-        let req = CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Proj".into(),
-            description: None,
-            color: None,
-        };
-        let proj = projects::insert_project(&conn, &req).unwrap();
-        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
-
-        // サーバー同期分（別 id・正しい uid=5000・同 message_id・衝突なし）
-        let mut server = make_mail("s2", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        server.folder = "Sent".into();
-        server.uid = 5000;
-        let inserted = upsert_sent_mail(&conn, &server).unwrap();
-        assert!(!inserted, "既存 message_id は新規挿入しない");
-
-        // 行は1つのまま、uid はサーバー値に確定、案件割り当ては保持
-        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
-        assert_eq!(all.len(), 1, "二重行が作られない");
-        assert_eq!(all[0].id, "s1", "既存行が残る");
-        assert_eq!(all[0].uid, 5000, "uid がサーバー値に確定される");
-        assert!(all[0].uid_confirmed, "確定フラグが立つ");
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "案件割り当てが維持される");
-    }
-
-    #[test]
-    fn test_upsert_sent_mail_merges_duplicate_on_uid_collision_keeping_assignment() {
-        // C2: 確定先の uid が同一メールの重複行に占有されている場合、
-        // 割り当てを持つ側を残して統合し、バッチを中断しない
-        use crate::db::{assignments, projects};
-        use crate::models::project::CreateProjectRequest;
-
-        let conn = setup_db();
-        // 送信時ローカル行（推定 uid=1・未確定・案件割り当てあり）
-        let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        local.folder = "Sent".into();
-        local.uid = 1;
-        local.uid_confirmed = false;
-        insert_mail(&conn, &local).unwrap();
-        let req = CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Proj".into(),
-            description: None,
-            color: None,
-        };
-        let proj = projects::insert_project(&conn, &req).unwrap();
-        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
-
-        // 同一メールの重複行が確定先 uid=5000 を既に占有（過去の部分同期分を模擬）
-        let mut occupant = make_mail("s_dup", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        occupant.folder = "Sent".into();
-        occupant.uid = 5000;
-        occupant.uid_confirmed = true;
-        insert_mail(&conn, &occupant).unwrap();
-
-        // サーバー同期で uid=5000 を s1 に確定しようとする → 重複統合
-        let mut server = make_mail("s_srv", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        server.folder = "Sent".into();
-        server.uid = 5000;
-        let inserted = upsert_sent_mail(&conn, &server).unwrap();
-        assert!(!inserted);
-
-        // 割り当てを持つ s1 が残り uid=5000 に確定、占有行 s_dup は削除、案件割り当ては生存
-        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
-        assert_eq!(all.len(), 1, "重複が統合されて1行");
-        assert_eq!(all[0].id, "s1", "割り当てを持つ側が残る");
-        assert_eq!(all[0].uid, 5000);
-        assert!(all[0].uid_confirmed);
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM mail_project_assignments WHERE mail_id = 's1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "案件割り当ては失われない");
-    }
-
-    #[test]
-    fn test_upsert_sent_mail_merge_rolls_back_atomically_on_mid_failure() {
-        // B-1: 重複統合は DELETE（占有行の削除）→ UPDATE（uid 確定）の複数書き込み。
-        // 途中で失敗したときに DELETE だけが残る中途半端な状態にならないこと
-        // （案件割り当ての保持を最重要視する設計意図のため、全体がロールバックされる）。
-        use crate::db::{assignments, projects};
-        use crate::models::project::CreateProjectRequest;
-
-        let conn = setup_db();
-        // 送信時ローカル行（推定 uid=1・未確定・案件割り当てあり）
-        let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        local.folder = "Sent".into();
-        local.uid = 1;
-        local.uid_confirmed = false;
-        insert_mail(&conn, &local).unwrap();
-        let req = CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Proj".into(),
-            description: None,
-            color: None,
-        };
-        let proj = projects::insert_project(&conn, &req).unwrap();
-        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
-
-        // 同一メールの重複行が確定先 uid=5000 を占有（統合で削除される側）
-        let mut occupant = make_mail("s_dup", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        occupant.folder = "Sent".into();
-        occupant.uid = 5000;
-        occupant.uid_confirmed = true;
-        insert_mail(&conn, &occupant).unwrap();
-
-        // 失敗注入: 統合の2番目の書き込み（s1 の uid 確定 UPDATE）だけを失敗させる
-        conn.execute_batch(
-            "CREATE TRIGGER fail_confirm BEFORE UPDATE OF uid ON mails
-             WHEN NEW.id = 's1' AND NEW.uid = 5000
-             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
-        )
-        .unwrap();
-
-        let mut server = make_mail("s_srv", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
-        server.folder = "Sent".into();
-        server.uid = 5000;
-        let result = upsert_sent_mail(&conn, &server);
-        assert!(result.is_err(), "注入した失敗がエラーとして伝播する");
-
-        // ロールバックにより、先行する DELETE（s_dup の削除）も取り消されていること
-        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
-        assert_eq!(all.len(), 2, "途中失敗では部分的な書き込みが残らない");
-        assert!(get_mail_by_id(&conn, "s_dup").is_ok(), "削除がロールバックされる");
-        let s1 = get_mail_by_id(&conn, "s1").unwrap();
-        assert_eq!(s1.uid, 1, "s1 も元のまま");
-        assert!(!s1.uid_confirmed);
-    }
-
-    #[test]
-    fn test_upsert_sent_mail_skips_on_foreign_uid_collision_without_abort() {
-        // C2: 確定先 uid を「別メール」が占有 → スキップして Ok を返し、バッチを継続させる
-        let conn = setup_db();
-        // 送信時ローカル行（推定 uid=1・未確定）
-        let mut local = make_mail("s1", "<mine@pigeon.local>", "自分", "2026-07-12T10:00:00");
-        local.folder = "Sent".into();
-        local.uid = 1;
-        local.uid_confirmed = false;
-        insert_mail(&conn, &local).unwrap();
-        // 別メールが確定先 uid=5000 を占有
-        let mut foreign = make_mail("s_foreign", "<foreign@server>", "他人", "2026-07-12T09:00:00");
-        foreign.folder = "Sent".into();
-        foreign.uid = 5000;
-        insert_mail(&conn, &foreign).unwrap();
-
-        // s1 を uid=5000 に確定しようとするが別メール占有 → スキップ（Err にしない）
-        let mut server = make_mail("s_srv", "<mine@pigeon.local>", "自分", "2026-07-12T10:00:00");
-        server.folder = "Sent".into();
-        server.uid = 5000;
-        let result = upsert_sent_mail(&conn, &server);
-        assert!(result.is_ok(), "衝突でも Err にせずバッチを継続できる");
-        assert!(!result.unwrap());
-
-        // s1 は uid=1・未確定のまま（誤って別メールの uid を奪わない）、占有行も無傷
-        let s1 = get_mail_by_id(&conn, "s1").unwrap();
-        assert_eq!(s1.uid, 1);
-        assert!(!s1.uid_confirmed);
-        let foreign_row = get_mail_by_id(&conn, "s_foreign").unwrap();
-        assert_eq!(foreign_row.uid, 5000);
-    }
-
-    #[test]
-    fn test_upsert_sent_mail_inserts_new_message_id() {
-        // 他クライアントから送ったメール（ローカルに送信行が無い）は新規取り込みされる
-        let conn = setup_db();
-        let mut server = make_mail("s1", "<external@server>", "他クライアント", "2026-07-12T10:00:00");
-        server.folder = "Sent".into();
-        server.uid = 777;
-        let inserted = upsert_sent_mail(&conn, &server).unwrap();
-        assert!(inserted, "未知の message_id は挿入される");
-
-        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].uid, 777);
-    }
-
-    #[test]
     fn test_get_recent_unread_subjects_orders_by_date_desc_and_limits() {
         let conn = setup_db();
         let mut m1 = make_mail("m1", "<m1@example.com>", "Oldest", "2026-07-12T09:00:00");
@@ -1585,183 +881,9 @@ mod tests {
     }
 
     #[test]
-    fn test_build_threads_by_in_reply_to() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-04-13T10:00:00");
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Hello", "2026-04-13T11:00:00");
-        m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].mail_count, 2);
-    }
-
-    #[test]
-    fn test_build_threads_by_references() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
-        m2.references = Some("<msg1@ex.com>".into());
-        let mut m3 = make_mail(
-            "m3",
-            "<msg3@ex.com>",
-            "Re: Re: Topic",
-            "2026-04-13T12:00:00",
-        );
-        m3.references = Some("<msg1@ex.com> <msg2@ex.com>".into());
-        let threads = build_threads(&[m1, m2, m3]);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].mail_count, 3);
-    }
-
-    #[test]
-    fn test_build_threads_subject_fallback() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "見積もりの件", "2026-04-13T10:00:00");
-        let m2 = make_mail(
-            "m2",
-            "<msg2@ex.com>",
-            "Re: 見積もりの件",
-            "2026-04-13T11:00:00",
-        );
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].mail_count, 2);
-    }
-
-    #[test]
-    fn test_build_threads_separate() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic A", "2026-04-13T10:00:00");
-        let m2 = make_mail("m2", "<msg2@ex.com>", "Topic B", "2026-04-13T11:00:00");
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 2);
-    }
-
-    #[test]
-    fn test_normalize_subject() {
-        assert_eq!(normalize_subject("Re: Hello"), "hello");
-        assert_eq!(normalize_subject("Fwd: Re: Hello"), "hello");
-        assert_eq!(normalize_subject("FW: Hello"), "hello");
-        assert_eq!(normalize_subject("Hello"), "hello");
-    }
-
-    #[test]
-    fn test_build_threads_empty() {
-        let threads = build_threads(&[]);
-        assert!(threads.is_empty());
-    }
-
-    #[test]
-    fn test_build_threads_single_mail() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Solo", "2026-04-13T10:00:00");
-        let threads = build_threads(&[m1]);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].mail_count, 1);
-        assert_eq!(threads[0].subject, "Solo");
-    }
-
-    #[test]
-    fn test_build_threads_sorted_by_last_date_desc() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Old Topic", "2026-04-10T10:00:00");
-        let m2 = make_mail("m2", "<msg2@ex.com>", "New Topic", "2026-04-13T10:00:00");
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 2);
-        assert_eq!(threads[0].subject, "New Topic");
-        assert_eq!(threads[1].subject, "Old Topic");
-    }
-
-    #[test]
-    fn test_build_threads_fw_prefix_groups() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "案件の件", "2026-04-13T10:00:00");
-        let m2 = make_mail("m2", "<msg2@ex.com>", "Fw: 案件の件", "2026-04-13T11:00:00");
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].mail_count, 2);
-    }
-
-    #[test]
-    fn test_build_threads_fwd_prefix_groups() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Report", "2026-04-13T10:00:00");
-        let m2 = make_mail("m2", "<msg2@ex.com>", "Fwd: Report", "2026-04-13T11:00:00");
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 1);
-    }
-
-    #[test]
-    fn test_build_threads_deep_chain() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
-        m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let mut m3 = make_mail(
-            "m3",
-            "<msg3@ex.com>",
-            "Re: Re: Topic",
-            "2026-04-13T12:00:00",
-        );
-        m3.in_reply_to = Some("<msg2@ex.com>".into());
-        let mut m4 = make_mail(
-            "m4",
-            "<msg4@ex.com>",
-            "Re: Re: Re: Topic",
-            "2026-04-13T13:00:00",
-        );
-        m4.in_reply_to = Some("<msg3@ex.com>".into());
-        let threads = build_threads(&[m1, m2, m3, m4]);
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].mail_count, 4);
-    }
-
-    #[test]
-    fn test_build_threads_from_addrs_deduplication() {
-        let mut m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
-        m1.from_addr = "alice@example.com".into();
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
-        m2.from_addr = "alice@example.com".into();
-        m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads[0].from_addrs.len(), 1);
-    }
-
-    #[test]
-    fn test_build_threads_subject_grouping_skipped_when_has_references() {
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Same Subject", "2026-04-13T10:00:00");
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Same Subject", "2026-04-13T11:00:00");
-        m2.references = Some("<nonexistent@ex.com>".into());
-        let threads = build_threads(&[m1, m2]);
-        assert_eq!(threads.len(), 2);
-    }
-
-    #[test]
-    fn test_normalize_subject_nested_prefixes() {
-        assert_eq!(normalize_subject("Re: Fw: Re: Hello"), "hello");
-        assert_eq!(normalize_subject("FW: FWD: RE: Hello"), "hello");
-    }
-
-    #[test]
-    fn test_normalize_subject_case_insensitive() {
-        assert_eq!(normalize_subject("RE: HELLO"), "hello");
-        assert_eq!(normalize_subject("re: hello"), "hello");
-    }
-
-    #[test]
-    fn test_normalize_subject_whitespace() {
-        assert_eq!(normalize_subject("  Re:   Hello  "), "hello");
-    }
-
-    // --- スレッド判定用の軽量メタ（auto_follow_threads の本文ロード回避用） ---
-
-    /// テスト補助: Mail からスレッド判定用の軽量メタを作る
-    fn meta_of(m: &Mail) -> ThreadMailMeta {
-        ThreadMailMeta {
-            id: m.id.clone(),
-            message_id: m.message_id.clone(),
-            in_reply_to: m.in_reply_to.clone(),
-            references: m.references.clone(),
-            subject: m.subject.clone(),
-            date: m.date.clone(),
-        }
-    }
-
-    #[test]
     fn test_get_thread_metas_by_account_spans_folders_and_orders_by_date_desc() {
         // スレッド追従の判定には INBOX 以外（Sent/Archive）のメールも手がかりとして
-        // 必要なため、get_all_mails_by_account と同じ範囲・順序で軽量メタを返すこと
+        // 必要なため、フォルダ横断・date DESC で軽量メタを返すこと
         let conn = setup_db();
         let inbox = make_mail(
             "m1",
@@ -1791,7 +913,7 @@ mod tests {
 
         let metas = get_thread_metas_by_account(&conn, "acc1").unwrap();
         assert_eq!(metas.len(), 3, "全フォルダのメールを対象にする");
-        // date DESC 順（get_all_mails_by_account と同じ）
+        // date DESC 順
         assert_eq!(metas[0].id, "m2");
         assert_eq!(metas[1].id, "m1");
         assert_eq!(metas[2].id, "m3");
@@ -1824,70 +946,5 @@ mod tests {
         let metas = get_thread_metas_by_account(&conn, "acc1").unwrap();
         assert_eq!(metas.len(), 1);
         assert_eq!(metas[0].id, "m1");
-    }
-
-    #[test]
-    fn test_group_mail_ids_into_threads_links_replies_and_subject_fallback() {
-        // In-Reply-To 結合・References 結合・件名フォールバックが
-        // build_threads と同じ意味論で効くこと
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic A", "2026-04-13T10:00:00");
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic A", "2026-04-13T11:00:00");
-        m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let mut m3 = make_mail("m3", "<msg3@ex.com>", "Re: Topic A", "2026-04-13T12:00:00");
-        m3.references = Some("<msg1@ex.com> <msg2@ex.com>".into());
-        // ヘッダなし・正規化件名一致 → 件名フォールバックで m1 と同じスレッド
-        let m4 = make_mail("m4", "<msg4@ex.com>", "Fwd: topic a", "2026-04-13T13:00:00");
-        // 無関係なメールは独立したスレッド
-        let m5 = make_mail("m5", "<msg5@ex.com>", "Unrelated", "2026-04-13T14:00:00");
-
-        // date DESC（専用クエリと同じ順序）で渡す
-        let metas: Vec<ThreadMailMeta> = [&m5, &m4, &m3, &m2, &m1]
-            .iter()
-            .map(|m| meta_of(m))
-            .collect();
-        let groups = group_mail_ids_into_threads(&metas);
-
-        let sets: std::collections::HashSet<std::collections::BTreeSet<String>> = groups
-            .into_iter()
-            .map(|ids| ids.into_iter().collect())
-            .collect();
-        let expected: std::collections::HashSet<std::collections::BTreeSet<String>> = [
-            ["m1", "m2", "m3", "m4"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            ["m5"].iter().map(|s| s.to_string()).collect(),
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(sets, expected);
-    }
-
-    #[test]
-    fn test_group_mail_ids_into_threads_matches_build_threads() {
-        // 回帰ガード: build_threads とスレッド分割が一致すること
-        // （判定ロジックが将来分岐・重複実装されるのを検知する）
-        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic A", "2026-04-13T10:00:00");
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic A", "2026-04-13T11:00:00");
-        m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let mut m3 = make_mail("m3", "<msg3@ex.com>", "Re: Topic A", "2026-04-13T12:00:00");
-        m3.references = Some("<nonexistent@ex.com> <msg2@ex.com>".into());
-        let m4 = make_mail("m4", "<msg4@ex.com>", "Topic B", "2026-04-13T13:00:00");
-        let m5 = make_mail("m5", "<msg5@ex.com>", "FW: topic b", "2026-04-13T14:00:00");
-        let mails = vec![m5, m4, m3, m2, m1];
-
-        let metas: Vec<ThreadMailMeta> = mails.iter().map(meta_of).collect();
-        let actual: std::collections::HashSet<std::collections::BTreeSet<String>> =
-            group_mail_ids_into_threads(&metas)
-                .into_iter()
-                .map(|ids| ids.into_iter().collect())
-                .collect();
-        let expected: std::collections::HashSet<std::collections::BTreeSet<String>> =
-            build_threads(&mails)
-                .into_iter()
-                .map(|t| t.mails.into_iter().map(|m| m.id).collect())
-                .collect();
-        assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 2);
     }
 }
