@@ -6,7 +6,9 @@ import { MailActions } from "./MailActions";
 import { EmptyState } from "../common/EmptyState";
 
 export function MailView() {
-  const { selectedThread, selectedMail, selectMail } = useMailStore();
+  const selectedThread = useMailStore((s) => s.selectedThread);
+  const selectedMail = useMailStore((s) => s.selectedMail);
+  const selectMail = useMailStore((s) => s.selectMail);
 
   if (!selectedThread && !selectedMail) {
     return <EmptyState message="スレッドを選択してください" />;

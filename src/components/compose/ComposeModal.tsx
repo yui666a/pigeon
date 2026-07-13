@@ -24,24 +24,22 @@ function formatSize(size: number): string {
 }
 
 export function ComposeModal() {
-  const {
-    isOpen,
-    mode,
-    to,
-    cc,
-    bcc,
-    subject,
-    body,
-    format,
-    attachments,
-    sending,
-    setField,
-    setFormat,
-    addAttachments,
-    removeAttachment,
-    send,
-    closeCompose,
-  } = useComposeStore();
+  const isOpen = useComposeStore((s) => s.isOpen);
+  const mode = useComposeStore((s) => s.mode);
+  const to = useComposeStore((s) => s.to);
+  const cc = useComposeStore((s) => s.cc);
+  const bcc = useComposeStore((s) => s.bcc);
+  const subject = useComposeStore((s) => s.subject);
+  const body = useComposeStore((s) => s.body);
+  const format = useComposeStore((s) => s.format);
+  const attachments = useComposeStore((s) => s.attachments);
+  const sending = useComposeStore((s) => s.sending);
+  const setField = useComposeStore((s) => s.setField);
+  const setFormat = useComposeStore((s) => s.setFormat);
+  const addAttachments = useComposeStore((s) => s.addAttachments);
+  const removeAttachment = useComposeStore((s) => s.removeAttachment);
+  const send = useComposeStore((s) => s.send);
+  const closeCompose = useComposeStore((s) => s.closeCompose);
   const hasAccount = useAccountStore((s) => s.selectedAccountId !== null);
 
   const totalSize = attachments.reduce((sum, a) => sum + a.size, 0);

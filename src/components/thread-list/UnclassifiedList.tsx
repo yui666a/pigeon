@@ -23,7 +23,10 @@ export function UnclassifiedList() {
   const unclassifiedMails = useMailStore((s) => s.unclassifiedMails);
   const unclassifiedThreads = useMailStore((s) => s.unclassifiedThreads);
   const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
-  const { selectThread, bulkDeleteMails, bulkArchiveMails, bulkMoveMails } = useMailStore();
+  const selectThread = useMailStore((s) => s.selectThread);
+  const bulkDeleteMails = useMailStore((s) => s.bulkDeleteMails);
+  const bulkArchiveMails = useMailStore((s) => s.bulkArchiveMails);
+  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
   const projects = useProjectStore((s) => s.projects);
   const selectedThreadIds = useSelectionStore((s) => s.selectedThreadIds);
   const selectedMailIds = useSelectionStore((s) => s.selectedMailIds);

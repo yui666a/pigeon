@@ -21,21 +21,22 @@ import { NotificationToggle } from "./NotificationToggle";
 import type { CreateAccountRequest } from "../../types/account";
 
 export function Sidebar() {
-  const {
-    accounts,
-    selectedAccountId,
-    fetchAccounts,
-    createAccount,
-    removeAccount,
-    selectAccount,
-    startReauth,
-    initDeepLinkListener,
-  } = useAccountStore();
-  const { createProject, linkDirectory, rescanProject } = useProjectStore();
+  const accounts = useAccountStore((s) => s.accounts);
+  const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
+  const fetchAccounts = useAccountStore((s) => s.fetchAccounts);
+  const createAccount = useAccountStore((s) => s.createAccount);
+  const removeAccount = useAccountStore((s) => s.removeAccount);
+  const selectAccount = useAccountStore((s) => s.selectAccount);
+  const startReauth = useAccountStore((s) => s.startReauth);
+  const initDeepLinkListener = useAccountStore((s) => s.initDeepLinkListener);
+  const createProject = useProjectStore((s) => s.createProject);
+  const linkDirectory = useProjectStore((s) => s.linkDirectory);
+  const rescanProject = useProjectStore((s) => s.rescanProject);
   const backfillAccount = useMailStore((s) => s.backfillAccount);
   const backfillExhausted = useMailStore((s) => s.backfillExhausted);
   const openCompose = useComposeStore((s) => s.openCompose);
-  const { search, clearSearch } = useSearchStore();
+  const search = useSearchStore((s) => s.search);
+  const clearSearch = useSearchStore((s) => s.clearSearch);
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [showForm, setShowForm] = useState(false);
   const [showProjectForm, setShowProjectForm] = useState(false);
