@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { Thread } from "../../types/mail";
 import { useMailDrag } from "../../hooks/useMailDrag";
 import { formatShortDate } from "../../utils/date";
+import { threadBackgroundClass } from "../../utils/threadStyle";
 import { useSelectionStore } from "../../stores/selectionStore";
 
 interface ThreadItemProps {
@@ -23,8 +24,7 @@ export const ThreadItem = memo(function ThreadItem({
   const isChecked = useSelectionStore((s) => s.isSelected(thread.thread_id));
   const toggleThread = useSelectionStore((s) => s.toggleThread);
 
-  // 選択 > 既読(グレー) > 未読(デフォルト白) の優先順で背景色を決める
-  const bgClass = selected ? "bg-blue-50" : hasUnread ? "" : "bg-gray-100";
+  const bgClass = threadBackgroundClass(thread, selected);
 
   return (
     <div

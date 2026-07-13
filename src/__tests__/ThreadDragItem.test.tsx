@@ -7,7 +7,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(() => Promise.resolve([])),
 }));
 
-const mail = (id: string, isRead: boolean): Mail => ({
+const mail = (
+  id: string,
+  isRead: boolean,
+  overrides: Partial<Mail> = {},
+): Mail => ({
   id,
   account_id: "acc1",
   folder: "INBOX",
@@ -28,6 +32,7 @@ const mail = (id: string, isRead: boolean): Mail => ({
   is_read: isRead,
   is_flagged: false,
   fetched_at: "2026-07-12T00:00:00Z",
+  ...overrides,
 });
 
 const thread = (mails: Mail[]): Thread => ({
@@ -47,14 +52,55 @@ describe("ThreadDragItem", () => {
         onClick={() => {}}
       />,
     );
-    expect(screen.getByText("(2)")).toBeInTheDocument();
-    // 最新メールの送信者が表示される
-    expect(screen.getByText("m2@example.com")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
   });
 
   it("1通のスレッドは件数バッジを出さない", () => {
     render(<ThreadDragItem thread={thread([mail("m1", true)])} onClick={() => {}} />);
-    expect(screen.queryByText("(1)")).not.toBeInTheDocument();
+    expect(screen.queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("スレッド参加者(from_addrs)を全員表示する", () => {
+    render(
+      <ThreadDragItem
+        thread={thread([mail("m1", true), mail("m2", true)])}
+        onClick={() => {}}
+      />,
+    );
+    expect(
+      screen.getByText("m1@example.com, m2@example.com"),
+    ).toBeInTheDocument();
+  });
+
+  it("日付を表示する", () => {
+    render(
+      <ThreadDragItem
+        thread={thread([mail("m1", true)])}
+        onClick={() => {}}
+      />,
+    );
+    // 2026-07-12 → "7/12"
+    expect(screen.getByText("7/12")).toBeInTheDocument();
+  });
+
+  it("フラグ付きメールを含むスレッドは★を表示する", () => {
+    render(
+      <ThreadDragItem
+        thread={thread([mail("m1", true), mail("m2", true, { is_flagged: true })])}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.getByText("★")).toBeInTheDocument();
+  });
+
+  it("フラグ付きメールがないスレッドは★を表示しない", () => {
+    render(
+      <ThreadDragItem
+        thread={thread([mail("m1", true)])}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.queryByText("★")).not.toBeInTheDocument();
   });
 
   it("未読メールを含むスレッドは件名が太字になる", () => {
@@ -66,5 +112,25 @@ describe("ThreadDragItem", () => {
     );
     const subject = screen.getByText("Re: Test");
     expect(subject.className).toContain("font-bold");
+  });
+
+  it("全メール既読のスレッドはグレー背景になる", () => {
+    const { container } = render(
+      <ThreadDragItem
+        thread={thread([mail("m1", true), mail("m2", true)])}
+        onClick={() => {}}
+      />,
+    );
+    expect(container.firstElementChild!.className).toContain("bg-gray-100");
+  });
+
+  it("未読を含むスレッドはグレー背景にしない", () => {
+    const { container } = render(
+      <ThreadDragItem
+        thread={thread([mail("m1", true), mail("m2", false)])}
+        onClick={() => {}}
+      />,
+    );
+    expect(container.firstElementChild!.className).not.toContain("bg-gray-100");
   });
 });
