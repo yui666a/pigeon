@@ -1,6 +1,6 @@
 use crate::error::AppError;
 use crate::models::account::{Account, AccountProvider, AuthType, CreateAccountRequest};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 pub fn insert_account(conn: &Connection, req: &CreateAccountRequest) -> Result<Account, AppError> {
@@ -109,16 +109,15 @@ pub fn account_exists_by_email(
     conn: &Connection,
     email: &str,
 ) -> Result<Option<Account>, AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, auth_type, provider, created_at
-         FROM accounts WHERE email = ?1",
-    )?;
-    let mut rows = stmt.query_map(params![email], row_to_account)?;
-    match rows.next() {
-        Some(Ok(account)) => Ok(Some(account)),
-        Some(Err(e)) => Err(AppError::Database(e)),
-        None => Ok(None),
-    }
+    let account = conn
+        .query_row(
+            "SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, auth_type, provider, created_at
+             FROM accounts WHERE email = ?1",
+            params![email],
+            row_to_account,
+        )
+        .optional()?;
+    Ok(account)
 }
 
 #[cfg(test)]

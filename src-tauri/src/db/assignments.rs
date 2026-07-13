@@ -1,7 +1,7 @@
 use crate::db::mails::{self, row_to_mail, MAIL_COLUMNS_PREFIXED};
 use crate::error::AppError;
 use crate::models::mail::Mail;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
 /// INSERT OR REPLACE a mail-to-project assignment.
@@ -63,15 +63,28 @@ fn approve_classification_in_tx(
         )?;
     } else {
         // Different project — record correction
-        conn.execute(
-            "UPDATE mail_project_assignments
-             SET project_id = ?1, assigned_by = 'user', corrected_from = ?2
-             WHERE mail_id = ?3",
-            params![project_id, current_project, mail_id],
-        )?;
-        // Record in correction_log for LLM feedback
-        insert_correction(conn, mail_id, Some(&current_project), project_id)?;
+        reassign_with_correction(conn, mail_id, &current_project, project_id)?;
     }
+    Ok(())
+}
+
+/// 割り当てをユーザー操作として別案件へ付け替え、correction_log に記録する共通処理。
+/// `corrected_from` に旧案件を残し、LLM のフィードバック用の訂正ログも書く。
+/// 複数書き込みのため、呼び出し側でトランザクション境界を張ること
+/// （approve_classification と projects::merge_projects が共用する）。
+pub(crate) fn reassign_with_correction(
+    conn: &Connection,
+    mail_id: &str,
+    from_project: &str,
+    to_project: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE mail_project_assignments
+         SET project_id = ?1, assigned_by = 'user', corrected_from = ?2
+         WHERE mail_id = ?3",
+        params![to_project, from_project, mail_id],
+    )?;
+    insert_correction(conn, mail_id, Some(from_project), to_project)?;
     Ok(())
 }
 
@@ -98,7 +111,7 @@ pub fn reject_classification(conn: &Connection, mail_id: &str) -> Result<(), App
 }
 
 /// スレッド追従の除外トゥームストーンにメールを記録する（冪等）。
-pub fn add_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
+fn add_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
     conn.execute(
         "INSERT OR IGNORE INTO follow_exclusions (mail_id) VALUES (?1)",
         params![mail_id],
@@ -108,7 +121,7 @@ pub fn add_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppE
 
 /// スレッド追従の除外トゥームストーンからメールを取り除く（冪等）。
 /// ユーザーが手動で割り当て直したときに「意思を変えた」として除外を解く。
-pub fn remove_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
+fn remove_follow_exclusion(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
     conn.execute(
         "DELETE FROM follow_exclusions WHERE mail_id = ?1",
         params![mail_id],
@@ -125,7 +138,7 @@ pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec
              LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
              WHERE mpa.mail_id IS NULL AND m.account_id = ?1 AND m.folder = 'INBOX'
              ORDER BY m.date DESC",
-        MAIL_COLUMNS_PREFIXED
+        *MAIL_COLUMNS_PREFIXED
     ))?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?
@@ -140,7 +153,7 @@ pub fn get_mails_by_project(conn: &Connection, project_id: &str) -> Result<Vec<M
              JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
              WHERE mpa.project_id = ?1
              ORDER BY m.date DESC",
-        MAIL_COLUMNS_PREFIXED
+        *MAIL_COLUMNS_PREFIXED
     ))?;
     let mails = stmt
         .query_map(params![project_id], row_to_mail)?
@@ -195,19 +208,16 @@ pub fn get_assignment_info(
     conn: &Connection,
     mail_id: &str,
 ) -> Result<Option<(String, String, Option<f64>)>, AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT project_id, assigned_by, confidence
-         FROM mail_project_assignments
-         WHERE mail_id = ?1",
-    )?;
-    let mut rows = stmt.query_map(params![mail_id], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })?;
-    match rows.next() {
-        Some(Ok(info)) => Ok(Some(info)),
-        Some(Err(e)) => Err(AppError::Database(e)),
-        None => Ok(None),
-    }
+    let info = conn
+        .query_row(
+            "SELECT project_id, assigned_by, confidence
+             FROM mail_project_assignments
+             WHERE mail_id = ?1",
+            params![mail_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    Ok(info)
 }
 
 /// Record a user correction in the correction_log table.

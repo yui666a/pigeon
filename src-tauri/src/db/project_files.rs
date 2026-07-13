@@ -3,6 +3,23 @@ use crate::models::directory::{ProjectFile, ProjectFileEntry};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+/// project_files テーブルの1行を ProjectFile へ変換する共通マッパー。
+/// カラム順は `SELECT id, directory_id, relative_path, size_bytes, mtime,
+/// content_hash, content_kind, extract_status, indexed_at` に一致させること。
+fn row_to_project_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectFile> {
+    Ok(ProjectFile {
+        id: row.get(0)?,
+        directory_id: row.get(1)?,
+        relative_path: row.get(2)?,
+        size_bytes: row.get(3)?,
+        mtime: row.get(4)?,
+        content_hash: row.get(5)?,
+        content_kind: row.get(6)?,
+        extract_status: row.get(7)?,
+        indexed_at: row.get(8)?,
+    })
+}
+
 /// インベントリをスナップショットとして全置換する（スペック§4: 消えたファイルはハードデリート）。
 /// トランザクション内で実行するため途中失敗しても前回の状態が残り、冪等にやり直せる。
 pub fn replace_inventory(
@@ -44,19 +61,7 @@ pub fn list_files(conn: &Connection, directory_id: &str) -> Result<Vec<ProjectFi
          FROM project_files WHERE directory_id = ?1 ORDER BY relative_path",
     )?;
     let files = stmt
-        .query_map(params![directory_id], |row| {
-            Ok(ProjectFile {
-                id: row.get(0)?,
-                directory_id: row.get(1)?,
-                relative_path: row.get(2)?,
-                size_bytes: row.get(3)?,
-                mtime: row.get(4)?,
-                content_hash: row.get(5)?,
-                content_kind: row.get(6)?,
-                extract_status: row.get(7)?,
-                indexed_at: row.get(8)?,
-            })
-        })?
+        .query_map(params![directory_id], row_to_project_file)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(files)
 }

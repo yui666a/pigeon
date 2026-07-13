@@ -14,10 +14,7 @@ pub fn create_account(
     secure_store: State<SecureStoreState>,
     request: CreateAccountRequest,
 ) -> Result<Account, AppError> {
-    let account = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        accounts::insert_account(&conn, &request)?
-    };
+    let account = state.with_conn(|conn| accounts::insert_account(conn, &request))?;
 
     // For PLAIN auth, save password to SecureStore
     if matches!(request.auth_type, AuthType::Plain) {
@@ -37,8 +34,7 @@ pub fn get_accounts(
     state: State<DbState>,
     secure_store: State<SecureStoreState>,
 ) -> Result<Vec<Account>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    let mut accounts = accounts::list_accounts(&conn)?;
+    let mut accounts = state.with_conn(accounts::list_accounts)?;
     check_accounts_reauth(&mut accounts, &secure_store.0);
     Ok(accounts)
 }
@@ -67,8 +63,7 @@ fn check_accounts_reauth(accounts: &mut [Account], secure_store: &SecureStore) {
 pub fn remove_account(app: AppHandle, state: State<DbState>, id: String) -> Result<(), AppError> {
     // 削除するアカウントの IDLE 監視を停止する
     idle::stop_watching(&app, &id);
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    accounts::delete_account(&conn, &id)
+    state.with_conn(|conn| accounts::delete_account(conn, &id))
 }
 
 #[cfg(test)]

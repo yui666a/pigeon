@@ -4,9 +4,33 @@ use std::sync::Mutex;
 
 use tauri::async_runtime::JoinHandle;
 
+use crate::error::AppError;
 use crate::secure_store::SecureStore;
 
 pub struct DbState(pub Mutex<Connection>);
+
+impl DbState {
+    /// DB 接続のロック取得とロックエラー変換を共通化するヘルパ。
+    /// `let conn = state.0.lock().map_err(AppError::lock_err)?` の定型を置き換える。
+    /// クロージャの間ロックを保持するため、await を挟む処理には使わないこと。
+    pub fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let conn = self.0.lock().map_err(AppError::lock_err)?;
+        f(&conn)
+    }
+
+    /// `with_conn` の可変版（`Connection::transaction` 等で &mut が必要な場合）。
+    pub fn with_conn_mut<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut conn = self.0.lock().map_err(AppError::lock_err)?;
+        f(&mut conn)
+    }
+}
+
 pub struct SecureStoreState(pub SecureStore);
 
 /// アカウント単位の同期実行ロック。

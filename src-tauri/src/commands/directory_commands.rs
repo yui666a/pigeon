@@ -42,14 +42,12 @@ pub fn link_project_directory(
     project_id: String,
     path: String,
 ) -> Result<ProjectDirectory, AppError> {
-    let mut conn = db.0.lock().map_err(AppError::lock_err)?;
-    validate_and_link(&mut conn, &project_id, &path)
+    db.with_conn_mut(|conn| validate_and_link(conn, &project_id, &path))
 }
 
 #[tauri::command]
 pub fn unlink_project_directory(db: State<DbState>, project_id: String) -> Result<(), AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    directories::unlink_directory(&conn, &project_id)
+    db.with_conn(|conn| directories::unlink_directory(conn, &project_id))
 }
 
 #[tauri::command]
@@ -57,8 +55,7 @@ pub fn get_project_directory(
     db: State<DbState>,
     project_id: String,
 ) -> Result<Option<ProjectDirectory>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    directories::get_directory_by_project(&conn, &project_id)
+    db.with_conn(|conn| directories::get_directory_by_project(conn, &project_id))
 }
 
 #[tauri::command]
@@ -67,16 +64,12 @@ pub async fn rescan_project_directory(
     secure_store: State<'_, SecureStoreState>,
     project_id: String,
 ) -> Result<RescanOutcome, AppError> {
-    let classifier = {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        build_classifier(&conn, &secure_store.0)?
-    };
+    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
     // プロバイダが Claude のときのみクラウド送信になる。cloud フラグは
     // 送信可否ポリシー適用のためのもので、build_classifier とは独立。
-    let cloud = {
-        let conn = db.0.lock().map_err(AppError::lock_err)?;
-        crate::db::settings::get_or_default(&conn, "llm_provider", "ollama")? == "claude"
-    };
+    let cloud = db.with_conn(|conn| {
+        Ok(crate::db::settings::get_or_default(conn, "llm_provider", "ollama")? == "claude")
+    })?;
     project_context::rescan_project(&db.0, classifier.as_ref(), &project_id, cloud).await
 }
 
@@ -85,8 +78,7 @@ pub fn list_project_files(
     db: State<DbState>,
     directory_id: String,
 ) -> Result<Vec<ProjectFile>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    project_files::list_files(&conn, &directory_id)
+    db.with_conn(|conn| project_files::list_files(conn, &directory_id))
 }
 
 #[tauri::command]
@@ -97,8 +89,7 @@ pub fn set_cloud_rule(
     relative_path: String,
     allow: Option<bool>,
 ) -> Result<(), AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    apply_cloud_rule(&conn, &directory_id, &scope, &relative_path, allow)
+    db.with_conn(|conn| apply_cloud_rule(conn, &directory_id, &scope, &relative_path, allow))
 }
 
 #[tauri::command]
@@ -106,8 +97,7 @@ pub fn get_cloud_rules(
     db: State<DbState>,
     directory_id: String,
 ) -> Result<Vec<CloudRule>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    cloud_rules::list_rules(&conn, &directory_id)
+    db.with_conn(|conn| cloud_rules::list_rules(conn, &directory_id))
 }
 
 #[tauri::command]
@@ -116,8 +106,7 @@ pub fn set_allow_cloud_context(
     project_id: String,
     allow: bool,
 ) -> Result<(), AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    project_contexts::set_allow_cloud_context(&conn, &project_id, allow)
+    db.with_conn(|conn| project_contexts::set_allow_cloud_context(conn, &project_id, allow))
 }
 
 #[tauri::command]
@@ -125,8 +114,7 @@ pub fn get_project_context(
     db: State<DbState>,
     project_id: String,
 ) -> Result<Option<ProjectContext>, AppError> {
-    let conn = db.0.lock().map_err(AppError::lock_err)?;
-    project_contexts::get_context(&conn, &project_id)
+    db.with_conn(|conn| project_contexts::get_context(conn, &project_id))
 }
 
 #[cfg(test)]

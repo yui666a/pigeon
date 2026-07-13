@@ -76,7 +76,7 @@ fn search_fts(
            AND m.account_id = ?2
          ORDER BY rank
          LIMIT ?3",
-        MAIL_COLUMNS_PREFIXED
+        *MAIL_COLUMNS_PREFIXED
     ))?;
 
     let results = stmt
@@ -116,7 +116,7 @@ fn search_like(
            AND (m.subject LIKE ?2 ESCAPE '\\' OR m.body_text LIKE ?2 ESCAPE '\\' OR m.from_addr LIKE ?2 ESCAPE '\\' OR m.to_addr LIKE ?2 ESCAPE '\\')
          ORDER BY m.date DESC
          LIMIT ?3",
-        MAIL_COLUMNS_PREFIXED
+        *MAIL_COLUMNS_PREFIXED
     ))?;
 
     let results = stmt

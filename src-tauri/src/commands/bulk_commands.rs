@@ -42,10 +42,7 @@ pub async fn bulk_delete_mails(
     account_id: String,
     mail_ids: Vec<String>,
 ) -> Result<BulkResult, AppError> {
-    let account = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        accounts::get_account(&conn, &account_id)?
-    };
+    let account = state.with_conn(|conn| accounts::get_account(conn, &account_id))?;
     let creds = tokio::sync::OnceCell::new_with(Some(
         mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?,
     ));
@@ -70,12 +67,11 @@ pub async fn bulk_archive_mails(
     account_id: String,
     mail_ids: Vec<String>,
 ) -> Result<BulkResult, AppError> {
-    let (account, archive_folder) = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let account = accounts::get_account(&conn, &account_id)?;
-        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive")?;
-        (account, archive_folder)
-    };
+    let (account, archive_folder) = state.with_conn(|conn| {
+        let account = accounts::get_account(conn, &account_id)?;
+        let archive_folder = settings::get_or_default(conn, "archive_folder", "Archive")?;
+        Ok((account, archive_folder))
+    })?;
     let creds = tokio::sync::OnceCell::new_with(Some(
         mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?,
     ));
@@ -106,18 +102,19 @@ pub fn bulk_move_mails(
     mail_ids: Vec<String>,
     project_id: String,
 ) -> Result<BulkResult, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    let mut result = BulkResult::new();
-    for mail_id in mail_ids {
-        let outcome = crate::commands::classify_commands::move_mail_inner(
-            &conn,
-            &pending,
-            &mail_id,
-            &project_id,
-        );
-        result.push(mail_id, outcome);
-    }
-    Ok(result)
+    state.with_conn(|conn| {
+        let mut result = BulkResult::new();
+        for mail_id in mail_ids {
+            let outcome = crate::commands::classify_commands::move_mail_inner(
+                conn,
+                &pending,
+                &mail_id,
+                &project_id,
+            );
+            result.push(mail_id, outcome);
+        }
+        Ok(result)
+    })
 }
 
 #[cfg(test)]

@@ -238,8 +238,7 @@ pub async fn list_attachments(
     let raw = raw?;
 
     // 3. 抽出・キャッシュ保存・DB記録
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    cache_attachments(&conn, &attachments_cache_root(), &mail_id, &raw)
+    state.with_conn(|conn| cache_attachments(conn, &attachments_cache_root(), &mail_id, &raw))
 }
 
 /// キャッシュ済みの添付ファイルを保存する。保存先はバックエンドで開く
@@ -252,10 +251,7 @@ pub async fn save_attachment(
     state: State<'_, DbState>,
     attachment_id: String,
 ) -> Result<bool, AppError> {
-    let attachment = {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        attachments::get_by_id(&conn, &attachment_id)?
-    };
+    let attachment = state.with_conn(|conn| attachments::get_by_id(conn, &attachment_id))?;
 
     let mut dialog = app.dialog().file().set_file_name(&attachment.filename);
     if let Some(window) = app.get_webview_window("main") {

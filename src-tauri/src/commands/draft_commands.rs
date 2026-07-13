@@ -75,8 +75,7 @@ pub async fn save_draft(
     state: State<'_, DbState>,
     req: SaveDraftRequest,
 ) -> Result<Draft, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    upsert_draft(&conn, &req)
+    state.with_conn(|conn| upsert_draft(conn, &req))
 }
 
 #[tauri::command]
@@ -84,14 +83,12 @@ pub async fn get_drafts(
     state: State<'_, DbState>,
     account_id: String,
 ) -> Result<Vec<Draft>, AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    drafts::get_drafts_by_account(&conn, &account_id)
+    state.with_conn(|conn| drafts::get_drafts_by_account(conn, &account_id))
 }
 
 #[tauri::command]
 pub async fn delete_draft(state: State<'_, DbState>, id: String) -> Result<(), AppError> {
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    drafts::delete_draft(&conn, &id)
+    state.with_conn(|conn| drafts::delete_draft(conn, &id))
 }
 
 #[cfg(test)]

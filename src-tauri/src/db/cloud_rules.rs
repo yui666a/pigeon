@@ -3,6 +3,18 @@ use crate::models::directory::CloudRule;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+/// project_cloud_rules テーブルの1行を CloudRule へ変換する共通マッパー。
+/// カラム順は `SELECT id, directory_id, scope, relative_path, allow` に一致させること。
+fn row_to_cloud_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudRule> {
+    Ok(CloudRule {
+        id: row.get(0)?,
+        directory_id: row.get(1)?,
+        scope: row.get(2)?,
+        relative_path: row.get(3)?,
+        allow: row.get(4)?,
+    })
+}
+
 pub fn set_rule(
     conn: &Connection,
     directory_id: &str,
@@ -47,15 +59,7 @@ pub fn list_rules(conn: &Connection, directory_id: &str) -> Result<Vec<CloudRule
          FROM project_cloud_rules WHERE directory_id = ?1 ORDER BY relative_path",
     )?;
     let rules = stmt
-        .query_map(params![directory_id], |row| {
-            Ok(CloudRule {
-                id: row.get(0)?,
-                directory_id: row.get(1)?,
-                scope: row.get(2)?,
-                relative_path: row.get(3)?,
-                allow: row.get(4)?,
-            })
-        })?
+        .query_map(params![directory_id], row_to_cloud_rule)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rules)
 }
