@@ -75,6 +75,27 @@ pub struct ClassifyResponse {
     pub result: ClassifyResult,
 }
 
+/// `classify_batch` の戻り値。1 invoke で「次の停止点（create 提案）or 完了/中断」
+/// まで進んだ結果を表す（設計: 2026-07-13-classify-batch-backend-design.md）。
+///
+/// `done` は処理済み件数、`total` はバッチ開始時のキュー長（再開しても不変）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ClassifyBatchOutcome {
+    /// キューを最後まで処理した
+    Completed { done: usize, total: usize },
+    /// 新規案件提案（create）で停止。承認/却下後に再 invoke で続きから再開する
+    Paused {
+        proposal: ClassifyResponse,
+        done: usize,
+        total: usize,
+    },
+    /// `cancel_classification` により中断（バッチは破棄済み）
+    Cancelled { done: usize, total: usize },
+    /// 同一アカウントのバッチが実行中のため何もしなかった
+    AlreadyRunning,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
