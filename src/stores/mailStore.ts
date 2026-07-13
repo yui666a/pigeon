@@ -52,7 +52,6 @@ interface MailState {
   unarchiveMail: (mail: Mail) => Promise<void>;
   fetchUnreadCounts: (accountId: string) => Promise<void>;
   fetchUnclassified: (accountId: string) => Promise<void>;
-  moveMail: (mailId: string, projectId: string) => Promise<void>;
   removeUnclassifiedMail: (mailId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
@@ -412,16 +411,6 @@ export const useMailStore = create<MailState>((set, get) => ({
         unclassifiedThreads: threads,
         unclassifiedMails: threads.flatMap((t) => t.mails),
       });
-    } catch (e) {
-      set({ error: String(e) });
-      useErrorStore.getState().addError(String(e));
-    }
-  },
-
-  moveMail: async (mailId, projectId) => {
-    try {
-      await invoke("move_mail", { mailId, projectId });
-      get().removeUnclassifiedMail(mailId);
     } catch (e) {
       set({ error: String(e) });
       useErrorStore.getState().addError(String(e));

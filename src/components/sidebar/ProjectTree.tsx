@@ -83,7 +83,8 @@ function ProjectListInner({
   } = useProjectStore();
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
   const endDrag = useDragStore((s) => s.endDrag);
-  const { moveMail } = useMailStore();
+  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
+  const removeUnclassifiedMail = useMailStore((s) => s.removeUnclassifiedMail);
   const unreadByProject = useMailStore((s) => s.unreadCounts.by_project);
   const { startRename } = useProjectRenameContext();
   const [contextMenu, setContextMenu] = useState<{
@@ -98,8 +99,11 @@ function ProjectListInner({
     if (!draggingMailIds) return;
     const mailIds = [...draggingMailIds];
     endDrag();
-    for (const mailId of mailIds) {
-      await moveMail(mailId, projectId);
+    // 一括移動。結果はトーストで要約され、部分失敗もエラーとして通知される
+    const result = await bulkMoveMails(mailIds, projectId);
+    // 成功したメールだけを未分類一覧から除去する（失敗分は残して再操作できるようにする）
+    for (const mailId of result?.succeeded ?? []) {
+      removeUnclassifiedMail(mailId);
     }
   };
 
