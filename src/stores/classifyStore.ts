@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { classifyApi } from "../api/classifyApi";
 import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
+import { useMailStore } from "./mailStore";
 import { useProjectStore } from "./projectStore";
 import type {
   ClassifyProgressEvent,
@@ -153,6 +154,13 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
                 total: event.payload.total,
               },
             });
+            // 案件へ確定割り当てされたメールは未分類一覧から即座に消す
+            // （バッチ完了を待たずに「移動した」ことが分かるように）
+            if (event.payload.assigned_mail_id) {
+              useMailStore
+                .getState()
+                .removeUnclassifiedMail(event.payload.assigned_mail_id);
+            }
           }
         },
       );

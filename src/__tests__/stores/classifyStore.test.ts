@@ -7,7 +7,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 // classify-progress イベントの購読ハンドラを捕まえて、テストから発火できるようにする
 type ProgressHandler = (event: {
-  payload: { account_id: string; current: number; total: number };
+  payload: {
+    account_id: string;
+    current: number;
+    total: number;
+    assigned_mail_id?: string | null;
+  };
 }) => void;
 let progressHandler: ProgressHandler | null = null;
 vi.mock("@tauri-apps/api/event", () => ({
@@ -19,6 +24,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { useClassifyStore } from "../../stores/classifyStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useMailStore } from "../../stores/mailStore";
 
 const resetStore = () =>
   useClassifyStore.setState({
@@ -33,6 +39,8 @@ beforeEach(() => {
   progressHandler = null;
   resetStore();
   useProjectStore.setState({ projects: [] });
+  // spyOn（removeUnclassifiedMail 等）の履歴・実装をテスト間で持ち越さない
+  vi.restoreAllMocks();
 });
 
 // classify_batch の戻り値（Rust の ClassifyBatchOutcome。status で判別する）
@@ -217,5 +225,71 @@ describe("classifyStore batch flow", () => {
       current: 2,
       total: 5,
     });
+  });
+
+  // 未分類一覧に2件セットして分類バッチを開始する共通セットアップ。
+  // 進捗イベント発火後に unclassifiedMails に残る ID を返す。
+  const setupWithUnclassified = async () => {
+    useMailStore.setState({
+      unclassifiedMails: [
+        { id: "mail-42" } as never,
+        { id: "mail-99" } as never,
+      ],
+      unclassifiedThreads: [],
+    });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "classify_batch") return Promise.resolve(paused("m1", 1, 5));
+      return Promise.resolve();
+    });
+    await useClassifyStore.getState().initProgressListener();
+    await useClassifyStore.getState().classifyAll("acc1");
+  };
+
+  const remainingUnclassifiedIds = () =>
+    useMailStore.getState().unclassifiedMails.map((m) => m.id);
+
+  it("assigned_mail_id を含む進捗で該当メールを未分類一覧から消す", async () => {
+    await setupWithUnclassified();
+
+    progressHandler?.({
+      payload: {
+        account_id: "acc1",
+        current: 2,
+        total: 5,
+        assigned_mail_id: "mail-42",
+      },
+    });
+
+    expect(remainingUnclassifiedIds()).toEqual(["mail-99"]);
+  });
+
+  it("assigned_mail_id が null の進捗ではメールを消さない", async () => {
+    await setupWithUnclassified();
+
+    progressHandler?.({
+      payload: {
+        account_id: "acc1",
+        current: 2,
+        total: 5,
+        assigned_mail_id: null,
+      },
+    });
+
+    expect(remainingUnclassifiedIds()).toEqual(["mail-42", "mail-99"]);
+  });
+
+  it("別アカウントの assigned_mail_id では消さない", async () => {
+    await setupWithUnclassified();
+
+    progressHandler?.({
+      payload: {
+        account_id: "other",
+        current: 2,
+        total: 5,
+        assigned_mail_id: "mail-42",
+      },
+    });
+
+    expect(remainingUnclassifiedIds()).toEqual(["mail-42", "mail-99"]);
   });
 });
