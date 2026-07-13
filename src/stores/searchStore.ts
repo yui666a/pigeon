@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import type { SearchResult } from "../types/mail";
+import { searchApi } from "../api/searchApi";
+import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 
 interface SearchState {
@@ -29,14 +30,11 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     }
     set({ query, searching: true, selectedIndex: -1 });
     try {
-      const results = await invoke<SearchResult[]>("search_mails", {
-        accountId,
-        query,
-      });
+      const results = await searchApi.searchMails(accountId, query);
       set({ results, searching: false });
     } catch (e) {
       set({ results: [], searching: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
