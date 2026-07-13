@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useAccountStore } from "../../stores/accountStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -10,7 +9,6 @@ import { EmptyState } from "../common/EmptyState";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
 import { useBulkActions } from "../../hooks/useBulkActions";
 import { INBOX_FOLDER } from "../../constants/folders";
-import type { Thread } from "../../types/mail";
 
 interface ThreadListProps {
   viewMode: "threads" | "project";
@@ -26,9 +24,9 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   const needsReauth = useMailStore((s) => s.needsReauth);
   const selectedThread = useMailStore((s) => s.selectedThread);
   const fetchThreads = useMailStore((s) => s.fetchThreads);
+  const fetchThreadsByProject = useMailStore((s) => s.fetchThreadsByProject);
   const syncAccount = useMailStore((s) => s.syncAccount);
   const selectThread = useMailStore((s) => s.selectThread);
-  const setThreads = useMailStore((s) => s.setThreads);
   const clearSelection = useSelectionStore((s) => s.clear);
   const { visible, hasMore, remaining, showMore } = useDisplayLimit(
     threads,
@@ -36,27 +34,27 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   );
 
   useEffect(() => {
+    let cancelled = false;
     if (viewMode === "project" && selectedProjectId) {
-      invoke<Thread[]>("get_threads_by_project", { projectId: selectedProjectId })
-        .then((projectThreads) => {
-          setThreads(projectThreads);
-        })
-        .catch(() => {
-          setThreads([]);
-        });
+      void fetchThreadsByProject(selectedProjectId);
     } else if (viewMode === "threads" && selectedAccountId) {
-      syncAccount(selectedAccountId).then(() => {
-        fetchThreads(selectedAccountId, INBOX_FOLDER);
+      void syncAccount(selectedAccountId).then(() => {
+        // 高速切替で古いアカウントの結果が新しい一覧を上書きしないよう、
+        // クリーンアップ済みなら取得しない。再認証が必要なときも取得は
+        // 無意味なためスキップする（再ログイン導線を表示する）
+        if (cancelled || useMailStore.getState().needsReauth) return;
+        void fetchThreads(selectedAccountId, INBOX_FOLDER);
       });
     }
     clearSelection();
-  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, syncAccount, setThreads, clearSelection]);
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, selectedAccountId, selectedProjectId, fetchThreads, fetchThreadsByProject, syncAccount, clearSelection]);
 
   const reloadThreads = () => {
     if (viewMode === "project" && selectedProjectId) {
-      invoke<Thread[]>("get_threads_by_project", { projectId: selectedProjectId })
-        .then(setThreads)
-        .catch(() => setThreads([]));
+      void fetchThreadsByProject(selectedProjectId);
     } else if (selectedAccountId) {
       void fetchThreads(selectedAccountId, INBOX_FOLDER);
     }
