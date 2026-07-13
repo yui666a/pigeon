@@ -1,3 +1,4 @@
+pub mod anthropic_common;
 pub mod claude;
 pub mod claude_vertex;
 pub mod factory;

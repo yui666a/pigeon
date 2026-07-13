@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use gcp_auth::{CustomServiceAccount, TokenProvider};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use crate::classifier::anthropic_common::{
+    extract_text, user_messages, MessageParam, MessagesResponse,
+};
 use crate::classifier::{build_http_client, LlmClassifier, TextGenerator};
 use crate::error::AppError;
 
@@ -62,25 +65,8 @@ impl ClaudeVertexClassifier {
             anthropic_version: VERTEX_ANTHROPIC_VERSION.to_string(),
             max_tokens: MAX_TOKENS,
             system: system_prompt.to_string(),
-            messages: vec![MessageParam {
-                role: "user".to_string(),
-                content: user_prompt.to_string(),
-            }],
+            messages: user_messages(user_prompt),
         }
-    }
-
-    /// レスポンス JSON から最初の text ブロックを取り出す（Messages API と同形）。
-    fn extract_text(resp: &MessagesResponse) -> Result<String, AppError> {
-        resp.content
-            .iter()
-            .find_map(|b| {
-                if b.block_type == "text" {
-                    b.text.clone()
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| AppError::InvalidLlmResponse("no text block in response".to_string()))
     }
 
     /// SA からアクセストークンを取得する（クレート側でキャッシュ・失効管理される）。
@@ -119,7 +105,7 @@ impl ClaudeVertexClassifier {
             .json()
             .await
             .map_err(|e| AppError::InvalidLlmResponse(e.to_string()))?;
-        Self::extract_text(&parsed)
+        extract_text(&parsed)
     }
 }
 
@@ -129,24 +115,6 @@ struct VertexMessagesRequest {
     max_tokens: u32,
     system: String,
     messages: Vec<MessageParam>,
-}
-
-#[derive(Debug, Serialize)]
-struct MessageParam {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct MessagesResponse {
-    content: Vec<ContentBlock>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: Option<String>,
 }
 
 #[async_trait]
@@ -172,10 +140,7 @@ impl LlmClassifier for ClaudeVertexClassifier {
             anthropic_version: VERTEX_ANTHROPIC_VERSION.to_string(),
             max_tokens: 1,
             system: String::new(),
-            messages: vec![MessageParam {
-                role: "user".to_string(),
-                content: "ping".to_string(),
-            }],
+            messages: user_messages("ping"),
         };
         let response = self
             .client
@@ -241,38 +206,6 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("model").is_none());
         assert_eq!(json["anthropic_version"], "vertex-2023-10-16");
-    }
-
-    #[test]
-    fn test_extract_text_finds_text_block() {
-        let resp = MessagesResponse {
-            content: vec![ContentBlock {
-                block_type: "text".to_string(),
-                text: Some("{\"action\":\"unclassified\"}".to_string()),
-            }],
-        };
-        assert_eq!(
-            ClaudeVertexClassifier::extract_text(&resp).unwrap(),
-            "{\"action\":\"unclassified\"}"
-        );
-    }
-
-    #[test]
-    fn test_extract_text_no_text_block_errs() {
-        let resp = MessagesResponse {
-            content: vec![ContentBlock {
-                block_type: "tool_use".to_string(),
-                text: None,
-            }],
-        };
-        assert!(ClaudeVertexClassifier::extract_text(&resp).is_err());
-    }
-
-    #[test]
-    fn test_response_deserializes_from_api_json() {
-        let json = r#"{"content":[{"type":"text","text":"hello"}]}"#;
-        let resp: MessagesResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(ClaudeVertexClassifier::extract_text(&resp).unwrap(), "hello");
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use crate::classifier::anthropic_common::{
+    extract_text, user_messages, MessageParam, MessagesResponse,
+};
 use crate::classifier::{build_http_client, LlmClassifier, TextGenerator};
 use crate::error::AppError;
 
@@ -30,25 +33,8 @@ impl ClaudeClassifier {
             model: self.model.clone(),
             max_tokens: MAX_TOKENS,
             system: system_prompt.to_string(),
-            messages: vec![MessageParam {
-                role: "user".to_string(),
-                content: user_prompt.to_string(),
-            }],
+            messages: user_messages(user_prompt),
         }
-    }
-
-    /// レスポンス JSON から最初の text ブロックを取り出す。
-    fn extract_text(resp: &MessagesResponse) -> Result<String, AppError> {
-        resp.content
-            .iter()
-            .find_map(|b| {
-                if b.block_type == "text" {
-                    b.text.clone()
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| AppError::InvalidLlmResponse("no text block in response".to_string()))
     }
 
     async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
@@ -75,7 +61,7 @@ impl ClaudeClassifier {
             .json()
             .await
             .map_err(|e| AppError::InvalidLlmResponse(e.to_string()))?;
-        Self::extract_text(&parsed)
+        extract_text(&parsed)
     }
 }
 
@@ -85,24 +71,6 @@ struct MessagesRequest {
     max_tokens: u32,
     system: String,
     messages: Vec<MessageParam>,
-}
-
-#[derive(Debug, Serialize)]
-struct MessageParam {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct MessagesResponse {
-    content: Vec<ContentBlock>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: Option<String>,
 }
 
 #[async_trait]
@@ -153,37 +121,5 @@ mod tests {
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, "user");
         assert_eq!(req.messages[0].content, "usr");
-    }
-
-    #[test]
-    fn test_extract_text_finds_text_block() {
-        let resp = MessagesResponse {
-            content: vec![ContentBlock {
-                block_type: "text".to_string(),
-                text: Some("{\"action\":\"unclassified\"}".to_string()),
-            }],
-        };
-        assert_eq!(
-            ClaudeClassifier::extract_text(&resp).unwrap(),
-            "{\"action\":\"unclassified\"}"
-        );
-    }
-
-    #[test]
-    fn test_extract_text_no_text_block_errs() {
-        let resp = MessagesResponse {
-            content: vec![ContentBlock {
-                block_type: "tool_use".to_string(),
-                text: None,
-            }],
-        };
-        assert!(ClaudeClassifier::extract_text(&resp).is_err());
-    }
-
-    #[test]
-    fn test_response_deserializes_from_api_json() {
-        let json = r#"{"content":[{"type":"text","text":"hello"}]}"#;
-        let resp: MessagesResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(ClaudeClassifier::extract_text(&resp).unwrap(), "hello");
     }
 }
