@@ -149,6 +149,26 @@ pub(crate) fn build_sent_record(account: &Account, outgoing: &OutgoingMail, raw_
     }
 }
 
+/// SMTP 送信成功後のローカル Sent 反映（ベストエフォート）。
+/// この時点で送信自体は完了しているため、DB挿入の失敗を Err として伝播しない。
+/// Err を返すとUIが「送信失敗」を表示し、ユーザーの再送で二重送信になるため、
+/// 失敗は警告ログに留める。未反映分は次回 Sent 同期の message_id マージ
+/// （`upsert_sent_mail`）でサーバーの Sent フォルダから復元される
+pub(crate) fn persist_sent_local_best_effort(
+    conn: &rusqlite::Connection,
+    account: &Account,
+    outgoing: &OutgoingMail,
+    raw_size: usize,
+) {
+    let record = build_sent_record(account, outgoing, raw_size);
+    if let Err(e) = mails::insert_sent_mail_with_next_uid(conn, &record) {
+        eprintln!(
+            "[warn] mail sent but local Sent insert failed (message_id={}): {}",
+            outgoing.message_id, e
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn send_mail(
     state: State<'_, DbState>,
@@ -209,11 +229,14 @@ pub async fn send_mail(
     }
 
     // 6. ローカルDBに挿入（FTS5はトリガーで自動反映）。
-    //    uid の採番と挿入は insert_sent_mail_with_next_uid が原子的に行う
-    {
-        let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let record = build_sent_record(&account, &outgoing, raw.len());
-        mails::insert_sent_mail_with_next_uid(&conn, &record)?;
+    //    SMTP送信は成功しているためベストエフォート: ロック取得を含め失敗しても
+    //    Err を返さない（persist_sent_local_best_effort のドキュメント参照）
+    match state.0.lock() {
+        Ok(conn) => persist_sent_local_best_effort(&conn, &account, &outgoing, raw.len()),
+        Err(e) => eprintln!(
+            "[warn] mail sent but local Sent insert skipped (DB lock failed): {}",
+            e
+        ),
     }
 
     Ok(())
@@ -370,6 +393,33 @@ mod tests {
         let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
         let record = build_sent_record(&account, &outgoing, 100);
         assert!(record.cc_addr.is_none());
+    }
+
+    #[test]
+    fn test_persist_sent_local_best_effort_inserts_record() {
+        let conn = crate::test_helpers::setup_db();
+        let account = make_account();
+        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+
+        persist_sent_local_best_effort(&conn, &account, &outgoing, 100);
+
+        let mails = mails::get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(mails.len(), 1);
+        assert_eq!(mails[0].message_id, "<mid@pigeon.local>");
+        assert_eq!(mails[0].uid, 1);
+        assert!(!mails[0].uid_confirmed);
+    }
+
+    #[test]
+    fn test_persist_sent_local_best_effort_swallows_db_failure() {
+        // B-7: SMTP送信成功後のローカルDB挿入失敗はErrにしない（再送による二重送信防止）。
+        // mailsテーブルを壊してDB失敗を誘発しても、panicもErr伝播もしないこと
+        let conn = crate::test_helpers::setup_db();
+        conn.execute_batch("DROP TABLE mails").unwrap();
+        let account = make_account();
+        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+
+        persist_sent_local_best_effort(&conn, &account, &outgoing, 100);
     }
 
     #[test]

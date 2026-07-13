@@ -34,7 +34,8 @@ commands/send_commands.rs
     ├─ 5. Sentフォルダへ保存
     │     ├─ Google: 何もしない（GmailはSMTP送信時に自動でSentへ保存）
     │     └─ Other:  IMAP APPEND（ベストエフォート。失敗しても送信は成功扱い）
-    └─ 6. ローカルDBに folder='Sent' で挿入（FTS5にも自動反映）
+    └─ 6. ローカルDBに folder='Sent' で挿入（FTS5にも自動反映。
+          ベストエフォート。SMTP送信は成功済みのため失敗しても送信は成功扱い）
 ```
 
 ### モジュール構成
@@ -78,8 +79,15 @@ pub struct SendMailRequest {
 
 ### 送信後のローカル保存
 
-`mails` テーブルに `folder='Sent'`, `uid=0`, `flags='\\Seen'` で挿入する。
-uid=0 の理由: APPENDしたメールのUIDを取得するにはUIDPLUS拡張が必要で、対応しないサーバーもある。Sentフォルダは差分同期の対象外（現状INBOXのみ同期）のため、UID整合性の問題は生じない。将来Sentフォルダ同期を実装する際は message_id ベースの重複排除（既存のUNIQUE制約）で自然にマージされる。
+`mails` テーブルに `folder='Sent'`, `flags='\\Seen'`, `uid_confirmed=0` で挿入する。
+uid はフォルダ内 `max(uid)+1` の仮採番で、採番と挿入は `insert_sent_mail_with_next_uid`
+が単一の INSERT ... SELECT で原子的に行う（並行する送信・Sent 同期との UNIQUE 衝突防止）。
+仮 uid は Sent 同期の message_id マージでサーバー実 UID へ後追い確定される
+（詳細は 2026-07-12-sent-sync-uidplus-design.md）。
+
+この挿入はベストエフォートとする。SMTP 送信はこの時点で成功しているため、DB 挿入失敗を
+Err として返すと UI が「送信失敗」と誤表示し、ユーザーの再送で二重送信を招く。失敗は
+警告ログのみに留め、未反映分は次回 Sent 同期でサーバーの Sent フォルダから復元される。
 
 ## SMTP接続 (lettre)
 
