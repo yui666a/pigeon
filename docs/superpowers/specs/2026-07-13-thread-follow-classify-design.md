@@ -168,3 +168,38 @@ few-shot例として使われる（`get_recent_corrections`）。スレッド追
 
 `classify_commands::get_unclassified_threads`:
 - 呼び出し時に追従対象があれば未分類一覧から消えていること（統合的な確認）
+
+## 7. パフォーマンス改善（2026-07-13 追記）
+
+**（コードベース調査レポート指摘 B-3 対応）**
+
+`auto_follow_threads` は未分類一覧を開くたびに実行されるが、初版実装には
+2つのコストがあった:
+
+1. `get_all_mails_by_account` が body_text/body_html 込みで全メールをロードしていた
+   （スレッド判定に本文は不要）
+2. スレッド内のメール毎に `get_assignment_info` を個別発行していた
+   （O(N)〜O(2N) クエリの N+1）
+
+対応として 4.2 のアルゴリズムを次のとおり改める。要件・追従の判定結果は変えない:
+
+- **軽量メタの専用クエリ**: 本文カラムを読まない `mails::ThreadMailMeta`
+  （id / message_id / in_reply_to / references / subject / date）と
+  `mails::get_thread_metas_by_account` を新設し、これを判定入力にする。
+  取得範囲・順序（全フォルダ・date DESC）は `get_all_mails_by_account` と同一
+- **スレッド判定の再利用**: `mails::group_mail_ids_into_threads` が軽量メタを
+  `build_threads` に委譲してスレッドごとのメールID集合を返す（3章の
+  「判定ロジックの重複実装はしない」を維持）
+- **割り当ての先読み**: アカウント配下の `mail_project_assignments` を1クエリで
+  `mail_id → project_id` の HashMap に読み出し、メール毎のクエリ発行を無くす
+- **書き込みのトランザクション化**: 追従の `assign_mail` 群を1トランザクションに
+  束ねる。本処理は一覧取得のたびに再実行される冪等な処理のため部分成功でも次回
+  リカバリはされるが、単一コミットにより INSERT 毎の autocommit を避けられ、
+  途中失敗時に「スレッドの一部だけ追従された」状態も残さない
+
+これにより1回の実行あたりのクエリ数は「2 + メール数×最大2 + 追従数」から
+「読み出し3 + 追従INSERT（単一コミット）」に固定される。
+
+なお `mails::get_all_mails_by_account` の本番呼び出し元はこの改善で無くなった。
+削除は別PRで行う（並行作業との競合回避のため本改善では `db/mails.rs` の
+既存関数に触れない）。

@@ -651,6 +651,87 @@ fn normalize_subject(subject: &str) -> String {
     s.to_lowercase()
 }
 
+/// スレッド判定（`build_threads` のアルゴリズム）に必要な最小カラムのみの軽量メールデータ。
+/// `auto_follow_threads` のように本文を使わない処理が、body_text/body_html を
+/// 読み込まずに済ませるための構造体。
+#[derive(Debug, Clone)]
+pub struct ThreadMailMeta {
+    pub id: String,
+    pub message_id: String,
+    pub in_reply_to: Option<String>,
+    pub references: Option<String>,
+    pub subject: String,
+    pub date: String,
+}
+
+/// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す。
+/// 対象範囲・順序（date DESC）は `get_all_mails_by_account` と同一だが、
+/// 本文カラム（body_text/body_html）を読まないため大幅に軽い。
+pub fn get_thread_metas_by_account(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<ThreadMailMeta>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, message_id, in_reply_to, \"references\", subject, date
+         FROM mails WHERE account_id = ?1 ORDER BY date DESC",
+    )?;
+    let metas = stmt
+        .query_map(params![account_id], |row| {
+            Ok(ThreadMailMeta {
+                id: row.get(0)?,
+                message_id: row.get(1)?,
+                in_reply_to: row.get(2)?,
+                references: row.get(3)?,
+                subject: row.get(4)?,
+                date: row.get(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(metas)
+}
+
+/// 軽量メタをスレッドに分割し、スレッドごとのメールID集合を返す。
+///
+/// 判定は `build_threads` に委譲する（In-Reply-To/References によるグラフ結合 +
+/// 件名フォールバック。設計書 2026-07-13-thread-follow-classify-design.md の
+/// 「判定ロジックの重複実装はしない」に従う）。`build_threads` はスレッド分割に
+/// message_id / in_reply_to / references / subject / date しか使わないため、
+/// 残りのフィールドはプレースホルダで埋めた Mail に変換して渡す。
+pub fn group_mail_ids_into_threads(metas: &[ThreadMailMeta]) -> Vec<Vec<String>> {
+    let mails: Vec<Mail> = metas
+        .iter()
+        .map(|meta| Mail {
+            id: meta.id.clone(),
+            message_id: meta.message_id.clone(),
+            in_reply_to: meta.in_reply_to.clone(),
+            references: meta.references.clone(),
+            subject: meta.subject.clone(),
+            date: meta.date.clone(),
+            // 以下はスレッド分割に関与しないプレースホルダ
+            account_id: String::new(),
+            folder: String::new(),
+            from_addr: String::new(),
+            to_addr: String::new(),
+            cc_addr: None,
+            body_text: None,
+            body_html: None,
+            has_attachments: false,
+            raw_size: None,
+            uid: 0,
+            flags: None,
+            is_read: false,
+            is_flagged: false,
+            fetched_at: String::new(),
+            uid_confirmed: false,
+        })
+        .collect();
+    build_threads(&mails)
+        .into_iter()
+        .map(|thread| thread.mails.into_iter().map(|m| m.id).collect())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1633,5 +1714,152 @@ mod tests {
     #[test]
     fn test_normalize_subject_whitespace() {
         assert_eq!(normalize_subject("  Re:   Hello  "), "hello");
+    }
+
+    // --- スレッド判定用の軽量メタ（auto_follow_threads の本文ロード回避用） ---
+
+    /// テスト補助: Mail からスレッド判定用の軽量メタを作る
+    fn meta_of(m: &Mail) -> ThreadMailMeta {
+        ThreadMailMeta {
+            id: m.id.clone(),
+            message_id: m.message_id.clone(),
+            in_reply_to: m.in_reply_to.clone(),
+            references: m.references.clone(),
+            subject: m.subject.clone(),
+            date: m.date.clone(),
+        }
+    }
+
+    #[test]
+    fn test_get_thread_metas_by_account_spans_folders_and_orders_by_date_desc() {
+        // スレッド追従の判定には INBOX 以外（Sent/Archive）のメールも手がかりとして
+        // 必要なため、get_all_mails_by_account と同じ範囲・順序で軽量メタを返すこと
+        let conn = setup_db();
+        let inbox = make_mail(
+            "m1",
+            "<msg1@example.com>",
+            "Inbox Mail",
+            "2026-04-13T10:00:00",
+        );
+        let mut sent = make_mail(
+            "m2",
+            "<msg2@example.com>",
+            "Sent Mail",
+            "2026-04-13T11:00:00",
+        );
+        sent.folder = "Sent".into();
+        sent.in_reply_to = Some("<msg1@example.com>".into());
+        sent.references = Some("<msg0@example.com> <msg1@example.com>".into());
+        let mut archived = make_mail(
+            "m3",
+            "<msg3@example.com>",
+            "Archived Mail",
+            "2026-04-13T09:00:00",
+        );
+        archived.folder = "Archive".into();
+        insert_mail(&conn, &inbox).unwrap();
+        insert_mail(&conn, &sent).unwrap();
+        insert_mail(&conn, &archived).unwrap();
+
+        let metas = get_thread_metas_by_account(&conn, "acc1").unwrap();
+        assert_eq!(metas.len(), 3, "全フォルダのメールを対象にする");
+        // date DESC 順（get_all_mails_by_account と同じ）
+        assert_eq!(metas[0].id, "m2");
+        assert_eq!(metas[1].id, "m1");
+        assert_eq!(metas[2].id, "m3");
+        // スレッド判定に必要なカラムが揃っていること
+        assert_eq!(metas[0].message_id, "<msg2@example.com>");
+        assert_eq!(metas[0].in_reply_to, Some("<msg1@example.com>".to_string()));
+        assert_eq!(
+            metas[0].references,
+            Some("<msg0@example.com> <msg1@example.com>".to_string())
+        );
+        assert_eq!(metas[0].subject, "Sent Mail");
+        assert_eq!(metas[0].date, "2026-04-13T11:00:00");
+    }
+
+    #[test]
+    fn test_get_thread_metas_by_account_excludes_other_accounts() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        let mine = make_mail("m1", "<msg1@example.com>", "Mine", "2026-04-13T10:00:00");
+        let mut theirs = make_mail("m2", "<msg2@example.com>", "Theirs", "2026-04-13T10:00:00");
+        theirs.account_id = "acc2".into();
+        insert_mail(&conn, &mine).unwrap();
+        insert_mail(&conn, &theirs).unwrap();
+
+        let metas = get_thread_metas_by_account(&conn, "acc1").unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].id, "m1");
+    }
+
+    #[test]
+    fn test_group_mail_ids_into_threads_links_replies_and_subject_fallback() {
+        // In-Reply-To 結合・References 結合・件名フォールバックが
+        // build_threads と同じ意味論で効くこと
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic A", "2026-04-13T10:00:00");
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic A", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<msg1@ex.com>".into());
+        let mut m3 = make_mail("m3", "<msg3@ex.com>", "Re: Topic A", "2026-04-13T12:00:00");
+        m3.references = Some("<msg1@ex.com> <msg2@ex.com>".into());
+        // ヘッダなし・正規化件名一致 → 件名フォールバックで m1 と同じスレッド
+        let m4 = make_mail("m4", "<msg4@ex.com>", "Fwd: topic a", "2026-04-13T13:00:00");
+        // 無関係なメールは独立したスレッド
+        let m5 = make_mail("m5", "<msg5@ex.com>", "Unrelated", "2026-04-13T14:00:00");
+
+        // date DESC（専用クエリと同じ順序）で渡す
+        let metas: Vec<ThreadMailMeta> = [&m5, &m4, &m3, &m2, &m1]
+            .iter()
+            .map(|m| meta_of(m))
+            .collect();
+        let groups = group_mail_ids_into_threads(&metas);
+
+        let sets: std::collections::HashSet<std::collections::BTreeSet<String>> = groups
+            .into_iter()
+            .map(|ids| ids.into_iter().collect())
+            .collect();
+        let expected: std::collections::HashSet<std::collections::BTreeSet<String>> = [
+            ["m1", "m2", "m3", "m4"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ["m5"].iter().map(|s| s.to_string()).collect(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(sets, expected);
+    }
+
+    #[test]
+    fn test_group_mail_ids_into_threads_matches_build_threads() {
+        // 回帰ガード: build_threads とスレッド分割が一致すること
+        // （判定ロジックが将来分岐・重複実装されるのを検知する）
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic A", "2026-04-13T10:00:00");
+        let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic A", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<msg1@ex.com>".into());
+        let mut m3 = make_mail("m3", "<msg3@ex.com>", "Re: Topic A", "2026-04-13T12:00:00");
+        m3.references = Some("<nonexistent@ex.com> <msg2@ex.com>".into());
+        let m4 = make_mail("m4", "<msg4@ex.com>", "Topic B", "2026-04-13T13:00:00");
+        let m5 = make_mail("m5", "<msg5@ex.com>", "FW: topic b", "2026-04-13T14:00:00");
+        let mails = vec![m5, m4, m3, m2, m1];
+
+        let metas: Vec<ThreadMailMeta> = mails.iter().map(meta_of).collect();
+        let actual: std::collections::HashSet<std::collections::BTreeSet<String>> =
+            group_mail_ids_into_threads(&metas)
+                .into_iter()
+                .map(|ids| ids.into_iter().collect())
+                .collect();
+        let expected: std::collections::HashSet<std::collections::BTreeSet<String>> =
+            build_threads(&mails)
+                .into_iter()
+                .map(|t| t.mails.into_iter().map(|m| m.id).collect())
+                .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 2);
     }
 }
