@@ -11,6 +11,13 @@ use crate::models::account::AuthType;
 
 pub(crate) type ImapSession = Session<TlsStream<Compat<TcpStream>>>;
 
+// FETCH の本文取得は必ず BODY.PEEK[] を使うこと。RFC822 / BODY[] は
+// RFC 3501 の仕様で「取得しただけでサーバー側に \Seen が付く」ため、
+// 同期・バックフィル・添付取得のたびに未読メールが Gmail 本体ごと
+// 既読化されてしまう（2026-07-13 に実際に発生した不具合）。
+pub(crate) const FETCH_ITEMS_SYNC: &str = "(UID FLAGS BODY.PEEK[])";
+pub(crate) const FETCH_ITEMS_RAW: &str = "(UID BODY.PEEK[])";
+
 pub async fn connect(
     host: &str,
     port: u16,
@@ -259,7 +266,7 @@ pub async fn fetch_mails_batched(
     let mut done = 0usize;
     for batch in batches {
         let messages: Vec<_> = session
-            .uid_fetch(&uid_set(&batch), "(UID FLAGS RFC822)")
+            .uid_fetch(&uid_set(&batch), FETCH_ITEMS_SYNC)
             .await
             .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
             .try_collect()
@@ -341,7 +348,7 @@ pub async fn fetch_mails_backfill_batched(
     let mut fetched = 0usize;
     for batch in batches {
         let messages: Vec<_> = session
-            .uid_fetch(&uid_set(&batch), "(UID FLAGS RFC822)")
+            .uid_fetch(&uid_set(&batch), FETCH_ITEMS_SYNC)
             .await
             .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
             .try_collect()
@@ -470,7 +477,7 @@ pub async fn fetch_mail_raw(
         .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
 
     let messages: Vec<_> = session
-        .uid_fetch(uid.to_string(), "(UID RFC822)")
+        .uid_fetch(uid.to_string(), FETCH_ITEMS_RAW)
         .await
         .map_err(|e| AppError::Imap(format!("Mail fetch failed: {}", e)))?
         .try_collect()
@@ -859,5 +866,21 @@ mod tests {
             NameAttribute::Drafts,
         ]));
         assert!(!has_sent_attribute(&[]));
+    }
+
+    #[test]
+    fn test_fetch_items_use_peek_to_avoid_marking_seen() {
+        // RFC822 / BODY[]（PEEKなし）は取得しただけでサーバー側に \Seen が付き、
+        // 未読メールが Gmail 本体ごと既読化される（2026-07-13 の実不具合）。
+        // FETCH 項目は必ず BODY.PEEK[] であることを回帰テストとして固定する。
+        for items in [FETCH_ITEMS_SYNC, FETCH_ITEMS_RAW] {
+            assert!(items.contains("BODY.PEEK["), "must use BODY.PEEK[]: {items}");
+            assert!(!items.contains("RFC822"), "RFC822 sets \\Seen implicitly: {items}");
+        }
+        // PEEK なしの BODY[ が紛れ込んでいないこと（BODY.PEEK[ は除外して判定）
+        for items in [FETCH_ITEMS_SYNC, FETCH_ITEMS_RAW] {
+            let without_peek = items.replace("BODY.PEEK[", "");
+            assert!(!without_peek.contains("BODY["), "non-PEEK BODY[] found: {items}");
+        }
     }
 }

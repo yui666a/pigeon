@@ -11,8 +11,12 @@
 
 ## サーバー → ローカル（フラグ取り込み）
 
-1. **新規メール**: `fetch_mails_batched` の FETCH を `(UID FLAGS RFC822)` にし、
-   `\Seen` の有無を `is_read` として保存する
+1. **新規メール**: `fetch_mails_batched` の FETCH を `(UID FLAGS BODY.PEEK[])` にし、
+   `\Seen` の有無を `is_read` として保存する。
+   **必ず `BODY.PEEK[]` を使うこと**: 当初 `RFC822` を使っていたが、RFC 3501 の仕様で
+   PEEK なしの本文取得はサーバー側に `\Seen` を付けるため、同期しただけで全メールが
+   Gmail 本体ごと既読化される不具合が発生した（2026-07-13 修正。添付取得・バックフィルの
+   FETCH も同様に PEEK 化し、`imap_client.rs` の `FETCH_ITEMS_*` 定数と回帰テストで固定）
 2. **既知メール**: 同期（`sync_account`）の最後に `UID FETCH 1:* (FLAGS)` で
    INBOX 全体の uid → `\Seen` マップを取得し、DB の `is_read` を一括 UPDATE する。
    FLAGS のみの FETCH は軽量なため全件でも許容できる。
