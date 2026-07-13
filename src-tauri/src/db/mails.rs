@@ -157,22 +157,6 @@ pub fn get_mails_by_account(
     Ok(mails)
 }
 
-/// アカウントの全フォルダのメールを返す（スレッド追従の判定用）。
-/// スレッド判定にはSent/Archive等、INBOX以外のメールもリンクの手がかりとして必要
-pub fn get_all_mails_by_account(
-    conn: &Connection,
-    account_id: &str,
-) -> Result<Vec<Mail>, AppError> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM mails WHERE account_id = ?1 ORDER BY date DESC",
-        *MAIL_COLUMNS
-    ))?;
-    let mails = stmt
-        .query_map(params![account_id], row_to_mail)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(mails)
-}
-
 pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<u32, AppError> {
     // 集計クエリは常に1行返す（行なしは COALESCE で 0）。エラーは同期 watermark を
     // 誤って 0 に丸めないようそのまま伝播する（B-10）
@@ -382,9 +366,9 @@ pub fn get_threads_by_project(
     Ok(crate::threading::build_threads(mails))
 }
 
-/// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す。
-/// 対象範囲・順序（date DESC）は `get_all_mails_by_account` と同一だが、
-/// 本文カラム（body_text/body_html）を読まないため大幅に軽い。
+/// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す（date DESC）。
+/// スレッド判定には Sent/Archive 等、INBOX 以外のメールもリンクの手がかりとして
+/// 必要なためフォルダ横断で取得する。本文カラム（body_text/body_html）は読まない。
 pub fn get_thread_metas_by_account(
     conn: &Connection,
     account_id: &str,
@@ -421,45 +405,6 @@ mod tests {
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].subject, "Hello");
-    }
-
-    #[test]
-    fn test_get_all_mails_by_account_spans_folders() {
-        // スレッド追従の判定にはINBOX以外（Sent/Archive）のメールも
-        // スレッドの手がかりとして必要なため、フォルダ横断で取得できること
-        let conn = setup_db();
-        let inbox = make_mail("m1", "<msg1@example.com>", "Inbox Mail", "2026-04-13T10:00:00");
-        let mut sent = make_mail("m2", "<msg2@example.com>", "Sent Mail", "2026-04-13T11:00:00");
-        sent.folder = "Sent".into();
-        let mut archived =
-            make_mail("m3", "<msg3@example.com>", "Archived Mail", "2026-04-13T09:00:00");
-        archived.folder = "Archive".into();
-        insert_mail(&conn, &inbox).unwrap();
-        insert_mail(&conn, &sent).unwrap();
-        insert_mail(&conn, &archived).unwrap();
-
-        let mails = get_all_mails_by_account(&conn, "acc1").unwrap();
-        assert_eq!(mails.len(), 3);
-    }
-
-    #[test]
-    fn test_get_all_mails_by_account_excludes_other_accounts() {
-        let conn = setup_db();
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
-             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
-            [],
-        )
-        .unwrap();
-        let mine = make_mail("m1", "<msg1@example.com>", "Mine", "2026-04-13T10:00:00");
-        let mut theirs = make_mail("m2", "<msg2@example.com>", "Theirs", "2026-04-13T10:00:00");
-        theirs.account_id = "acc2".into();
-        insert_mail(&conn, &mine).unwrap();
-        insert_mail(&conn, &theirs).unwrap();
-
-        let mails = get_all_mails_by_account(&conn, "acc1").unwrap();
-        assert_eq!(mails.len(), 1);
-        assert_eq!(mails[0].id, "m1");
     }
 
     #[test]
@@ -938,7 +883,7 @@ mod tests {
     #[test]
     fn test_get_thread_metas_by_account_spans_folders_and_orders_by_date_desc() {
         // スレッド追従の判定には INBOX 以外（Sent/Archive）のメールも手がかりとして
-        // 必要なため、get_all_mails_by_account と同じ範囲・順序で軽量メタを返すこと
+        // 必要なため、フォルダ横断・date DESC で軽量メタを返すこと
         let conn = setup_db();
         let inbox = make_mail(
             "m1",
@@ -968,7 +913,7 @@ mod tests {
 
         let metas = get_thread_metas_by_account(&conn, "acc1").unwrap();
         assert_eq!(metas.len(), 3, "全フォルダのメールを対象にする");
-        // date DESC 順（get_all_mails_by_account と同じ）
+        // date DESC 順
         assert_eq!(metas[0].id, "m2");
         assert_eq!(metas[1].id, "m1");
         assert_eq!(metas[2].id, "m3");
