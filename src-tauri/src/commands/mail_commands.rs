@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, DeletePlan};
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};
@@ -531,50 +532,6 @@ async fn push_seen_flag(
     store_result
 }
 
-/// 削除のサーバー反映方式（設計書 2026-07-12-mail-delete-archive-design.md）
-#[derive(Debug, PartialEq)]
-enum DeletePlan {
-    /// サーバーで削除後にローカル行を削除する。
-    /// サーバー側は \Trash フォルダがあればゴミ箱へ移動、なければ完全削除
-    /// （imap_client::delete_message_remote 参照）
-    Server,
-    /// ローカル行の削除のみ。Sent フォルダ同期（2026-07-12-sent-sync-uidplus-design.md）
-    /// により送信後の Sent 行の uid は後追いで確定するが、同期前の送信直後の行は
-    /// 推定 uid のままで、確定済みかをローカル行から判定する手段が現状ない。
-    /// 破壊的操作での誤爆を避けるため Sent は安全側で LocalOnly を維持する（v1 制限）。
-    LocalOnly,
-}
-
-fn plan_delete(folder: &str) -> DeletePlan {
-    if folder == "Sent" {
-        DeletePlan::LocalOnly
-    } else {
-        DeletePlan::Server
-    }
-}
-
-/// アーカイブのサーバー反映方式
-#[derive(Debug, PartialEq)]
-enum ArchivePlan {
-    /// COPY せず \Deleted + EXPUNGE のみ（Gmail: INBOX ラベル剥がし = アーカイブ）
-    DeleteOnly,
-    /// archive_folder へ UID COPY してから \Deleted + EXPUNGE（一般 IMAP）
-    CopyThenDelete(String),
-    /// ローカルの folder 更新のみ（Sent。DeletePlan::LocalOnly と同じ理由で
-    /// uid 確定状態の判定手段が未整備のため安全側で維持。v1 制限）
-    LocalOnly,
-}
-
-fn plan_archive(provider: &AccountProvider, folder: &str, archive_folder: &str) -> ArchivePlan {
-    if folder == "Sent" {
-        return ArchivePlan::LocalOnly;
-    }
-    match provider {
-        AccountProvider::Google => ArchivePlan::DeleteOnly,
-        AccountProvider::Other => ArchivePlan::CopyThenDelete(archive_folder.to_string()),
-    }
-}
-
 /// 削除・アーカイブ対象のアカウントとメールを読み込む。
 /// アカウント不在は AccountNotFound、メール不在は MailNotFound。
 fn load_mail_context(
@@ -587,31 +544,39 @@ fn load_mail_context(
     Ok((account, mail))
 }
 
-/// メールを削除する。サーバー処理（\Deleted + EXPUNGE）を同期的に実行し、
+/// IMAP 資格情報 (auth_type, username, credential)。
+/// 削除・アーカイブの共通本体（*_inner）では tokio::sync::OnceCell に包んで
+/// 「必要になった時点で一度だけ解決」を表現する（単体は遅延解決、
+/// bulk は解決済みを事前投入して全メールで使い回す）。
+pub(crate) type ImapCredentials = (AuthType, String, String);
+
+/// delete_mail の本体。単体（delete_mail）と一括（bulk_delete_mails）の
+/// 両方から呼ばれる。サーバー処理（\Deleted + EXPUNGE）を同期的に実行し、
 /// 成功した場合のみローカル DB から行を削除する（既読と違い楽観更新しない。
 /// 案件割り当て等は CASCADE で消える）。
-#[tauri::command]
-pub async fn delete_mail(
-    state: State<'_, DbState>,
-    secure_store: State<'_, SecureStoreState>,
-    account_id: String,
-    mail_id: String,
+pub(crate) async fn delete_mail_inner(
+    state: &State<'_, DbState>,
+    secure_store: &crate::secure_store::SecureStore,
+    account: &Account,
+    creds: &tokio::sync::OnceCell<ImapCredentials>,
+    mail_id: &str,
 ) -> Result<(), AppError> {
-    let (account, mail) = {
+    let mail = {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
-        load_mail_context(&conn, &account_id, &mail_id)?
+        mails::get_mail_by_id(&conn, mail_id)?
     };
 
     // サーバー処理中は DB ロックを保持しない
     if plan_delete(&mail.folder) == DeletePlan::Server {
-        let (auth_type, username, credential) =
-            resolve_imap_credentials(&account, &secure_store.0).await?;
+        let (auth_type, username, credential) = creds
+            .get_or_try_init(|| resolve_imap_credentials(account, secure_store))
+            .await?;
         imap_client::delete_message_remote(
             &account.imap_host,
             account.imap_port,
-            &auth_type,
-            &username,
-            &credential,
+            auth_type,
+            username,
+            credential,
             &mail.folder,
             mail.uid,
         )
@@ -621,45 +586,63 @@ pub async fn delete_mail(
     // サーバー成功後にのみローカルへ反映する（設計書「エラー・順序の原則」）
     {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
-        mails::delete_mail(&conn, &mail_id)?;
+        mails::delete_mail(&conn, mail_id)?;
     }
     // DB削除成功後、添付キャッシュをベストエフォートで掃除する
     // （失敗しても削除自体は成功扱い。孤児化したディスクリークの防止）
-    crate::commands::attachment_commands::remove_attachment_cache_for_mail(&mail_id);
+    crate::commands::attachment_commands::remove_attachment_cache_for_mail(mail_id);
     Ok(())
 }
 
-/// メールをアーカイブする。サーバー処理を同期的に実行し、成功した場合のみ
-/// ローカルの folder を 'Archive' に更新する。行は残るため案件割り当て・
-/// スレッド・検索は維持される。
+/// メールを削除する（単体）。
 #[tauri::command]
-pub async fn archive_mail(
+pub async fn delete_mail(
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let (account, mail, archive_folder) = {
+    let account = {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
-        let (account, mail) = load_mail_context(&conn, &account_id, &mail_id)?;
-        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive")?;
-        (account, mail, archive_folder)
+        accounts::get_account(&conn, &account_id)?
+    };
+    // 資格情報は遅延解決（Sent の削除はローカルのみで IMAP 認証が不要）
+    let creds = tokio::sync::OnceCell::new();
+    delete_mail_inner(&state, &secure_store.0, &account, &creds, &mail_id).await
+}
+
+/// archive_mail の本体。単体（archive_mail）と一括（bulk_archive_mails）の
+/// 両方から呼ばれる。サーバー処理を同期的に実行し、成功した場合のみ
+/// ローカルの folder を 'Archive' に更新する。行は残るため案件割り当て・
+/// スレッド・検索は維持される。
+pub(crate) async fn archive_mail_inner(
+    state: &State<'_, DbState>,
+    secure_store: &crate::secure_store::SecureStore,
+    account: &Account,
+    archive_folder: &str,
+    creds: &tokio::sync::OnceCell<ImapCredentials>,
+    mail_id: &str,
+) -> Result<(), AppError> {
+    let mail = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        mails::get_mail_by_id(&conn, mail_id)?
     };
 
-    let plan = plan_archive(&account.provider, &mail.folder, &archive_folder);
+    let plan = plan_archive(&account.provider, &mail.folder, archive_folder);
     if plan != ArchivePlan::LocalOnly {
         let copy_dest = match &plan {
             ArchivePlan::CopyThenDelete(dest) => Some(dest.as_str()),
             _ => None,
         };
-        let (auth_type, username, credential) =
-            resolve_imap_credentials(&account, &secure_store.0).await?;
+        let (auth_type, username, credential) = creds
+            .get_or_try_init(|| resolve_imap_credentials(account, secure_store))
+            .await?;
         imap_client::archive_message_remote(
             &account.imap_host,
             account.imap_port,
-            &auth_type,
-            &username,
-            &credential,
+            auth_type,
+            username,
+            credential,
             &mail.folder,
             mail.uid,
             copy_dest,
@@ -668,7 +651,34 @@ pub async fn archive_mail(
     }
 
     let conn = state.0.lock().map_err(AppError::lock_err)?;
-    mails::update_folder(&conn, &mail_id, "Archive")
+    mails::update_folder(&conn, mail_id, "Archive")
+}
+
+/// メールをアーカイブする（単体）。
+#[tauri::command]
+pub async fn archive_mail(
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    account_id: String,
+    mail_id: String,
+) -> Result<(), AppError> {
+    let (account, archive_folder) = {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        let account = accounts::get_account(&conn, &account_id)?;
+        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive")?;
+        (account, archive_folder)
+    };
+    // 資格情報は遅延解決（Sent のアーカイブはローカルのみで IMAP 認証が不要）
+    let creds = tokio::sync::OnceCell::new();
+    archive_mail_inner(
+        &state,
+        &secure_store.0,
+        &account,
+        &archive_folder,
+        &creds,
+        &mail_id,
+    )
+    .await
 }
 
 /// メールをアーカイブ解除する（folder を 'INBOX' に戻す）。
@@ -748,48 +758,6 @@ mod tests {
     use crate::db::{assignments, projects};
     use crate::models::project::CreateProjectRequest;
     use crate::test_helpers::{make_mail, setup_db};
-
-    #[test]
-    fn test_plan_delete_inbox_requires_server() {
-        assert_eq!(plan_delete("INBOX"), DeletePlan::Server);
-        assert_eq!(plan_delete("Archive"), DeletePlan::Server);
-    }
-
-    #[test]
-    fn test_plan_delete_sent_is_local_only() {
-        // Sent の uid は APPEND 時の推定値でサーバー UID と不一致の可能性がある
-        // ため v1 ではサーバー反映しない（設計書「v1 の制限」）
-        assert_eq!(plan_delete("Sent"), DeletePlan::LocalOnly);
-    }
-
-    #[test]
-    fn test_plan_archive_google_deletes_without_copy() {
-        // Gmail は INBOX からの削除 = ラベル剥がしがアーカイブ相当
-        assert_eq!(
-            plan_archive(&AccountProvider::Google, "INBOX", "Archive"),
-            ArchivePlan::DeleteOnly
-        );
-    }
-
-    #[test]
-    fn test_plan_archive_other_copies_to_archive_folder() {
-        assert_eq!(
-            plan_archive(&AccountProvider::Other, "INBOX", "MyArchive"),
-            ArchivePlan::CopyThenDelete("MyArchive".to_string())
-        );
-    }
-
-    #[test]
-    fn test_plan_archive_sent_is_local_only() {
-        assert_eq!(
-            plan_archive(&AccountProvider::Google, "Sent", "Archive"),
-            ArchivePlan::LocalOnly
-        );
-        assert_eq!(
-            plan_archive(&AccountProvider::Other, "Sent", "Archive"),
-            ArchivePlan::LocalOnly
-        );
-    }
 
     #[test]
     fn test_load_mail_context_returns_account_and_mail() {
