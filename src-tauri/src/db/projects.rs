@@ -63,8 +63,7 @@ pub fn list_projects(conn: &Connection, account_id: &str) -> Result<Vec<Project>
     )?;
     let projects = stmt
         .query_map(params![account_id], map_row)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(projects)
 }
 
@@ -112,8 +111,8 @@ pub fn build_project_summaries(
     let projs = list_projects(conn, account_id)?;
     let mut summaries = Vec::with_capacity(projs.len());
     for p in projs {
-        let recent_subjects = assignments::get_recent_subjects(conn, &p.id, 10).unwrap_or_default();
-        let top_senders = assignments::get_top_senders(conn, &p.id, 5).unwrap_or_default();
+        let recent_subjects = assignments::get_recent_subjects(conn, &p.id, 10)?;
+        let top_senders = assignments::get_top_senders(conn, &p.id, 5)?;
         let context = crate::db::project_contexts::get_context(conn, &p.id)?
             .filter(|c| !for_cloud || c.allow_cloud_context)
             .and_then(|c| c.cached_context)
@@ -154,8 +153,7 @@ pub fn merge_projects(conn: &mut Connection, source_id: &str, target_id: &str) -
             "SELECT mail_id FROM mail_project_assignments WHERE project_id = ?1",
         )?;
         let ids = stmt.query_map(params![source_id], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         ids
     };
 
