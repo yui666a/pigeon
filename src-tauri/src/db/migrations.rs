@@ -175,6 +175,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
 }
 
 /// マイグレーション一覧を順に適用する。
+/// 各バージョンは「migrate_vN → set_schema_version(N)」を1トランザクションで
+/// 包んで適用するため、途中失敗時に「スキーマ一部適用済み + version 未更新」の
+/// 中途半端な状態にならない。失敗したバージョンは全体がロールバックされ、
+/// 次回起動時にそのバージョンから安全に再実行できる。
 fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<(), AppError> {
     let version = get_schema_version(conn)?;
 
@@ -182,8 +186,10 @@ fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<(), A
         if version >= target_version {
             continue;
         }
-        migrate(conn)?;
-        set_schema_version(conn, target_version)?;
+        let tx = conn.unchecked_transaction()?;
+        migrate(&tx)?;
+        set_schema_version(&tx, target_version)?;
+        tx.commit()?;
     }
 
     Ok(())
