@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { BulkResult, Mail, Thread, UnreadCounts } from "../types/mail";
 import { useErrorStore } from "./errorStore";
 import { useAccountStore } from "./accountStore";
+import { useProjectStore } from "./projectStore";
 import { useUiStore } from "./uiStore";
 import { notifyNewMail } from "../utils/notifyNewMail";
 import { INBOX_FOLDER } from "../constants/folders";
@@ -39,6 +40,7 @@ interface MailState {
   /** account_id -> これ以上サーバーに古いメールが無いか（ボタン無効化の判定用） */
   backfillExhausted: Record<string, boolean>;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
+  fetchThreadsByProject: (projectId: string) => Promise<void>;
   syncAccount: (accountId: string) => Promise<number>;
   backfillAccount: (accountId: string, limit: number) => Promise<void>;
   setThreads: (threads: Thread[]) => void;
@@ -192,6 +194,24 @@ export const useMailStore = create<MailState>((set, get) => ({
       });
       set({ threads });
     } catch (e) {
+      useErrorStore.getState().addError(String(e));
+    }
+  },
+
+  // 案件ビューのスレッド一覧を取得する。取得中に別案件へ切り替わった場合は
+  // 反映しない（sync-progress リスナーの「表示中のみ反映」方針と同じ）
+  fetchThreadsByProject: async (projectId) => {
+    try {
+      const threads = await invoke<Thread[]>("get_threads_by_project", {
+        projectId,
+      });
+      if (useProjectStore.getState().selectedProjectId !== projectId) return;
+      set({ threads });
+    } catch (e) {
+      // 失敗時に前のビューの一覧を残すと紛らわしいためクリアする
+      if (useProjectStore.getState().selectedProjectId === projectId) {
+        set({ threads: [] });
+      }
       useErrorStore.getState().addError(String(e));
     }
   },
