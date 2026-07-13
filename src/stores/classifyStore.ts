@@ -1,13 +1,9 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { classifyApi } from "../api/classifyApi";
+import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 import { useProjectStore } from "./projectStore";
-import type { ClassifyResponse } from "../types/classifier";
-import type { Project } from "../types/project";
-
-interface UnclassifiedMailRef {
-  id: string;
-}
+import type { ClassifyResponse, UnclassifiedMailRef } from "../types/classifier";
 
 interface ClassifyState {
   classifying: boolean;
@@ -40,16 +36,9 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
     const mail = _queue[_index];
     let res: ClassifyResponse;
     try {
-      // classify_mail は Rust の ClassifyResponse を返す。mail_id と
-      // ClassifyResult が両方とも #[serde(flatten)] されているため、
-      // 実際のJSONは { mail_id, action, confidence, reason, ... } の
-      // 完全にフラットな形になる（result という入れ子は存在しない）。
-      const r = await invoke<ClassifyResponse>("classify_mail", {
-        mailId: mail.id,
-      });
-      res = r;
+      res = await classifyApi.classifyMail(mail.id);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       set({ classifying: false, progress: null });
       return;
     }
@@ -74,18 +63,15 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
 
     classifyMail: async (mailId) => {
       try {
-        await invoke("classify_mail", { mailId });
+        await classifyApi.classifyMail(mailId);
       } catch (e) {
-        useErrorStore.getState().addError(String(e));
+        useErrorStore.getState().addError(errorMessage(e));
       }
     },
 
     classifyAll: async (accountId) => {
       try {
-        const mails = await invoke<UnclassifiedMailRef[]>(
-          "get_unclassified_mails",
-          { accountId },
-        );
+        const mails = await classifyApi.fetchUnclassifiedMailRefs(accountId);
         set({
           classifying: true,
           _queue: mails,
@@ -97,7 +83,7 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
         await classifyNext();
       } catch (e) {
         set({ classifying: false, progress: null });
-        useErrorStore.getState().addError(String(e));
+        useErrorStore.getState().addError(errorMessage(e));
       }
     },
 
@@ -107,24 +93,24 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
 
     approveNewProject: async (mailId, projectName, description) => {
       try {
-        const project = await invoke<Project>("approve_new_project", {
+        const project = await classifyApi.approveNewProject(
           mailId,
           projectName,
-          description: description ?? null,
-        });
+          description,
+        );
         useProjectStore.getState().addProject(project);
         set({ pendingProposal: null });
         await classifyNext();
       } catch (e) {
-        useErrorStore.getState().addError(String(e));
+        useErrorStore.getState().addError(errorMessage(e));
       }
     },
 
     rejectClassification: async (mailId) => {
       try {
-        await invoke("reject_classification", { mailId });
+        await classifyApi.rejectClassification(mailId);
       } catch (e) {
-        useErrorStore.getState().addError(String(e));
+        useErrorStore.getState().addError(errorMessage(e));
       }
       set({ pendingProposal: null });
       await classifyNext();

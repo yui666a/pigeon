@@ -1,28 +1,15 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { BulkResult, Mail, Thread, UnreadCounts } from "../types/mail";
+import type { NewMailEvent, SyncProgress } from "../types/events";
+import { mailApi } from "../api/mailApi";
+import { errorMessage, isReauthError } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 import { useAccountStore } from "./accountStore";
 import { useProjectStore } from "./projectStore";
 import { useUiStore } from "./uiStore";
 import { notifyNewMail } from "../utils/notifyNewMail";
 import { INBOX_FOLDER } from "../constants/folders";
-
-interface SyncProgress {
-  account_id: string;
-  done: number;
-  total: number;
-}
-
-interface NewMailEvent {
-  account_id: string;
-}
-
-interface BackfillOutcome {
-  fetched: number;
-  exhausted: boolean;
-}
 
 interface MailState {
   threads: Thread[];
@@ -188,13 +175,10 @@ export const useMailStore = create<MailState>((set, get) => ({
 
   fetchThreads: async (accountId, folder) => {
     try {
-      const threads = await invoke<Thread[]>("get_threads", {
-        accountId,
-        folder,
-      });
+      const threads = await mailApi.fetchThreads(accountId, folder);
       set({ threads });
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -202,9 +186,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   // 反映しない（sync-progress リスナーの「表示中のみ反映」方針と同じ）
   fetchThreadsByProject: async (projectId) => {
     try {
-      const threads = await invoke<Thread[]>("get_threads_by_project", {
-        projectId,
-      });
+      const threads = await mailApi.fetchThreadsByProject(projectId);
       if (useProjectStore.getState().selectedProjectId !== projectId) return;
       set({ threads });
     } catch (e) {
@@ -212,7 +194,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       if (useProjectStore.getState().selectedProjectId === projectId) {
         set({ threads: [] });
       }
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -222,17 +204,16 @@ export const useMailStore = create<MailState>((set, get) => ({
     if (get().syncing) return 0;
     set({ syncing: true, needsReauth: false });
     try {
-      const count = await invoke<number>("sync_account", { accountId });
+      const count = await mailApi.syncAccount(accountId);
       set({ syncing: false, syncProgress: null });
       // 同期でフラグ再同期（他クライアントの既読変更）が反映されるため取り直す
       void get().fetchUnreadCounts(accountId);
       return count;
     } catch (e) {
-      const errorMsg = String(e);
-      const isReauth = errorMsg.includes("Reauth required");
+      const isReauth = isReauthError(e);
       set({ syncing: false, needsReauth: isReauth, syncProgress: null });
       if (!isReauth) {
-        useErrorStore.getState().addError(errorMsg);
+        useErrorStore.getState().addError(errorMessage(e));
       }
       return 0;
     }
@@ -246,10 +227,7 @@ export const useMailStore = create<MailState>((set, get) => ({
     if (get().backfilling) return;
     set({ backfilling: true });
     try {
-      const outcome = await invoke<BackfillOutcome>("backfill_account", {
-        accountId,
-        limit,
-      });
+      const outcome = await mailApi.backfillAccount(accountId, limit);
       set((state) => ({
         backfilling: false,
         backfillProgress: null,
@@ -266,7 +244,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       }
     } catch (e) {
       set({ backfilling: false, backfillProgress: null });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -306,7 +284,8 @@ export const useMailStore = create<MailState>((set, get) => ({
         markReadInThread(t, mail.id),
       ),
     }));
-    invoke("mark_read", { accountId: mail.account_id, mailId: mail.id })
+    mailApi
+      .markRead(mail.account_id, mail.id)
       .then(() => get().fetchUnreadCounts(mail.account_id))
       .catch((e) => {
         console.error("mark_read failed:", e);
@@ -320,14 +299,10 @@ export const useMailStore = create<MailState>((set, get) => ({
     const next = !mail.is_flagged;
     set((state) => setFlaggedInState(state, mail.id, next));
     try {
-      await invoke("set_flagged", {
-        accountId: mail.account_id,
-        mailId: mail.id,
-        flagged: next,
-      });
+      await mailApi.setFlagged(mail.account_id, mail.id, next);
     } catch (e) {
       set((state) => setFlaggedInState(state, mail.id, !next));
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -346,7 +321,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       ),
     }));
     try {
-      await invoke("mark_unread", { accountId: mail.account_id, mailId: mail.id });
+      await mailApi.markUnread(mail.account_id, mail.id);
       set({ selectedMail: null });
       void get().fetchUnreadCounts(mail.account_id);
     } catch (e) {
@@ -361,7 +336,7 @@ export const useMailStore = create<MailState>((set, get) => ({
           markReadInThread(t, mail.id),
         ),
       }));
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -369,23 +344,23 @@ export const useMailStore = create<MailState>((set, get) => ({
   // 場合のみローカル状態から除去する。失敗時はエラー表示のみで状態は変えない
   deleteMail: async (mail) => {
     try {
-      await invoke("delete_mail", { accountId: mail.account_id, mailId: mail.id });
+      await mailApi.deleteMail(mail.account_id, mail.id);
       set((state) => removeMailFromState(state, mail.id));
       void get().fetchUnreadCounts(mail.account_id);
       useErrorStore.getState().addSuccess("削除しました");
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   archiveMail: async (mail) => {
     try {
-      await invoke("archive_mail", { accountId: mail.account_id, mailId: mail.id });
+      await mailApi.archiveMail(mail.account_id, mail.id);
       set((state) => removeMailFromState(state, mail.id));
       void get().fetchUnreadCounts(mail.account_id);
       useErrorStore.getState().addSuccess("アーカイブしました");
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -394,19 +369,17 @@ export const useMailStore = create<MailState>((set, get) => ({
   // 成功時のみ folder を 'INBOX' へ更新する（除去はしない）
   unarchiveMail: async (mail) => {
     try {
-      await invoke("unarchive_mail", { accountId: mail.account_id, mailId: mail.id });
+      await mailApi.unarchiveMail(mail.account_id, mail.id);
       set((state) => setFolderInState(state, mail.id, INBOX_FOLDER));
       void get().fetchUnreadCounts(mail.account_id);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   fetchUnreadCounts: async (accountId) => {
     try {
-      const counts = await invoke<UnreadCounts>("get_unread_counts", {
-        accountId,
-      });
+      const counts = await mailApi.fetchUnreadCounts(accountId);
       set({
         unreadCounts: {
           by_project: counts?.by_project ?? {},
@@ -422,15 +395,13 @@ export const useMailStore = create<MailState>((set, get) => ({
   fetchUnclassified: async (accountId) => {
     try {
       // スレッド単位で取得し、メール一覧はフラット化して両方の状態を一致させる
-      const threads = await invoke<Thread[]>("get_unclassified_threads", {
-        accountId,
-      });
+      const threads = await mailApi.fetchUnclassifiedThreads(accountId);
       set({
         unclassifiedThreads: threads,
         unclassifiedMails: threads.flatMap((t) => t.mails),
       });
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -490,44 +461,35 @@ export const useMailStore = create<MailState>((set, get) => ({
   // 一覧再読み込みと選択解除を行う（設計書 2026-07-13-bulk-actions-design.md）
   bulkDeleteMails: async (accountId, mailIds) => {
     try {
-      const result = await invoke<BulkResult>("bulk_delete_mails", {
-        accountId,
-        mailIds,
-      });
+      const result = await mailApi.bulkDeleteMails(accountId, mailIds);
       reportBulkResult(result, "削除");
       void get().fetchUnreadCounts(accountId);
       return result;
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       return null;
     }
   },
 
   bulkArchiveMails: async (accountId, mailIds) => {
     try {
-      const result = await invoke<BulkResult>("bulk_archive_mails", {
-        accountId,
-        mailIds,
-      });
+      const result = await mailApi.bulkArchiveMails(accountId, mailIds);
       reportBulkResult(result, "アーカイブ");
       void get().fetchUnreadCounts(accountId);
       return result;
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       return null;
     }
   },
 
   bulkMoveMails: async (mailIds, projectId) => {
     try {
-      const result = await invoke<BulkResult>("bulk_move_mails", {
-        mailIds,
-        projectId,
-      });
+      const result = await mailApi.bulkMoveMails(mailIds, projectId);
       reportBulkResult(result, "案件への移動");
       return result;
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       return null;
     }
   },

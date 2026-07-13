@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
+import { attachmentApi } from "../../api/attachmentApi";
+import { errorMessage } from "../../api/errors";
 import { useComposeStore } from "../../stores/composeStore";
 import { useAccountStore } from "../../stores/accountStore";
 import { useErrorStore } from "../../stores/errorStore";
@@ -57,7 +58,7 @@ export function ComposeModal() {
           let size = 0;
           try {
             // サイズ取得は Rust の stat_file に委ねる（plugin-fs 非依存）
-            size = await invoke<number>("stat_file", { path });
+            size = await attachmentApi.statFile(path);
           } catch {
             size = 0;
           }
@@ -66,7 +67,7 @@ export function ComposeModal() {
       );
       addAttachments(files);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   };
 

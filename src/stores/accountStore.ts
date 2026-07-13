@@ -1,8 +1,9 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, CreateAccountRequest, OAuthStatus } from "../types/account";
+import { accountApi } from "../api/accountApi";
+import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 
 interface AccountState {
@@ -34,35 +35,35 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   fetchAccounts: async () => {
     set({ loading: true });
     try {
-      const accounts = await invoke<Account[]>("get_accounts");
+      const accounts = await accountApi.fetchAccounts();
       set({ accounts, loading: false });
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   createAccount: async (req) => {
     set({ loading: true });
     try {
-      await invoke<Account>("create_account", { request: req });
-      const accounts = await invoke<Account[]>("get_accounts");
+      await accountApi.createAccount(req);
+      const accounts = await accountApi.fetchAccounts();
       set({ accounts, loading: false });
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   removeAccount: async (id) => {
     set({ loading: true });
     try {
-      await invoke("remove_account", { id });
-      const accounts = await invoke<Account[]>("get_accounts");
+      await accountApi.removeAccount(id);
+      const accounts = await accountApi.fetchAccounts();
       set({ accounts, loading: false, selectedAccountId: null });
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -71,25 +72,22 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   startOAuth: async (provider) => {
     set({ oauthStatus: "waiting", oauthError: null });
     try {
-      const authUrl = await invoke<string>("start_oauth", { provider });
+      const authUrl = await accountApi.startOAuth(provider);
       await openUrl(authUrl);
     } catch (e) {
-      set({ oauthStatus: "error", oauthError: String(e) });
-      useErrorStore.getState().addError(String(e));
+      set({ oauthStatus: "error", oauthError: errorMessage(e) });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   startReauth: async (accountId) => {
     set({ oauthStatus: "waiting", oauthError: null, reauthAccountId: accountId });
     try {
-      const authUrl = await invoke<string>("start_oauth", {
-        provider: "google",
-        accountId,
-      });
+      const authUrl = await accountApi.startOAuth("google", accountId);
       await openUrl(authUrl);
     } catch (e) {
-      set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
-      useErrorStore.getState().addError(String(e));
+      set({ oauthStatus: "error", oauthError: errorMessage(e), reauthAccountId: null });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -98,12 +96,12 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     if (get().oauthStatus === "exchanging") return;
     set({ oauthStatus: "exchanging" });
     try {
-      await invoke("handle_oauth_callback", { url });
-      const accounts = await invoke<Account[]>("get_accounts");
+      await accountApi.handleOAuthCallback(url);
+      const accounts = await accountApi.fetchAccounts();
       set({ accounts, oauthStatus: "success", oauthError: null, reauthAccountId: null });
     } catch (e) {
-      set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
-      useErrorStore.getState().addError(String(e));
+      set({ oauthStatus: "error", oauthError: errorMessage(e), reauthAccountId: null });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 

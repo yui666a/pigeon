@@ -1,9 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { mailApi } from "../api/mailApi";
 
 /**
  * デスクトップ通知の ON/OFF を保持する localStorage キー。
@@ -60,10 +60,7 @@ export function buildNotificationBody(
  */
 async function fetchPreviewSubjects(accountId: string): Promise<string[]> {
   try {
-    return await invoke<string[]>("get_recent_unread_subjects", {
-      accountId,
-      limit: SUBJECT_PREVIEW_LIMIT,
-    });
+    return await mailApi.fetchRecentUnreadSubjects(accountId, SUBJECT_PREVIEW_LIMIT);
   } catch (e) {
     console.error("fetchPreviewSubjects failed:", e);
     return [];

@@ -1,7 +1,8 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import type { Draft, Mail, SendMailRequest } from "../types/mail";
-import type { ComposeMode } from "../types/compose";
+import type { ComposeAttachment, ComposeMode } from "../types/compose";
+import { mailApi } from "../api/mailApi";
+import { errorMessage } from "../api/errors";
 import { buildPrefill, splitRecipients } from "../utils/composePrefill";
 import type { ComposeFormat } from "../utils/composeFormat";
 import { getDefaultComposeFormat } from "../utils/composeFormat";
@@ -11,13 +12,6 @@ import { useDraftStore } from "./draftStore";
 import { useErrorStore } from "./errorStore";
 
 type ComposeField = "to" | "cc" | "bcc" | "subject" | "body";
-
-/** 作成中に添付したファイル（パスは Rust が送信時に読み込む） */
-export interface ComposeAttachment {
-  path: string;
-  name: string;
-  size: number;
-}
 
 interface ComposeState {
   isOpen: boolean;
@@ -180,7 +174,7 @@ export const useComposeStore = create<ComposeState>((set, get) => ({
 
     set({ sending: true });
     try {
-      await invoke("send_mail", { req });
+      await mailApi.sendMail(req);
       if (draftId) {
         await useDraftStore.getState().deleteDraft(draftId);
       }
@@ -189,7 +183,7 @@ export const useComposeStore = create<ComposeState>((set, get) => ({
     } catch (e) {
       // 失敗時はモーダルを開いたまま入力内容を保持する
       set({ sending: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 }));

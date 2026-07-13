@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../../types/project";
 import type {
   CloudRule,
@@ -7,6 +6,8 @@ import type {
   ProjectDirectory,
   ProjectFile,
 } from "../../types/directory";
+import { directoryApi } from "../../api/directoryApi";
+import { errorMessage } from "../../api/errors";
 import { effectiveAllow, planToggle } from "../../utils/cloudPolicy";
 import { useErrorStore } from "../../stores/errorStore";
 import { Modal } from "../common/Modal";
@@ -65,15 +66,15 @@ export function CloudSettingsDialog({
   const reload = useCallback(async () => {
     try {
       const [filesRes, rulesRes, contextRes] = await Promise.all([
-        invoke<ProjectFile[]>("list_project_files", { directoryId: directory.id }),
-        invoke<CloudRule[]>("get_cloud_rules", { directoryId: directory.id }),
-        invoke<ProjectContext | null>("get_project_context", { projectId: project.id }),
+        directoryApi.listProjectFiles(directory.id),
+        directoryApi.fetchCloudRules(directory.id),
+        directoryApi.fetchProjectContext(project.id),
       ]);
       setFiles(filesRes);
       setRules(rulesRes);
       setContext(contextRes);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -90,15 +91,15 @@ export function CloudSettingsDialog({
     const ops = planToggle(rules, scope, node.path);
     try {
       for (const op of ops) {
-        await invoke("set_cloud_rule", {
-          directoryId: directory.id,
-          scope: op.scope,
-          relativePath: node.path,
-          allow: op.action === "set" ? op.allow : null,
-        });
+        await directoryApi.setCloudRule(
+          directory.id,
+          op.scope,
+          node.path,
+          op.action === "set" ? (op.allow ?? null) : null,
+        );
       }
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     } finally {
       // 途中で失敗してもバックエンドは部分適用済みの可能性があるため、
       // 成功・失敗を問わず必ず実ルールと表示を再同期する
@@ -109,13 +110,11 @@ export function CloudSettingsDialog({
   const handleToggleContext = async () => {
     const allow = !(context?.allow_cloud_context ?? false);
     try {
-      await invoke("set_allow_cloud_context", { projectId: project.id, allow });
-      const contextRes = await invoke<ProjectContext | null>("get_project_context", {
-        projectId: project.id,
-      });
+      await directoryApi.setAllowCloudContext(project.id, allow);
+      const contextRes = await directoryApi.fetchProjectContext(project.id);
       setContext(contextRes);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   };
 

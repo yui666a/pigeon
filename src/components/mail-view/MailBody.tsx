@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import DOMPurify from "dompurify";
-import { invoke } from "@tauri-apps/api/core";
 import type { Mail } from "../../types/mail";
-import type { InlineImage } from "../../types/attachment";
+import { attachmentApi } from "../../api/attachmentApi";
 import { hasCidReferences, replaceCidReferences } from "../../utils/inlineImages";
 import { AttachmentList } from "./AttachmentList";
 
@@ -21,7 +20,7 @@ export function MailBody({ mail }: MailBodyProps) {
     let cancelled = false;
     void (async () => {
       try {
-        const images = await invoke<InlineImage[]>("get_inline_images", { mailId: mail.id });
+        const images = await attachmentApi.fetchInlineImages(mail.id);
         if (!cancelled && images.length > 0) {
           setResolvedHtml(replaceCidReferences(bodyHtml, images));
         }
