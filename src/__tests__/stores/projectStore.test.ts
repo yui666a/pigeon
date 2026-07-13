@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useProjectStore } from "../../stores/projectStore";
+import { useErrorStore } from "../../stores/errorStore";
 import type { ProjectDirectory } from "../../types/directory";
 
 const mockInvoke = vi.fn();
@@ -14,11 +15,11 @@ describe("projectStore", () => {
       projects: [],
       selectedProjectId: null,
       loading: false,
-      error: null,
       directories: {},
       contexts: {},
       scanningProjects: {},
     });
+    useErrorStore.setState({ toasts: [] });
   });
 
   describe("fetchProjects", () => {
@@ -38,13 +39,15 @@ describe("projectStore", () => {
       expect(useProjectStore.getState().loading).toBe(false);
     });
 
-    it("sets error on failure", async () => {
+    it("reports an error toast on failure", async () => {
       mockInvoke.mockRejectedValue("DB error");
 
       await useProjectStore.getState().fetchProjects("acc1");
 
-      expect(useProjectStore.getState().error).toBe("DB error");
       expect(useProjectStore.getState().loading).toBe(false);
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({ kind: "error", message: "DB error" });
     });
   });
 

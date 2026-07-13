@@ -8,7 +8,6 @@ interface ProjectState {
   projects: Project[];
   selectedProjectId: string | null;
   loading: boolean;
-  error: string | null;
   directories: Record<string, ProjectDirectory | null>;
   contexts: Record<string, ProjectContext | null>;
   scanningProjects: Record<string, boolean>;
@@ -42,13 +41,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   projects: [],
   selectedProjectId: null,
   loading: false,
-  error: null,
   directories: {},
   contexts: {},
   scanningProjects: {},
 
   fetchProjects: async (accountId) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       const projects = await invoke<Project[]>("get_projects", { accountId });
       set({ projects, loading: false });
@@ -56,13 +54,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         void get().fetchDirectory(p.id);
       }
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   createProject: async (accountId, name, description, color) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       const project = await invoke<Project>("create_project", {
         accountId,
@@ -73,14 +71,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       await get().fetchProjects(accountId);
       return project;
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
       throw e;
     }
   },
 
   updateProject: async (id, name, description, color) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       await invoke("update_project", {
         id,
@@ -100,13 +98,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       );
       set({ projects, loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   archiveProject: async (id) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       await invoke("archive_project", { id });
       set({
@@ -116,13 +114,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         loading: false,
       });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   deleteProject: async (id) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       await invoke("delete_project", { id });
       set({
@@ -132,13 +130,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         loading: false,
       });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   mergeProject: async (sourceId, targetId) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       const moved = await invoke<number>("merge_projects", {
         sourceId,
@@ -152,7 +150,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       });
       return moved;
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
       throw e;
     }

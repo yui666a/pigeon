@@ -76,7 +76,6 @@ describe("mailStore", () => {
       needsReauth: false,
       unclassifiedMails: [],
       unclassifiedThreads: [],
-      error: null,
       syncProgress: null,
       unreadCounts: { by_project: {}, unclassified: 0 },
       backfilling: false,
@@ -101,12 +100,14 @@ describe("mailStore", () => {
       expect(useMailStore.getState().threads).toEqual(threads);
     });
 
-    it("sets error on failure", async () => {
+    it("reports an error toast on failure", async () => {
       mockInvoke.mockRejectedValue("fetch error");
 
       await useMailStore.getState().fetchThreads("acc1", "INBOX");
 
-      expect(useMailStore.getState().error).toBe("fetch error");
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({ kind: "error", message: "fetch error" });
     });
   });
 
@@ -120,14 +121,16 @@ describe("mailStore", () => {
       expect(useMailStore.getState().syncing).toBe(false);
     });
 
-    it("returns 0 and sets error on failure", async () => {
+    it("returns 0 and reports an error toast on failure", async () => {
       mockInvoke.mockRejectedValue("sync error");
 
       const count = await useMailStore.getState().syncAccount("acc1");
 
       expect(count).toBe(0);
-      expect(useMailStore.getState().error).toBe("sync error");
       expect(useMailStore.getState().syncing).toBe(false);
+      expect(
+        useErrorStore.getState().toasts.some((t) => t.kind === "error" && t.message === "sync error"),
+      ).toBe(true);
     });
 
     it("sets needsReauth on reauth error", async () => {
@@ -299,12 +302,14 @@ describe("mailStore", () => {
       expect(useMailStore.getState().unclassifiedMails).toEqual([m1, m2]);
     });
 
-    it("sets error on failure", async () => {
+    it("reports an error toast on failure", async () => {
       mockInvoke.mockRejectedValue("fetch error");
 
       await useMailStore.getState().fetchUnclassified("acc1");
 
-      expect(useMailStore.getState().error).toBe("fetch error");
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({ kind: "error", message: "fetch error" });
     });
   });
 
@@ -963,13 +968,15 @@ describe("mailStore", () => {
       expect(mockInvoke).not.toHaveBeenCalledWith("backfill_account", expect.anything());
     });
 
-    it("sets error and clears backfilling on failure", async () => {
+    it("reports an error toast and clears backfilling on failure", async () => {
       mockInvoke.mockRejectedValue("backfill error");
 
       await useMailStore.getState().backfillAccount("acc1", 5000);
 
-      expect(useMailStore.getState().error).toBe("backfill error");
       expect(useMailStore.getState().backfilling).toBe(false);
+      expect(
+        useErrorStore.getState().toasts.some((t) => t.kind === "error" && t.message === "backfill error"),
+      ).toBe(true);
     });
   });
 
