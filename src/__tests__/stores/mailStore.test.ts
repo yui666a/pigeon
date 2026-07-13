@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useMailStore } from "../../stores/mailStore";
 import { useAccountStore } from "../../stores/accountStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useErrorStore } from "../../stores/errorStore";
 import type { Mail, Thread } from "../../types/mail";
@@ -83,8 +84,58 @@ describe("mailStore", () => {
       backfillExhausted: {},
     });
     useAccountStore.setState({ selectedAccountId: "acc1" });
+    useProjectStore.setState({ selectedProjectId: null });
     useUiStore.setState({ viewMode: "threads" });
     useErrorStore.setState({ toasts: [] });
+  });
+
+  describe("fetchThreadsByProject", () => {
+    it("sets threads on success", async () => {
+      useProjectStore.setState({ selectedProjectId: "p1" });
+      const threads = [makeThread([makeMail("m1")])];
+      mockInvoke.mockResolvedValue(threads);
+
+      await useMailStore.getState().fetchThreadsByProject("p1");
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_threads_by_project", {
+        projectId: "p1",
+      });
+      expect(useMailStore.getState().threads).toEqual(threads);
+    });
+
+    it("clears threads and reports an error toast on failure", async () => {
+      useProjectStore.setState({ selectedProjectId: "p1" });
+      useMailStore.setState({ threads: [makeThread([makeMail("m1")])] });
+      mockInvoke.mockRejectedValue("project fetch error");
+
+      await useMailStore.getState().fetchThreadsByProject("p1");
+
+      expect(useMailStore.getState().threads).toEqual([]);
+      const toasts = useErrorStore.getState().toasts;
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({
+        kind: "error",
+        message: "project fetch error",
+      });
+    });
+
+    it("does not overwrite threads when the selected project changed during fetch", async () => {
+      useProjectStore.setState({ selectedProjectId: "p1" });
+      let resolveFetch!: (threads: Thread[]) => void;
+      mockInvoke.mockReturnValue(
+        new Promise<Thread[]>((resolve) => {
+          resolveFetch = resolve;
+        }),
+      );
+
+      const pending = useMailStore.getState().fetchThreadsByProject("p1");
+      // 取得中に別案件へ切り替わった（高速切替の競合）
+      useProjectStore.setState({ selectedProjectId: "p2" });
+      resolveFetch([makeThread([makeMail("stale")])]);
+      await pending;
+
+      expect(useMailStore.getState().threads).toEqual([]);
+    });
   });
 
   describe("fetchThreads", () => {
