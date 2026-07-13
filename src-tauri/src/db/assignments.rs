@@ -345,19 +345,15 @@ mod tests {
     use super::*;
     use crate::db::accounts;
     use crate::db::mails;
-    use crate::db::migrations::run_migrations;
     use crate::db::projects;
     use crate::models::account::{AccountProvider, AuthType, CreateAccountRequest};
     use crate::models::mail::Mail;
+    // 共有ヘルパの setup_db は FK 有効化・マイグレーション適用済みで、
+    // テストアカウント acc1 を作成済みの接続を返す
+    use crate::test_helpers::setup_db;
     use rusqlite::Connection;
 
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        run_migrations(&conn).unwrap();
-        conn
-    }
-
+    /// acc1 以外の追加アカウントを作成する（acc1 は setup_db が作成済み）。
     fn create_account(conn: &Connection, id: &str) {
         let req = CreateAccountRequest {
             name: "Test".into(),
@@ -414,7 +410,6 @@ mod tests {
     #[test]
     fn test_assign_and_get_by_project() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject A", "2026-04-13T10:00:00");
@@ -441,7 +436,6 @@ mod tests {
     #[test]
     fn test_unclassified_mails() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Classified", "2026-04-13T10:00:00");
@@ -468,7 +462,6 @@ mod tests {
     #[test]
     fn test_approve_same_project() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
@@ -486,7 +479,6 @@ mod tests {
     #[test]
     fn test_approve_different_project() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -522,7 +514,6 @@ mod tests {
     #[test]
     fn test_reject_classification() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
@@ -550,7 +541,6 @@ mod tests {
     #[test]
     fn test_recent_subjects() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "First", "2026-04-13T10:00:00");
@@ -586,7 +576,6 @@ mod tests {
     #[test]
     fn test_get_top_senders_orders_by_frequency() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "p1", "acc1", "P1");
         assign_mail_from(&conn, "m1", "p1", "a@x.com");
         assign_mail_from(&conn, "m2", "p1", "a@x.com");
@@ -602,7 +591,6 @@ mod tests {
     #[test]
     fn test_get_top_senders_respects_limit() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "p1", "acc1", "P1");
         assign_mail_from(&conn, "m1", "p1", "a@x.com");
         assign_mail_from(&conn, "m2", "p1", "b@x.com");
@@ -614,7 +602,6 @@ mod tests {
     #[test]
     fn test_get_top_senders_ties_broken_by_addr_asc() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "p1", "acc1", "P1");
         // 全員1通ずつ（同数）→ from_addr 昇順で安定
         assign_mail_from(&conn, "m1", "p1", "zoe@x.com");
@@ -634,7 +621,6 @@ mod tests {
     #[test]
     fn test_assign_mail_replaces_existing() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -653,7 +639,6 @@ mod tests {
     #[test]
     fn test_insert_and_get_corrections() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -675,7 +660,6 @@ mod tests {
     #[test]
     fn test_correction_from_unclassified() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
@@ -692,7 +676,6 @@ mod tests {
     #[test]
     fn test_corrections_limited_and_ordered() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -716,7 +699,6 @@ mod tests {
     #[test]
     fn test_approve_classification_writes_correction_log() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -738,7 +720,6 @@ mod tests {
     #[test]
     fn test_approve_same_project_no_correction_log() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
@@ -754,7 +735,6 @@ mod tests {
     #[test]
     fn test_move_mail_from_unclassified() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
@@ -774,7 +754,6 @@ mod tests {
     #[test]
     fn test_move_mail_between_projects() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -794,7 +773,6 @@ mod tests {
     #[test]
     fn test_move_mail_to_same_project_noop() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
@@ -812,7 +790,6 @@ mod tests {
     #[test]
     fn test_auto_follow_assigns_reply_to_threadmates_project() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
@@ -835,7 +812,6 @@ mod tests {
     #[test]
     fn test_auto_follow_skips_thread_split_across_multiple_projects() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
 
@@ -863,7 +839,6 @@ mod tests {
     #[test]
     fn test_auto_follow_noop_when_no_threadmate_assigned() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
         m1.message_id = "<m1@example.com>".into();
@@ -881,7 +856,6 @@ mod tests {
     #[test]
     fn test_auto_follow_does_not_affect_unrelated_threads() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
@@ -907,7 +881,6 @@ mod tests {
     #[test]
     fn test_auto_follow_does_not_write_correction_log() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
@@ -930,7 +903,6 @@ mod tests {
     #[test]
     fn test_auto_follow_uses_ai_assigned_by_with_no_confidence() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
@@ -955,7 +927,6 @@ mod tests {
     #[test]
     fn test_auto_follow_does_not_revive_rejected_mail() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
@@ -990,7 +961,6 @@ mod tests {
     #[test]
     fn test_manual_assign_after_reject_is_allowed() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
@@ -1013,7 +983,6 @@ mod tests {
     #[test]
     fn test_manual_assign_clears_exclusion_and_reenables_follow() {
         let conn = setup_db();
-        create_account(&conn, "acc1");
         create_project(&conn, "proj1", "acc1", "Project Alpha");
 
         let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");

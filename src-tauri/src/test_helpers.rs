@@ -10,8 +10,13 @@ use rusqlite::Connection;
 /// Create an in-memory SQLite database with migrations applied and a default test account.
 ///
 /// The test account has id="acc1", email="test@example.com".
+///
+/// 本番 (lib.rs) と同様に外部キー強制を明示的に有効化する。
+/// bundled SQLite は SQLITE_DEFAULT_FOREIGN_KEYS=1 でビルドされるためデフォルトでも
+/// ON になるが、ビルド設定に依存せず本番と同じ挙動を保証するため明示する。
 pub fn setup_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     migrations::run_migrations(&conn).unwrap();
     conn.execute(
         "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
@@ -67,4 +72,34 @@ pub fn insert_test_mail(conn: &Connection, id: &str, subject: &str) {
         "2026-04-13T10:00:00",
     );
     crate::db::mails::insert_mail(conn, &mail).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 本番 (lib.rs) は接続直後に PRAGMA foreign_keys = ON を設定している。
+    /// テスト用 DB も同じ設定でなければ FK/CASCADE 依存のバグを検出できないため、
+    /// setup_db が返す接続で外部キー強制が有効であることを保証する。
+    #[test]
+    fn test_setup_db_enables_foreign_keys() {
+        let conn = setup_db();
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "setup_db must enable PRAGMA foreign_keys");
+    }
+
+    /// FK 強制が実際に効いていること（存在しない親への子行挿入が失敗すること）を確認する。
+    #[test]
+    fn test_setup_db_enforces_foreign_keys() {
+        let conn = setup_db();
+        let mut mail = make_mail("m1", "<m1@test.com>", "Subject", "2026-04-13T10:00:00");
+        mail.account_id = "no-such-account".into();
+        let result = crate::db::mails::insert_mail(&conn, &mail);
+        assert!(
+            result.is_err(),
+            "inserting a mail for a nonexistent account must violate FK"
+        );
+    }
 }
