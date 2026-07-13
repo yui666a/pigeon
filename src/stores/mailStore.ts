@@ -486,6 +486,16 @@ export const useMailStore = create<MailState>((set, get) => ({
   bulkMoveMails: async (mailIds, projectId) => {
     try {
       const result = await mailApi.bulkMoveMails(mailIds, projectId);
+      // 移動が確定したメールは表示中のリスト（案件ビュー・未分類ビュー）から
+      // 除去し、移動したことが一目で分かるようにする。失敗分は残して再操作
+      // できるようにする（削除フローと同じ removeMailFromState を再利用）
+      set((state) => {
+        let next: MailState = state;
+        for (const mailId of result.succeeded) {
+          next = { ...next, ...removeMailFromState(next, mailId) };
+        }
+        return next;
+      });
       reportBulkResult(result, "案件への移動");
       return result;
     } catch (e) {

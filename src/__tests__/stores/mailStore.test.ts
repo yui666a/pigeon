@@ -380,6 +380,65 @@ describe("mailStore", () => {
     });
   });
 
+  describe("bulkMoveMails", () => {
+    it("removes succeeded mails from threads (案件ビューから移動元メールを消す)", async () => {
+      const m1 = makeMail("m1");
+      const m2 = makeMail("m2");
+      useMailStore.setState({ threads: [makeThread([m1, m2])] });
+      mockInvoke.mockResolvedValue({ succeeded: ["m1"], failed: [] });
+
+      await useMailStore.getState().bulkMoveMails(["m1"], "proj1");
+
+      const remaining = useMailStore.getState().threads.flatMap((t) => t.mails);
+      expect(remaining.map((m) => m.id)).toEqual(["m2"]);
+    });
+
+    it("removes succeeded mails from unclassifiedThreads too", async () => {
+      const m1 = makeMail("m1");
+      const m2 = makeMail("m2");
+      useMailStore.setState({
+        unclassifiedThreads: [makeThread([m1, m2])],
+        unclassifiedMails: [m1, m2],
+      });
+      mockInvoke.mockResolvedValue({ succeeded: ["m1"], failed: [] });
+
+      await useMailStore.getState().bulkMoveMails(["m1"], "proj1");
+
+      expect(
+        useMailStore.getState().unclassifiedMails.map((m) => m.id),
+      ).toEqual(["m2"]);
+      const remaining = useMailStore
+        .getState()
+        .unclassifiedThreads.flatMap((t) => t.mails);
+      expect(remaining.map((m) => m.id)).toEqual(["m2"]);
+    });
+
+    it("keeps failed mails in place (部分失敗は残す)", async () => {
+      const m1 = makeMail("m1");
+      const m2 = makeMail("m2");
+      useMailStore.setState({ threads: [makeThread([m1, m2])] });
+      mockInvoke.mockResolvedValue({
+        succeeded: ["m1"],
+        failed: [["m2", "権限エラー"]],
+      });
+
+      await useMailStore.getState().bulkMoveMails(["m1", "m2"], "proj1");
+
+      const remaining = useMailStore.getState().threads.flatMap((t) => t.mails);
+      expect(remaining.map((m) => m.id)).toEqual(["m2"]);
+    });
+
+    it("drops a thread entirely when all its mails are moved", async () => {
+      const m1 = makeMail("m1");
+      useMailStore.setState({ threads: [makeThread([m1])] });
+      mockInvoke.mockResolvedValue({ succeeded: ["m1"], failed: [] });
+
+      await useMailStore.getState().bulkMoveMails(["m1"], "proj1");
+
+      expect(useMailStore.getState().threads).toHaveLength(0);
+    });
+  });
+
   describe("deleteMail", () => {
     it("invokes delete_mail and removes the mail from all state on success", async () => {
       const m1 = makeMail("m1");
