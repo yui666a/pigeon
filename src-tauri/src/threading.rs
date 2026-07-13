@@ -101,20 +101,22 @@ fn compute_thread_groups<T: ThreadSource>(items: &[T]) -> Vec<Vec<usize>> {
         }
     }
 
+    // 件名フォールバック: ヘッダ（In-Reply-To/References）を持たないメールを、
+    // 同じ正規化件名が最初に現れたメールと結合する。照合先はヘッダの有無を問わない。
+    // 「件名 → 初出添字」のマップで先行メールを O(1) 参照する（旧実装は
+    // 先行メールの線形走査で O(n²) だった）
     let normalized: Vec<String> = items
         .iter()
         .map(|m| normalize_subject(m.subject()))
         .collect();
+    let mut first_by_subject: HashMap<&str, usize> = HashMap::new();
     for i in 0..items.len() {
-        if items[i].in_reply_to().is_some() || items[i].references().is_some() {
-            continue;
-        }
-        for j in 0..i {
-            if normalized[i] == normalized[j] {
+        if items[i].in_reply_to().is_none() && items[i].references().is_none() {
+            if let Some(&j) = first_by_subject.get(normalized[i].as_str()) {
                 union(&mut thread_root, i, j);
-                break;
             }
         }
+        first_by_subject.entry(&normalized[i]).or_insert(i);
     }
 
     let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -154,11 +156,18 @@ fn find_root(roots: &[usize], mut i: usize) -> usize {
 
 /// メール集合をスレッドへ分割する。判定は `compute_thread_groups` に委譲し、
 /// ここでは UI 表示用の `Thread`（件名・最終日時・参加者一覧）へ組み立てる。
-pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
-    compute_thread_groups(mails)
+///
+/// 所有権を取り、メールをクローンせずにスレッドへ移動する。借用スライスしか
+/// 持てない呼び出し側には `db::mails::build_threads`（互換ラッパー）がある。
+pub fn build_threads(mails: Vec<Mail>) -> Vec<Thread> {
+    let groups = compute_thread_groups(&mails);
+    // 添字グループに従って Vec から所有権ごと取り出す（グループは互いに素なので
+    // 各スロットはちょうど1回だけ take される）
+    let mut slots: Vec<Option<Mail>> = mails.into_iter().map(Some).collect();
+    groups
         .into_iter()
         .map(|indices| {
-            let thread_mails: Vec<Mail> = indices.iter().map(|&i| mails[i].clone()).collect();
+            let thread_mails: Vec<Mail> = indices.iter().filter_map(|&i| slots[i].take()).collect();
             let from_addrs: Vec<String> = thread_mails
                 .iter()
                 .map(|m| m.from_addr.clone())
@@ -223,7 +232,7 @@ mod tests {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-04-13T10:00:00");
         let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Hello", "2026-04-13T11:00:00");
         m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].mail_count, 2);
     }
@@ -240,7 +249,7 @@ mod tests {
             "2026-04-13T12:00:00",
         );
         m3.references = Some("<msg1@ex.com> <msg2@ex.com>".into());
-        let threads = build_threads(&[m1, m2, m3]);
+        let threads = build_threads(vec![m1, m2, m3]);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].mail_count, 3);
     }
@@ -254,7 +263,7 @@ mod tests {
             "Re: 見積もりの件",
             "2026-04-13T11:00:00",
         );
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].mail_count, 2);
     }
@@ -263,7 +272,7 @@ mod tests {
     fn test_build_threads_separate() {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Topic A", "2026-04-13T10:00:00");
         let m2 = make_mail("m2", "<msg2@ex.com>", "Topic B", "2026-04-13T11:00:00");
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 2);
     }
 
@@ -277,14 +286,14 @@ mod tests {
 
     #[test]
     fn test_build_threads_empty() {
-        let threads = build_threads(&[]);
+        let threads = build_threads(vec![]);
         assert!(threads.is_empty());
     }
 
     #[test]
     fn test_build_threads_single_mail() {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Solo", "2026-04-13T10:00:00");
-        let threads = build_threads(&[m1]);
+        let threads = build_threads(vec![m1]);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].mail_count, 1);
         assert_eq!(threads[0].subject, "Solo");
@@ -294,7 +303,7 @@ mod tests {
     fn test_build_threads_sorted_by_last_date_desc() {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Old Topic", "2026-04-10T10:00:00");
         let m2 = make_mail("m2", "<msg2@ex.com>", "New Topic", "2026-04-13T10:00:00");
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 2);
         assert_eq!(threads[0].subject, "New Topic");
         assert_eq!(threads[1].subject, "Old Topic");
@@ -304,7 +313,7 @@ mod tests {
     fn test_build_threads_fw_prefix_groups() {
         let m1 = make_mail("m1", "<msg1@ex.com>", "案件の件", "2026-04-13T10:00:00");
         let m2 = make_mail("m2", "<msg2@ex.com>", "Fw: 案件の件", "2026-04-13T11:00:00");
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].mail_count, 2);
     }
@@ -313,7 +322,7 @@ mod tests {
     fn test_build_threads_fwd_prefix_groups() {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Report", "2026-04-13T10:00:00");
         let m2 = make_mail("m2", "<msg2@ex.com>", "Fwd: Report", "2026-04-13T11:00:00");
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 1);
     }
 
@@ -336,7 +345,7 @@ mod tests {
             "2026-04-13T13:00:00",
         );
         m4.in_reply_to = Some("<msg3@ex.com>".into());
-        let threads = build_threads(&[m1, m2, m3, m4]);
+        let threads = build_threads(vec![m1, m2, m3, m4]);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].mail_count, 4);
     }
@@ -348,7 +357,7 @@ mod tests {
         let mut m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
         m2.from_addr = "alice@example.com".into();
         m2.in_reply_to = Some("<msg1@ex.com>".into());
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads[0].from_addrs.len(), 1);
     }
 
@@ -357,8 +366,33 @@ mod tests {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Same Subject", "2026-04-13T10:00:00");
         let mut m2 = make_mail("m2", "<msg2@ex.com>", "Same Subject", "2026-04-13T11:00:00");
         m2.references = Some("<nonexistent@ex.com>".into());
-        let threads = build_threads(&[m1, m2]);
+        let threads = build_threads(vec![m1, m2]);
         assert_eq!(threads.len(), 2);
+    }
+
+    #[test]
+    fn test_build_threads_subject_fallback_joins_first_match() {
+        // 件名フォールバックは「最初に同じ正規化件名が現れたメール」と結合する。
+        // ヘッダなしの同名メールが3通あっても推移的に1スレッドへまとまる
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
+        let m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
+        let m3 = make_mail("m3", "<msg3@ex.com>", "Fwd: Topic", "2026-04-13T12:00:00");
+        let threads = build_threads(vec![m1, m2, m3]);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 3);
+    }
+
+    #[test]
+    fn test_build_threads_headered_mail_seeds_subject_fallback() {
+        // References を持つメールが先行する場合でも、後続のヘッダなしメールは
+        // 件名フォールバックでそのメールと結合できる（フォールバックの照合先は
+        // ヘッダの有無を問わない）
+        let mut m1 = make_mail("m1", "<msg1@ex.com>", "Topic", "2026-04-13T10:00:00");
+        m1.references = Some("<nonexistent@ex.com>".into());
+        let m2 = make_mail("m2", "<msg2@ex.com>", "Re: Topic", "2026-04-13T11:00:00");
+        let threads = build_threads(vec![m1, m2]);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].mail_count, 2);
     }
 
     #[test]
@@ -449,7 +483,7 @@ mod tests {
                 .map(|ids| ids.into_iter().collect())
                 .collect();
         let expected: std::collections::HashSet<std::collections::BTreeSet<String>> =
-            build_threads(&mails)
+            build_threads(mails)
                 .into_iter()
                 .map(|t| t.mails.into_iter().map(|m| m.id).collect())
                 .collect();

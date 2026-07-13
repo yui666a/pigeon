@@ -6,9 +6,16 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 // スレッド判定アルゴリズムは DB 非依存のドメインロジックとして
-// `crate::threading` に分離した。既存呼び出し側（`db::mails::build_threads` 等）の
-// 互換のためここから再エクスポートする。
-pub use crate::threading::{build_threads, group_mail_ids_into_threads, ThreadMailMeta};
+// `crate::threading` に分離した。既存呼び出し側（`db::mails::group_mail_ids_into_threads`
+// 等）の互換のためここから再エクスポートする。
+pub use crate::threading::{group_mail_ids_into_threads, ThreadMailMeta};
+
+/// 互換ラッパー: 実体は `crate::threading::build_threads`（所有権を取る版）。
+/// 借用スライスしか持たない既存の commands 層呼び出しのためにクローンして委譲する。
+/// 所有権を渡せる呼び出し側は `crate::threading::build_threads` を直接使うこと。
+pub fn build_threads(mails: &[Mail]) -> Vec<Thread> {
+    crate::threading::build_threads(mails.to_vec())
+}
 
 /// mails テーブルのカラム名の唯一の定義。
 /// SELECT 句（`MAIL_COLUMNS` / `MAIL_COLUMNS_PREFIXED`）・INSERT 句・
@@ -548,7 +555,8 @@ pub fn get_threads_by_project(
     project_id: &str,
 ) -> Result<Vec<Thread>, AppError> {
     let mails = assignments::get_mails_by_project(conn, project_id)?;
-    Ok(build_threads(&mails))
+    // 所有権を渡してクローンなしでスレッドへ組み立てる
+    Ok(crate::threading::build_threads(mails))
 }
 
 /// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す。
