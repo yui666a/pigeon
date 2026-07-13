@@ -102,6 +102,38 @@ pub(crate) fn cache_attachments(
     Ok(result)
 }
 
+/// メール削除後に添付キャッシュディレクトリ `{cache_root}/{mail_id}` を
+/// ベストエフォートで削除する。キャッシュ掃除の失敗でメール削除自体を
+/// 失敗させないため、エラーは警告ログのみで握りつぶす。
+pub(crate) fn remove_attachment_cache(cache_root: &Path, mail_id: &str) {
+    // mail_id は UUID の想定。万一パス区切り・`..`・絶対パス等を含む値が
+    // 来ても cache_root の外を消さないよう、単一の通常コンポーネントのみ許可する
+    let mut components = Path::new(mail_id).components();
+    let is_single_normal = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    if !is_single_normal {
+        eprintln!(
+            "[warn] Skipped attachment cache cleanup for unexpected mail_id: {:?}",
+            mail_id
+        );
+        return;
+    }
+    match std::fs::remove_dir_all(cache_root.join(mail_id)) {
+        Ok(()) => {}
+        // キャッシュ未作成（一度も添付一覧を開いていない）は正常系
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "[warn] Failed to remove attachment cache for {}: {}",
+            mail_id, e
+        ),
+    }
+}
+
+/// 既定のキャッシュルート配下の添付キャッシュを削除する（削除系コマンド用）
+pub(crate) fn remove_attachment_cache_for_mail(mail_id: &str) {
+    remove_attachment_cache(&attachments_cache_root(), mail_id);
+}
+
 /// 保存先パスの防御的検証。保存先はバックエンドが開くダイアログで選ばれるため
 /// 通常はすべて満たすが、書き込み直前の不変条件として明示的に検証する。
 /// - 絶対パスであること（`..` / `.` セグメントを含まない）
@@ -435,6 +467,61 @@ mod tests {
         };
         let err = copy_attachment_to(&att, Path::new("/tmp/out.pdf")).unwrap_err();
         assert!(matches!(err, AppError::AttachmentCacheMissing(_)));
+    }
+
+    // --- remove_attachment_cache (B-9: メール削除時のキャッシュ掃除) ---
+
+    #[test]
+    fn test_remove_attachment_cache_deletes_dir_recursively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("m1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.pdf"), b"x").unwrap();
+        std::fs::write(dir.join("b.png"), b"y").unwrap();
+
+        remove_attachment_cache(tmp.path(), "m1");
+        assert!(!dir.exists());
+        assert!(tmp.path().exists(), "キャッシュルート自体は残る");
+    }
+
+    #[test]
+    fn test_remove_attachment_cache_ignores_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        // キャッシュ未作成のメールでもパニック・エラーにならない
+        remove_attachment_cache(tmp.path(), "never-cached");
+        assert!(tmp.path().exists());
+    }
+
+    #[test]
+    fn test_remove_attachment_cache_rejects_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_root = root.path().join("attachments");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("keep.txt"), b"x").unwrap();
+
+        remove_attachment_cache(&cache_root, "../victim");
+        assert!(
+            victim.join("keep.txt").exists(),
+            "cache_root の外は消さない"
+        );
+    }
+
+    #[test]
+    fn test_remove_attachment_cache_rejects_absolute_and_empty_mail_id() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_root = root.path().join("attachments");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+
+        // 絶対パスは join でベースを置き換えてしまうため拒否する
+        remove_attachment_cache(&cache_root, victim.to_str().unwrap());
+        assert!(victim.exists());
+
+        remove_attachment_cache(&cache_root, "");
+        assert!(cache_root.exists());
     }
 
     // --- validate_save_dest (B-8: 保存先パスの防御的検証) ---

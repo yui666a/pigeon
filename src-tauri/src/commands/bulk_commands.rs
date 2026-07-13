@@ -119,8 +119,14 @@ async fn delete_one(
         .await?;
     }
 
-    let conn = state.0.lock().map_err(AppError::lock_err)?;
-    mails::delete_mail(&conn, mail_id)
+    {
+        let conn = state.0.lock().map_err(AppError::lock_err)?;
+        mails::delete_mail(&conn, mail_id)?;
+    }
+    // DB削除成功後、添付キャッシュをベストエフォートで掃除する
+    // （失敗しても削除自体は成功扱い。孤児化したディスクリークの防止）
+    crate::commands::attachment_commands::remove_attachment_cache_for_mail(mail_id);
+    Ok(())
 }
 
 /// 複数メールを一括アーカイブする。処理方式は単体の archive_mail と同じ
