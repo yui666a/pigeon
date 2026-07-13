@@ -8,15 +8,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  save: vi.fn(),
-}));
-
 import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 
 const mockInvoke = vi.mocked(invoke);
-const mockSave = vi.mocked(save);
 
 function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
   return {
@@ -81,38 +75,32 @@ describe("AttachmentList", () => {
     ).toBeInTheDocument();
   });
 
-  it("保存ボタンでダイアログを開き save_attachment を呼ぶ", async () => {
+  it("保存ボタンで save_attachment を呼ぶ（保存先はバックエンドのダイアログで選択）", async () => {
     mockInvoke.mockResolvedValueOnce([makeAttachment()]);
-    mockSave.mockResolvedValueOnce("/Users/me/Downloads/report.pdf");
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(true);
     render(<AttachmentList mailId="m1" />);
 
     fireEvent.click(screen.getByRole("button", { name: /添付ファイルを表示/ }));
     fireEvent.click(await screen.findByRole("button", { name: "保存" }));
 
     await waitFor(() => {
-      expect(mockSave).toHaveBeenCalledWith({ defaultPath: "report.pdf" });
-    });
-    await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("save_attachment", {
         attachmentId: "att1",
-        destPath: "/Users/me/Downloads/report.pdf",
       });
     });
   });
 
-  it("保存ダイアログをキャンセルしたら save_attachment を呼ばない", async () => {
+  it("保存に失敗したらエラーを通知する", async () => {
     mockInvoke.mockResolvedValueOnce([makeAttachment()]);
-    mockSave.mockResolvedValueOnce(null);
+    mockInvoke.mockRejectedValueOnce("File IO error: disk full");
     render(<AttachmentList mailId="m1" />);
 
     fireEvent.click(screen.getByRole("button", { name: /添付ファイルを表示/ }));
     fireEvent.click(await screen.findByRole("button", { name: "保存" }));
 
     await waitFor(() => {
-      expect(mockSave).toHaveBeenCalled();
+      expect(useErrorStore.getState().toasts.length).toBeGreaterThan(0);
     });
-    expect(mockInvoke).toHaveBeenCalledTimes(1); // list_attachments のみ
   });
 
   it("取得に失敗したらエラーを通知しボタンに戻る", async () => {

@@ -4,7 +4,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use tauri::State;
+use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::db::{accounts, attachments, mails};
 use crate::error::AppError;
@@ -101,6 +102,91 @@ pub(crate) fn cache_attachments(
     Ok(result)
 }
 
+/// メール削除後に添付キャッシュディレクトリ `{cache_root}/{mail_id}` を
+/// ベストエフォートで削除する。キャッシュ掃除の失敗でメール削除自体を
+/// 失敗させないため、エラーは警告ログのみで握りつぶす。
+pub(crate) fn remove_attachment_cache(cache_root: &Path, mail_id: &str) {
+    // mail_id は UUID の想定。万一パス区切り・`..`・絶対パス等を含む値が
+    // 来ても cache_root の外を消さないよう、単一の通常コンポーネントのみ許可する
+    let mut components = Path::new(mail_id).components();
+    let is_single_normal = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    if !is_single_normal {
+        eprintln!(
+            "[warn] Skipped attachment cache cleanup for unexpected mail_id: {:?}",
+            mail_id
+        );
+        return;
+    }
+    match std::fs::remove_dir_all(cache_root.join(mail_id)) {
+        Ok(()) => {}
+        // キャッシュ未作成（一度も添付一覧を開いていない）は正常系
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "[warn] Failed to remove attachment cache for {}: {}",
+            mail_id, e
+        ),
+    }
+}
+
+/// 既定のキャッシュルート配下の添付キャッシュを削除する（削除系コマンド用）
+pub(crate) fn remove_attachment_cache_for_mail(mail_id: &str) {
+    remove_attachment_cache(&attachments_cache_root(), mail_id);
+}
+
+/// 保存先パスの防御的検証。保存先はバックエンドが開くダイアログで選ばれるため
+/// 通常はすべて満たすが、書き込み直前の不変条件として明示的に検証する。
+/// - 絶対パスであること（`..` / `.` セグメントを含まない）
+/// - 親ディレクトリが実在すること
+/// - 既存のディレクトリ・シンボリックリンクを上書きしないこと
+pub(crate) fn validate_save_dest(dest: &Path) -> Result<(), AppError> {
+    use std::path::Component;
+
+    if !dest.is_absolute() {
+        return Err(AppError::Validation(format!(
+            "Save destination must be an absolute path: {}",
+            dest.display()
+        )));
+    }
+    if dest
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err(AppError::Validation(format!(
+            "Save destination must not contain '..' or '.' segments: {}",
+            dest.display()
+        )));
+    }
+    let parent = dest.parent().ok_or_else(|| {
+        AppError::Validation(format!(
+            "Save destination has no parent directory: {}",
+            dest.display()
+        ))
+    })?;
+    if !parent.is_dir() {
+        return Err(AppError::Validation(format!(
+            "Save destination directory does not exist: {}",
+            parent.display()
+        )));
+    }
+    // symlink_metadata はリンク自体を見る（存在しなければ Err → 新規作成なのでOK）
+    if let Ok(meta) = std::fs::symlink_metadata(dest) {
+        if meta.is_dir() {
+            return Err(AppError::Validation(format!(
+                "Save destination is a directory: {}",
+                dest.display()
+            )));
+        }
+        if meta.file_type().is_symlink() {
+            return Err(AppError::Validation(format!(
+                "Save destination is a symlink: {}",
+                dest.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// キャッシュファイルを保存先へコピーする
 pub(crate) fn copy_attachment_to(attachment: &Attachment, dest: &Path) -> Result<(), AppError> {
     let src = attachment
@@ -156,18 +242,42 @@ pub async fn list_attachments(
     cache_attachments(&conn, &attachments_cache_root(), &mail_id, &raw)
 }
 
-/// キャッシュ済みの添付ファイルをユーザー指定のパスへコピーする
+/// キャッシュ済みの添付ファイルを保存する。保存先はバックエンドで開く
+/// ネイティブの保存ダイアログでユーザーが選択したパスに限定し、
+/// IPC 境界からは保存先パスを受け取らない（任意パス書き込みの防止）。
+/// 戻り値: 保存したら true、ユーザーがキャンセルしたら false。
 #[tauri::command]
-pub fn save_attachment(
+pub async fn save_attachment(
+    app: tauri::AppHandle,
     state: State<'_, DbState>,
     attachment_id: String,
-    dest_path: String,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let attachment = {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
         attachments::get_by_id(&conn, &attachment_id)?
     };
-    copy_attachment_to(&attachment, Path::new(&dest_path))
+
+    let mut dialog = app.dialog().file().set_file_name(&attachment.filename);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    dialog.save_file(move |picked| {
+        // 受信側が先に破棄された場合のみ失敗するため、送信結果は無視してよい
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx
+        .await
+        .map_err(|e| AppError::FileIo(format!("Save dialog was closed unexpectedly: {}", e)))?
+    else {
+        return Ok(false); // ユーザーがキャンセル
+    };
+    let dest = picked
+        .into_path()
+        .map_err(|e| AppError::Validation(format!("Invalid save destination: {}", e)))?;
+    validate_save_dest(&dest)?;
+    copy_attachment_to(&attachment, &dest)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -357,6 +467,121 @@ mod tests {
         };
         let err = copy_attachment_to(&att, Path::new("/tmp/out.pdf")).unwrap_err();
         assert!(matches!(err, AppError::AttachmentCacheMissing(_)));
+    }
+
+    // --- remove_attachment_cache (B-9: メール削除時のキャッシュ掃除) ---
+
+    #[test]
+    fn test_remove_attachment_cache_deletes_dir_recursively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("m1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.pdf"), b"x").unwrap();
+        std::fs::write(dir.join("b.png"), b"y").unwrap();
+
+        remove_attachment_cache(tmp.path(), "m1");
+        assert!(!dir.exists());
+        assert!(tmp.path().exists(), "キャッシュルート自体は残る");
+    }
+
+    #[test]
+    fn test_remove_attachment_cache_ignores_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        // キャッシュ未作成のメールでもパニック・エラーにならない
+        remove_attachment_cache(tmp.path(), "never-cached");
+        assert!(tmp.path().exists());
+    }
+
+    #[test]
+    fn test_remove_attachment_cache_rejects_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_root = root.path().join("attachments");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("keep.txt"), b"x").unwrap();
+
+        remove_attachment_cache(&cache_root, "../victim");
+        assert!(
+            victim.join("keep.txt").exists(),
+            "cache_root の外は消さない"
+        );
+    }
+
+    #[test]
+    fn test_remove_attachment_cache_rejects_absolute_and_empty_mail_id() {
+        let root = tempfile::tempdir().unwrap();
+        let cache_root = root.path().join("attachments");
+        std::fs::create_dir_all(&cache_root).unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+
+        // 絶対パスは join でベースを置き換えてしまうため拒否する
+        remove_attachment_cache(&cache_root, victim.to_str().unwrap());
+        assert!(victim.exists());
+
+        remove_attachment_cache(&cache_root, "");
+        assert!(cache_root.exists());
+    }
+
+    // --- validate_save_dest (B-8: 保存先パスの防御的検証) ---
+
+    #[test]
+    fn test_validate_save_dest_accepts_new_file_in_existing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(validate_save_dest(&tmp.path().join("saved.pdf")).is_ok());
+    }
+
+    #[test]
+    fn test_validate_save_dest_accepts_overwriting_regular_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("exists.pdf");
+        std::fs::write(&dest, b"old").unwrap();
+        assert!(
+            validate_save_dest(&dest).is_ok(),
+            "上書きはダイアログで確認済みのため許可"
+        );
+    }
+
+    #[test]
+    fn test_validate_save_dest_rejects_relative_path() {
+        let err = validate_save_dest(Path::new("saved.pdf")).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn test_validate_save_dest_rejects_parent_dir_component() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("..").join("evil.pdf");
+        let err = validate_save_dest(&dest).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn test_validate_save_dest_rejects_missing_parent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("no-such-dir").join("saved.pdf");
+        let err = validate_save_dest(&dest).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn test_validate_save_dest_rejects_existing_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = validate_save_dest(tmp.path()).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_save_dest_rejects_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target.pdf");
+        std::fs::write(&target, b"x").unwrap();
+        let link = tmp.path().join("link.pdf");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = validate_save_dest(&link).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
     }
 
     #[test]
