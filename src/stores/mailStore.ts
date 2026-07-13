@@ -31,7 +31,6 @@ interface MailState {
   unclassifiedMails: Mail[];
   /** 未分類メールのスレッド表示用（unclassifiedMails と同一内容のスレッド版） */
   unclassifiedThreads: Thread[];
-  error: string | null;
   syncProgress: SyncProgress | null;
   unreadCounts: UnreadCounts;
   backfilling: boolean;
@@ -52,7 +51,6 @@ interface MailState {
   unarchiveMail: (mail: Mail) => Promise<void>;
   fetchUnreadCounts: (accountId: string) => Promise<void>;
   fetchUnclassified: (accountId: string) => Promise<void>;
-  moveMail: (mailId: string, projectId: string) => Promise<void>;
   removeUnclassifiedMail: (mailId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
@@ -179,7 +177,6 @@ export const useMailStore = create<MailState>((set, get) => ({
   needsReauth: false,
   unclassifiedMails: [],
   unclassifiedThreads: [],
-  error: null,
   syncProgress: null,
   unreadCounts: { by_project: {}, unclassified: 0 },
   backfilling: false,
@@ -194,7 +191,6 @@ export const useMailStore = create<MailState>((set, get) => ({
       });
       set({ threads });
     } catch (e) {
-      set({ error: String(e) });
       useErrorStore.getState().addError(String(e));
     }
   },
@@ -203,7 +199,7 @@ export const useMailStore = create<MailState>((set, get) => ({
     // 多重実行ガード（バックエンドにもアカウント単位ロックがあり、これは
     // 画面遷移や開発モードの二重effectで無駄なinvokeを出さないための前段）
     if (get().syncing) return 0;
-    set({ syncing: true, error: null, needsReauth: false });
+    set({ syncing: true, needsReauth: false });
     try {
       const count = await invoke<number>("sync_account", { accountId });
       set({ syncing: false, syncProgress: null });
@@ -213,7 +209,7 @@ export const useMailStore = create<MailState>((set, get) => ({
     } catch (e) {
       const errorMsg = String(e);
       const isReauth = errorMsg.includes("Reauth required");
-      set({ error: errorMsg, syncing: false, needsReauth: isReauth, syncProgress: null });
+      set({ syncing: false, needsReauth: isReauth, syncProgress: null });
       if (!isReauth) {
         useErrorStore.getState().addError(errorMsg);
       }
@@ -227,7 +223,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   // （syncAccount と同型）
   backfillAccount: async (accountId, limit) => {
     if (get().backfilling) return;
-    set({ backfilling: true, error: null });
+    set({ backfilling: true });
     try {
       const outcome = await invoke<BackfillOutcome>("backfill_account", {
         accountId,
@@ -248,7 +244,7 @@ export const useMailStore = create<MailState>((set, get) => ({
         void get().fetchUnclassified(accountId);
       }
     } catch (e) {
-      set({ error: String(e), backfilling: false, backfillProgress: null });
+      set({ backfilling: false, backfillProgress: null });
       useErrorStore.getState().addError(String(e));
     }
   },
@@ -413,17 +409,6 @@ export const useMailStore = create<MailState>((set, get) => ({
         unclassifiedMails: threads.flatMap((t) => t.mails),
       });
     } catch (e) {
-      set({ error: String(e) });
-      useErrorStore.getState().addError(String(e));
-    }
-  },
-
-  moveMail: async (mailId, projectId) => {
-    try {
-      await invoke("move_mail", { mailId, projectId });
-      get().removeUnclassifiedMail(mailId);
-    } catch (e) {
-      set({ error: String(e) });
       useErrorStore.getState().addError(String(e));
     }
   },

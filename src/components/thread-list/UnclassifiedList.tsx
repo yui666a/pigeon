@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAccountStore } from "../../stores/accountStore";
 import { useClassifyStore } from "../../stores/classifyStore";
 import { useMailStore } from "../../stores/mailStore";
@@ -23,7 +23,10 @@ export function UnclassifiedList() {
   const unclassifiedMails = useMailStore((s) => s.unclassifiedMails);
   const unclassifiedThreads = useMailStore((s) => s.unclassifiedThreads);
   const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
-  const { selectThread, bulkDeleteMails, bulkArchiveMails, bulkMoveMails } = useMailStore();
+  const selectThread = useMailStore((s) => s.selectThread);
+  const bulkDeleteMails = useMailStore((s) => s.bulkDeleteMails);
+  const bulkArchiveMails = useMailStore((s) => s.bulkArchiveMails);
+  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
   const projects = useProjectStore((s) => s.projects);
   const selectedThreadIds = useSelectionStore((s) => s.selectedThreadIds);
   const selectedMailIds = useSelectionStore((s) => s.selectedMailIds);
@@ -41,8 +44,14 @@ export function UnclassifiedList() {
     }
   }, [selectedAccountId, fetchUnclassified]);
 
+  // 分類完了エッジ（classifying: true → false）でのみ再取得する。
+  // 初回マウントやアカウント切り替えの取得は上の effect が担うため、
+  // ここで無条件に取得すると二重発火になる
+  const prevClassifying = useRef(classifying);
   useEffect(() => {
-    if (!classifying && selectedAccountId) {
+    const wasClassifying = prevClassifying.current;
+    prevClassifying.current = classifying;
+    if (wasClassifying && !classifying && selectedAccountId) {
       fetchUnclassified(selectedAccountId);
     }
   }, [classifying, selectedAccountId, fetchUnclassified]);

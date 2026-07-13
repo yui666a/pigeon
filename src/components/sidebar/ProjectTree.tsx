@@ -16,9 +16,14 @@ interface ProjectTreeProps {
 }
 
 export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTreeProps) {
-  const { selectedAccountId } = useAccountStore();
-  const { projects, fetchProjects } = useProjectStore();
-  const { unclassifiedMails, fetchUnclassified, fetchUnreadCounts } = useMailStore();
+  const selectedAccountId = useAccountStore((s) => s.selectedAccountId);
+  const projects = useProjectStore((s) => s.projects);
+  const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  // length のみ購読する: unclassifiedMails 全体を購読すると、メール操作の
+  // たびに（件数が変わらなくても）サイドバー全体が再レンダリングされる
+  const unclassifiedCount = useMailStore((s) => s.unclassifiedMails.length);
+  const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
+  const fetchUnreadCounts = useMailStore((s) => s.fetchUnreadCounts);
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -52,9 +57,9 @@ export function ProjectTree({ onSelectUnclassified, onSelectProject }: ProjectTr
         <div className="flex items-center gap-2">
           <span className="text-amber-500">!</span>
           <span>未分類</span>
-          {unclassifiedMails.length > 0 && (
+          {unclassifiedCount > 0 && (
             <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-600">
-              {unclassifiedMails.length}
+              {unclassifiedCount}
             </span>
           )}
         </div>
@@ -68,22 +73,21 @@ function ProjectListInner({
 }: {
   onSelectProject: () => void;
 }) {
-  const {
-    projects,
-    selectedProjectId,
-    selectProject,
-    archiveProject,
-    deleteProject,
-    mergeProject,
-    directories,
-    scanningProjects,
-    rescanProject,
-    unlinkDirectory,
-    linkDirectory,
-  } = useProjectStore();
+  const projects = useProjectStore((s) => s.projects);
+  const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
+  const selectProject = useProjectStore((s) => s.selectProject);
+  const archiveProject = useProjectStore((s) => s.archiveProject);
+  const deleteProject = useProjectStore((s) => s.deleteProject);
+  const mergeProject = useProjectStore((s) => s.mergeProject);
+  const directories = useProjectStore((s) => s.directories);
+  const scanningProjects = useProjectStore((s) => s.scanningProjects);
+  const rescanProject = useProjectStore((s) => s.rescanProject);
+  const unlinkDirectory = useProjectStore((s) => s.unlinkDirectory);
+  const linkDirectory = useProjectStore((s) => s.linkDirectory);
   const draggingMailIds = useDragStore((s) => s.draggingMailIds);
   const endDrag = useDragStore((s) => s.endDrag);
-  const { moveMail } = useMailStore();
+  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
+  const removeUnclassifiedMail = useMailStore((s) => s.removeUnclassifiedMail);
   const unreadByProject = useMailStore((s) => s.unreadCounts.by_project);
   const { startRename } = useProjectRenameContext();
   const [contextMenu, setContextMenu] = useState<{
@@ -98,8 +102,11 @@ function ProjectListInner({
     if (!draggingMailIds) return;
     const mailIds = [...draggingMailIds];
     endDrag();
-    for (const mailId of mailIds) {
-      await moveMail(mailId, projectId);
+    // 一括移動。結果はトーストで要約され、部分失敗もエラーとして通知される
+    const result = await bulkMoveMails(mailIds, projectId);
+    // 成功したメールだけを未分類一覧から除去する（失敗分は残して再操作できるようにする）
+    for (const mailId of result?.succeeded ?? []) {
+      removeUnclassifiedMail(mailId);
     }
   };
 

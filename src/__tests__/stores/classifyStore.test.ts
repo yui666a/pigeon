@@ -17,7 +17,6 @@ const resetStore = () =>
     classifying: false,
     progress: null,
     pendingProposal: null,
-    error: null,
   });
 
 beforeEach(() => {

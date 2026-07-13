@@ -19,7 +19,6 @@ describe("accountStore", () => {
       accounts: [],
       selectedAccountId: null,
       loading: false,
-      error: null,
       oauthStatus: "idle",
       oauthError: null,
       reauthAccountId: null,

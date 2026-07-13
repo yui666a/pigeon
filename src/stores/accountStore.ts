@@ -9,7 +9,6 @@ interface AccountState {
   accounts: Account[];
   selectedAccountId: string | null;
   loading: boolean;
-  error: string | null;
   oauthStatus: OAuthStatus;
   oauthError: string | null;
   reauthAccountId: string | null;
@@ -28,42 +27,41 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   accounts: [],
   selectedAccountId: null,
   loading: false,
-  error: null,
   oauthStatus: "idle",
   oauthError: null,
   reauthAccountId: null,
 
   fetchAccounts: async () => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       const accounts = await invoke<Account[]>("get_accounts");
       set({ accounts, loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   createAccount: async (req) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       await invoke<Account>("create_account", { request: req });
       const accounts = await invoke<Account[]>("get_accounts");
       set({ accounts, loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },
 
   removeAccount: async (id) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       await invoke("remove_account", { id });
       const accounts = await invoke<Account[]>("get_accounts");
       set({ accounts, loading: false, selectedAccountId: null });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ loading: false });
       useErrorStore.getState().addError(String(e));
     }
   },

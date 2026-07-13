@@ -13,7 +13,6 @@ interface ClassifyState {
   classifying: boolean;
   progress: { current: number; total: number } | null;
   pendingProposal: ClassifyResponse | null;
-  error: string | null;
   // 内部: 逐次ループの状態
   _queue: UnclassifiedMailRef[];
   _index: number;
@@ -69,7 +68,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
     classifying: false,
     progress: null,
     pendingProposal: null,
-    error: null,
     _queue: [],
     _index: 0,
     _cancelled: false,
@@ -78,7 +76,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
       try {
         await invoke("classify_mail", { mailId });
       } catch (e) {
-        set({ error: String(e) });
         useErrorStore.getState().addError(String(e));
       }
     },
@@ -96,11 +93,10 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
           _cancelled: false,
           pendingProposal: null,
           progress: { current: 0, total: mails.length },
-          error: null,
         });
         await classifyNext();
       } catch (e) {
-        set({ error: String(e), classifying: false, progress: null });
+        set({ classifying: false, progress: null });
         useErrorStore.getState().addError(String(e));
       }
     },
@@ -120,7 +116,6 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
         set({ pendingProposal: null });
         await classifyNext();
       } catch (e) {
-        set({ error: String(e) });
         useErrorStore.getState().addError(String(e));
       }
     },

@@ -19,8 +19,17 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   const startReauth = useAccountStore((s) => s.startReauth);
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
   const projects = useProjectStore((s) => s.projects);
-  const { threads, syncing, needsReauth, selectedThread, fetchThreads, syncAccount, selectThread, setThreads, bulkDeleteMails, bulkArchiveMails, bulkMoveMails } =
-    useMailStore();
+  const threads = useMailStore((s) => s.threads);
+  const syncing = useMailStore((s) => s.syncing);
+  const needsReauth = useMailStore((s) => s.needsReauth);
+  const selectedThread = useMailStore((s) => s.selectedThread);
+  const fetchThreads = useMailStore((s) => s.fetchThreads);
+  const syncAccount = useMailStore((s) => s.syncAccount);
+  const selectThread = useMailStore((s) => s.selectThread);
+  const setThreads = useMailStore((s) => s.setThreads);
+  const bulkDeleteMails = useMailStore((s) => s.bulkDeleteMails);
+  const bulkArchiveMails = useMailStore((s) => s.bulkArchiveMails);
+  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
   const selectedThreadIds = useSelectionStore((s) => s.selectedThreadIds);
   const selectedMailIds = useSelectionStore((s) => s.selectedMailIds);
   const clearSelection = useSelectionStore((s) => s.clear);
