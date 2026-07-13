@@ -165,13 +165,19 @@ pub fn get_unclassified_mails(
 }
 
 /// 未分類メールをスレッド単位で返す（未分類一覧のスレッド表示用）。
-/// 分類の実体はメール単位のまま（スレッドのD&Dは全メールIDを渡す）
+/// 分類の実体はメール単位のまま（スレッドのD&Dは全メールIDを渡す）。
+///
+/// 取得の前にスレッド追従の自動分類（`auto_follow_threads`）を行う。
+/// 同一スレッドの既存メールが単一の案件に割り当て済みなら、後から届いた返信等の
+/// 未分類メールをその案件へ自動追従させる。一覧を開くたびに再計算する
+/// （設計: docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md）
 #[tauri::command]
 pub fn get_unclassified_threads(
     db: State<DbState>,
     account_id: String,
 ) -> Result<Vec<crate::models::mail::Thread>, AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
+    assignments::auto_follow_threads(&conn, &account_id)?;
     let mails = assignments::get_unclassified_mails(&conn, &account_id)?;
     Ok(crate::db::mails::build_threads(&mails))
 }
@@ -349,6 +355,46 @@ mod tests {
         let unclassified = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
         assert_eq!(unclassified.len(), 1);
         assert_eq!(unclassified[0].id, "m1");
+    }
+
+    #[test]
+    fn test_get_unclassified_threads_auto_follows_before_listing() {
+        // 既に割り当て済みの m1 に対する返信 m2 は、一覧取得時に自動追従され
+        // 未分類一覧から消えること
+        let conn = setup_db();
+        let m1 = crate::test_helpers::make_mail(
+            "m1",
+            "<m1@ex.com>",
+            "Re: Test",
+            "2026-07-12T10:00:00",
+        );
+        let mut m2 = crate::test_helpers::make_mail(
+            "m2",
+            "<m2@ex.com>",
+            "Re: Test",
+            "2026-07-12T11:00:00",
+        );
+        m2.in_reply_to = Some("<m1@ex.com>".into());
+        crate::db::mails::insert_mail(&conn, &m1).unwrap();
+        crate::db::mails::insert_mail(&conn, &m2).unwrap();
+
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "m1", &proj.id, "user", Some(1.0)).unwrap();
+
+        let mails = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
+        let threads_before = crate::db::mails::build_threads(&mails);
+        assert_eq!(threads_before.len(), 1, "m2は追従前は未分類一覧に見える");
+
+        // get_unclassified_threads相当の処理（auto_follow_threads → 再取得）を直接呼ぶ
+        assignments::auto_follow_threads(&conn, "acc1").unwrap();
+        let mails_after = assignments::get_unclassified_mails(&conn, "acc1").unwrap();
+        assert!(mails_after.is_empty(), "追従によりm2も未分類一覧から消える");
     }
 
     #[test]
