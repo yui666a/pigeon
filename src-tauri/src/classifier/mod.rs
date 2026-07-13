@@ -1,3 +1,4 @@
+pub mod anthropic_common;
 pub mod claude;
 pub mod claude_vertex;
 pub mod factory;
@@ -5,6 +6,7 @@ pub mod gemini_vertex;
 pub mod ollama;
 pub mod parse;
 pub mod prompt;
+pub mod vertex_common;
 
 use crate::error::AppError;
 use crate::models::classifier::{

@@ -1,14 +1,16 @@
 use async_trait::async_trait;
-use gcp_auth::{CustomServiceAccount, TokenProvider};
+use gcp_auth::CustomServiceAccount;
 use serde::{Deserialize, Serialize};
 
+use crate::classifier::vertex_common;
 use crate::classifier::{build_http_client, LlmClassifier, TextGenerator};
 use crate::error::AppError;
 
-const GCP_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 // Gemini は思考トークン（thoughtSignature）を先に消費することがあるため、
 // 分類 JSON を確実に出力できるよう十分な上限を取る。
 const MAX_OUTPUT_TOKENS: u32 = 1024;
+const PUBLISHER: &str = "google";
+const METHOD: &str = "generateContent";
 
 /// Gemini on Vertex AI（GCP Agent Platform）経由のクラシファイア。
 /// 認証（SA JSON → Bearer トークン）は `ClaudeVertexClassifier` と共通だが、
@@ -29,9 +31,7 @@ impl GeminiVertexClassifier {
         location: impl Into<String>,
         model: impl Into<String>,
     ) -> Result<Self, AppError> {
-        let service_account = CustomServiceAccount::from_json(sa_json).map_err(|e| {
-            AppError::MissingApiKey(format!("gemini_vertex (invalid SA JSON: {e})"))
-        })?;
+        let service_account = vertex_common::parse_service_account(sa_json, "gemini_vertex")?;
         let client = build_http_client()?;
         Ok(Self {
             service_account,
@@ -43,15 +43,13 @@ impl GeminiVertexClassifier {
     }
 
     /// generateContent エンドポイント URL を組み立てる。
-    /// `global` はホスト名にリージョン接頭辞が付かない（`aiplatform.googleapis.com`）。
-    fn endpoint_url(location: &str, project_id: &str, model: &str) -> String {
-        let host = if location == "global" {
-            "aiplatform.googleapis.com".to_string()
-        } else {
-            format!("{location}-aiplatform.googleapis.com")
-        };
-        format!(
-            "https://{host}/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
+    fn endpoint_url(&self) -> String {
+        vertex_common::endpoint_url(
+            &self.location,
+            &self.project_id,
+            PUBLISHER,
+            &self.model,
+            METHOD,
         )
     }
 
@@ -100,18 +98,9 @@ impl GeminiVertexClassifier {
         Ok(text)
     }
 
-    async fn access_token(&self) -> Result<String, AppError> {
-        let token = self
-            .service_account
-            .token(&[GCP_SCOPE])
-            .await
-            .map_err(|e| AppError::HttpRequest(format!("Vertex token error: {e}")))?;
-        Ok(token.as_str().to_string())
-    }
-
     async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
-        let url = Self::endpoint_url(&self.location, &self.project_id, &self.model);
-        let token = self.access_token().await?;
+        let url = self.endpoint_url();
+        let token = vertex_common::access_token(&self.service_account).await?;
         let body = Self::build_request(system_prompt, user_prompt);
 
         let response = self
@@ -196,8 +185,8 @@ impl TextGenerator for GeminiVertexClassifier {
 impl LlmClassifier for GeminiVertexClassifier {
     /// generateContent に最小のダミーメッセージを投げ、疎通・認証・権限・クォータを検証する。
     async fn health_check(&self) -> Result<(), AppError> {
-        let url = Self::endpoint_url(&self.location, &self.project_id, &self.model);
-        let token = self.access_token().await?;
+        let url = self.endpoint_url();
+        let token = vertex_common::access_token(&self.service_account).await?;
         let body = GenerateContentRequest {
             system_instruction: None,
             contents: vec![Content {
@@ -235,28 +224,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_endpoint_url_global() {
-        let url = GeminiVertexClassifier::endpoint_url(
-            "global",
+    fn test_endpoint_url_uses_google_generate_content() {
+        let sa_json = include_str!("test_sa.json");
+        let c = GeminiVertexClassifier::new(
+            sa_json,
             "pigeon-mail-xxxxxx",
+            "global",
             "gemini-3.5-flash",
-        );
+        )
+        .unwrap();
         assert_eq!(
-            url,
+            c.endpoint_url(),
             "https://aiplatform.googleapis.com/v1/projects/pigeon-mail-xxxxxx/locations/global/publishers/google/models/gemini-3.5-flash:generateContent"
-        );
-    }
-
-    #[test]
-    fn test_endpoint_url_regional() {
-        let url = GeminiVertexClassifier::endpoint_url(
-            "us-central1",
-            "proj",
-            "gemini-3.5-flash",
-        );
-        assert_eq!(
-            url,
-            "https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/publishers/google/models/gemini-3.5-flash:generateContent"
         );
     }
 
@@ -268,7 +247,10 @@ mod tests {
         assert_eq!(json["systemInstruction"]["parts"][0]["text"], "sys");
         assert_eq!(json["contents"][0]["role"], "user");
         assert_eq!(json["contents"][0]["parts"][0]["text"], "usr");
-        assert_eq!(json["generationConfig"]["maxOutputTokens"], MAX_OUTPUT_TOKENS);
+        assert_eq!(
+            json["generationConfig"]["maxOutputTokens"],
+            MAX_OUTPUT_TOKENS
+        );
         // Claude 用フィールドが混入していないこと
         assert!(json.get("anthropic_version").is_none());
         assert!(json.get("messages").is_none());
@@ -309,8 +291,7 @@ mod tests {
 
     #[test]
     fn test_new_rejects_invalid_sa_json() {
-        let result =
-            GeminiVertexClassifier::new("not-json", "proj", "global", "gemini-3.5-flash");
+        let result = GeminiVertexClassifier::new("not-json", "proj", "global", "gemini-3.5-flash");
         assert!(matches!(result, Err(AppError::MissingApiKey(_))));
     }
 }
