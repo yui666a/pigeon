@@ -9,6 +9,7 @@ import type {
 } from "../../types/directory";
 import { effectiveAllow, planToggle } from "../../utils/cloudPolicy";
 import { useErrorStore } from "../../stores/errorStore";
+import { Modal } from "../common/Modal";
 
 interface CloudSettingsDialogProps {
   project: Project;
@@ -84,17 +85,6 @@ export function CloudSettingsDialog({
 
   const tree = useMemo(() => buildTree(files), [files]);
 
-  const refreshRules = useCallback(async () => {
-    try {
-      const rulesRes = await invoke<CloudRule[]>("get_cloud_rules", {
-        directoryId: directory.id,
-      });
-      setRules(rulesRes);
-    } catch (e) {
-      useErrorStore.getState().addError(String(e));
-    }
-  }, [directory.id]);
-
   const handleToggleNode = async (node: TreeNode) => {
     const scope = node.isDir ? "directory" : "file";
     const ops = planToggle(rules, scope, node.path);
@@ -112,7 +102,7 @@ export function CloudSettingsDialog({
     } finally {
       // 途中で失敗してもバックエンドは部分適用済みの可能性があるため、
       // 成功・失敗を問わず必ず実ルールと表示を再同期する
-      await refreshRules();
+      await reload();
     }
   };
 
@@ -153,61 +143,63 @@ export function CloudSettingsDialog({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="flex max-h-[80vh] w-[560px] flex-col rounded-lg bg-white shadow-xl">
-        <div className="border-b px-5 py-3">
-          <h2 className="text-sm font-bold">クラウド送信設定 — {project.name}</h2>
-          <p className="mt-0.5 text-xs text-gray-500">
-            チェックしたものだけがクラウドLLMへの入力に使われます（デフォルトはすべて送信オフ）。
-          </p>
-        </div>
-        <div className="flex-1 overflow-y-auto px-5 py-3">
-          <p className="mb-3 rounded bg-blue-50 px-3 py-2 text-xs text-blue-700">
-            現在ローカルLLM（Ollama）使用中のため、データは外部に送信されません。
-            この設定は保存され、クラウドLLM導入時に適用されます。
-          </p>
-
-          <label className="mb-1 flex items-start gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2">
-            <input
-              type="checkbox"
-              checked={context?.allow_cloud_context ?? false}
-              onChange={() => void handleToggleContext()}
-              className="mt-0.5 h-4 w-4"
-              aria-label="コンテキストファイルをクラウドLLMへ送信する"
-            />
-            <span className="text-sm">
-              コンテキストファイル（PIGEON-CONTEXT.md）をクラウドLLMへ送信する
-              <span className="block text-xs text-gray-500">
-                分類のたびに以下の内容がプロンプトへ入ります。内容を確認してからONにしてください。
-              </span>
-            </span>
-          </label>
-          <pre className="mb-4 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-            {context?.cached_context ?? "（コンテキスト未生成。再スキャンで生成されます）"}
-          </pre>
-
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
-            ファイルごとの送信許可
-          </div>
-          {loading ? (
-            <p className="py-4 text-center text-sm text-gray-400">読み込み中…</p>
-          ) : files.length === 0 ? (
-            <p className="py-4 text-center text-sm text-gray-400">
-              ファイルがありません。再スキャンしてください。
-            </p>
-          ) : (
-            <ul>{tree.map((n) => renderNode(n, 0))}</ul>
-          )}
-        </div>
-        <div className="flex justify-end border-t px-5 py-3">
-          <button
-            onClick={onClose}
-            className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
-          >
-            閉じる
-          </button>
-        </div>
+    <Modal
+      ariaLabel={`クラウド送信設定 — ${project.name}`}
+      onClose={onClose}
+      className="flex max-h-[80vh] w-[560px] flex-col"
+    >
+      <div className="border-b px-5 py-3">
+        <h2 className="text-sm font-bold">クラウド送信設定 — {project.name}</h2>
+        <p className="mt-0.5 text-xs text-gray-500">
+          チェックしたものだけがクラウドLLMへの入力に使われます（デフォルトはすべて送信オフ）。
+        </p>
       </div>
-    </div>
+      <div className="flex-1 overflow-y-auto px-5 py-3">
+        <p className="mb-3 rounded bg-blue-50 px-3 py-2 text-xs text-blue-700">
+          現在ローカルLLM（Ollama）使用中のため、データは外部に送信されません。
+          この設定は保存され、クラウドLLM導入時に適用されます。
+        </p>
+
+        <label className="mb-1 flex items-start gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2">
+          <input
+            type="checkbox"
+            checked={context?.allow_cloud_context ?? false}
+            onChange={() => void handleToggleContext()}
+            className="mt-0.5 h-4 w-4"
+            aria-label="コンテキストファイルをクラウドLLMへ送信する"
+          />
+          <span className="text-sm">
+            コンテキストファイル（PIGEON-CONTEXT.md）をクラウドLLMへ送信する
+            <span className="block text-xs text-gray-500">
+              分類のたびに以下の内容がプロンプトへ入ります。内容を確認してからONにしてください。
+            </span>
+          </span>
+        </label>
+        <pre className="mb-4 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+          {context?.cached_context ?? "（コンテキスト未生成。再スキャンで生成されます）"}
+        </pre>
+
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
+          ファイルごとの送信許可
+        </div>
+        {loading ? (
+          <p className="py-4 text-center text-sm text-gray-400">読み込み中…</p>
+        ) : files.length === 0 ? (
+          <p className="py-4 text-center text-sm text-gray-400">
+            ファイルがありません。再スキャンしてください。
+          </p>
+        ) : (
+          <ul>{tree.map((n) => renderNode(n, 0))}</ul>
+        )}
+      </div>
+      <div className="flex justify-end border-t px-5 py-3">
+        <button
+          onClick={onClose}
+          className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+        >
+          閉じる
+        </button>
+      </div>
+    </Modal>
   );
 }

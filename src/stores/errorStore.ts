@@ -24,22 +24,33 @@ const AUTO_DISMISS_MS = 5000;
  * ToastContainer が描画し、各ストアが addError / addSuccess で発火する。
  */
 export const useErrorStore = create<ToastState>((set, get) => {
+  // トーストID → 自動消滅タイマー。手動 dismiss 時に clearTimeout してリークを防ぐ
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const removeToast = (id: string) => {
+    const timer = timers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timers.delete(id);
+    }
+    set({ toasts: get().toasts.filter((t) => t.id !== id) });
+  };
+
   const addToast = (kind: ToastKind, message: string) => {
     const id = crypto.randomUUID();
     set({
       toasts: [...get().toasts, { id, kind, message, timestamp: Date.now() }],
     });
-    setTimeout(() => {
-      set({ toasts: get().toasts.filter((t) => t.id !== id) });
-    }, AUTO_DISMISS_MS);
+    timers.set(
+      id,
+      setTimeout(() => removeToast(id), AUTO_DISMISS_MS),
+    );
   };
 
   return {
     toasts: [],
     addError: (message) => addToast("error", message),
     addSuccess: (message) => addToast("success", message),
-    dismissToast: (id) => {
-      set({ toasts: get().toasts.filter((t) => t.id !== id) });
-    },
+    dismissToast: removeToast,
   };
 });

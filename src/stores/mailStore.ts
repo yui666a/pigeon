@@ -6,6 +6,7 @@ import { useErrorStore } from "./errorStore";
 import { useAccountStore } from "./accountStore";
 import { useUiStore } from "./uiStore";
 import { notifyNewMail } from "../utils/notifyNewMail";
+import { INBOX_FOLDER } from "../constants/folders";
 
 interface SyncProgress {
   account_id: string;
@@ -239,7 +240,7 @@ export const useMailStore = create<MailState>((set, get) => ({
       const selectedAccountId = useAccountStore.getState().selectedAccountId;
       if (selectedAccountId === accountId) {
         if (useUiStore.getState().viewMode === "threads") {
-          void get().fetchThreads(accountId, "INBOX");
+          void get().fetchThreads(accountId, INBOX_FOLDER);
         }
         void get().fetchUnclassified(accountId);
       }
@@ -374,7 +375,7 @@ export const useMailStore = create<MailState>((set, get) => ({
   unarchiveMail: async (mail) => {
     try {
       await invoke("unarchive_mail", { accountId: mail.account_id, mailId: mail.id });
-      set((state) => setFolderInState(state, mail.id, "INBOX"));
+      set((state) => setFolderInState(state, mail.id, INBOX_FOLDER));
       void get().fetchUnreadCounts(mail.account_id);
     } catch (e) {
       useErrorStore.getState().addError(String(e));
@@ -434,7 +435,7 @@ export const useMailStore = create<MailState>((set, get) => ({
         const selectedAccountId = useAccountStore.getState().selectedAccountId;
         if (selectedAccountId !== p.account_id) return;
         if (useUiStore.getState().viewMode === "threads") {
-          void get().fetchThreads(p.account_id, "INBOX");
+          void get().fetchThreads(p.account_id, INBOX_FOLDER);
         }
         void get().fetchUnclassified(p.account_id);
       }
