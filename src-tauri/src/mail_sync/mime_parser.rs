@@ -210,7 +210,15 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_does_not_panic() {
-        let result = parse_mime(b"not a valid email at all", "acc1", "INBOX", 1, false, false, None);
+        let result = parse_mime(
+            b"not a valid email at all",
+            "acc1",
+            "INBOX",
+            1,
+            false,
+            false,
+            None,
+        );
         // mail-parser may partially parse, just ensure no panic
         let _ = result;
     }
@@ -266,14 +274,32 @@ mod tests {
 
     #[test]
     fn test_parse_email_with_display_name() {
-        let mail = parse_mime(EMAIL_WITH_DISPLAY_NAME, "acc1", "INBOX", 5, false, false, None).unwrap();
+        let mail = parse_mime(
+            EMAIL_WITH_DISPLAY_NAME,
+            "acc1",
+            "INBOX",
+            5,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         assert!(mail.from_addr.contains("Alice Smith"));
         assert!(mail.from_addr.contains("alice@example.com"));
     }
 
     #[test]
     fn test_parse_email_with_references_chain() {
-        let mail = parse_mime(EMAIL_WITH_REFERENCES_CHAIN, "acc1", "INBOX", 6, false, false, None).unwrap();
+        let mail = parse_mime(
+            EMAIL_WITH_REFERENCES_CHAIN,
+            "acc1",
+            "INBOX",
+            6,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         assert_eq!(mail.in_reply_to, Some("<chain2@example.com>".to_string()));
         let refs = mail.references.unwrap();
         assert!(refs.contains("<chain1@example.com>"));
@@ -391,7 +417,16 @@ mod tests {
     #[test]
     fn test_extract_attachments_marks_has_attachments() {
         // 同期時の has_attachments フラグと抽出結果が整合すること
-        let mail = parse_mime(MULTIPART_EMAIL_WITH_ATTACHMENTS, "acc1", "INBOX", 1, false, false, None).unwrap();
+        let mail = parse_mime(
+            MULTIPART_EMAIL_WITH_ATTACHMENTS,
+            "acc1",
+            "INBOX",
+            1,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         assert!(mail.has_attachments);
     }
 
@@ -499,7 +534,16 @@ mod tests {
         // Content-Disposition: inline のパートしか持たないメールで mail-parser の
         // attachment_count() が 0 のままだと、cid画像のみのメールで機能が丸ごと
         // 無効化される（レビュー指摘 I-1）。これを固定する
-        let mail = parse_mime(EMAIL_WITH_INLINE_IMAGE, "acc1", "INBOX", 1, false, false, None).unwrap();
+        let mail = parse_mime(
+            EMAIL_WITH_INLINE_IMAGE,
+            "acc1",
+            "INBOX",
+            1,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
         assert!(mail.has_attachments);
     }
 }

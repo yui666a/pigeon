@@ -17,8 +17,7 @@ fn row_to_directory(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectDirector
     })
 }
 
-const SELECT_COLS: &str =
-    "id, project_id, path, is_primary, status, last_scanned_at, created_at";
+const SELECT_COLS: &str = "id, project_id, path, is_primary, status, last_scanned_at, created_at";
 
 /// 案件にディレクトリを紐付ける。既存の紐付けがあれば置換する。
 /// DELETE+INSERT+SELECT をトランザクションで包み、INSERT が UNIQUE(path) 違反等で
@@ -42,7 +41,10 @@ pub fn link_directory(
     )?;
     let dir = tx
         .query_row(
-            &format!("SELECT {} FROM project_directories WHERE id = ?1", SELECT_COLS),
+            &format!(
+                "SELECT {} FROM project_directories WHERE id = ?1",
+                SELECT_COLS
+            ),
             params![id],
             row_to_directory,
         )

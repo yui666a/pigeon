@@ -1,6 +1,7 @@
 pub mod account_commands;
 pub mod attachment_commands;
 pub mod auth_commands;
+pub mod bulk_commands;
 pub mod classify_commands;
 pub mod directory_commands;
 pub mod draft_commands;
@@ -12,4 +13,3 @@ pub mod project_commands;
 pub mod search_commands;
 pub mod send_commands;
 pub mod settings_commands;
-pub mod bulk_commands;

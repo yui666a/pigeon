@@ -213,10 +213,7 @@ async fn run_watch_session(app: &AppHandle, account_id: &str) -> SessionOutcome 
     }
 
     if let Err(e) = session.select("INBOX").await {
-        eprintln!(
-            "[warn] idle: SELECT INBOX failed for {}: {}",
-            account_id, e
-        );
+        eprintln!("[warn] idle: SELECT INBOX failed for {}: {}", account_id, e);
         return SessionOutcome::Disconnected;
     }
 
@@ -313,10 +310,7 @@ mod tests {
         let sleeps: RefCell<Vec<Duration>> = RefCell::new(Vec::new());
         watch_loop(
             || {
-                let next = outcomes
-                    .borrow_mut()
-                    .next()
-                    .unwrap_or(SessionOutcome::Stop);
+                let next = outcomes.borrow_mut().next().unwrap_or(SessionOutcome::Stop);
                 async move { next }
             },
             |d| {

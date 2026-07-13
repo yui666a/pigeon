@@ -321,9 +321,7 @@ fn migrate_v6(conn: &Connection) -> Result<(), AppError> {
 fn migrate_v7(conn: &Connection) -> Result<(), AppError> {
     // 既読/未読の管理。正はサーバーの \Seen で、これはそのキャッシュ。
     // 既存行は未読(0)で初期化し、次回同期のフラグ再同期で実際の状態に収束する
-    conn.execute_batch(
-        "ALTER TABLE mails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0;",
-    )?;
+    conn.execute_batch("ALTER TABLE mails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0;")?;
     Ok(())
 }
 
@@ -366,9 +364,7 @@ fn migrate_v10(conn: &Connection) -> Result<(), AppError> {
     // 一方、送信時にローカル保存する Sent 行の uid は get_max_uid+1 の推定値であり未確定。
     // 本マイグレーション以前は Sent 同期が存在しなかったため、既存の folder='Sent' 行は
     // すべて送信時の推定 uid とみなして 0（未確定）で埋め戻す。
-    conn.execute_batch(
-        "ALTER TABLE mails ADD COLUMN uid_confirmed INTEGER NOT NULL DEFAULT 1;",
-    )?;
+    conn.execute_batch("ALTER TABLE mails ADD COLUMN uid_confirmed INTEGER NOT NULL DEFAULT 1;")?;
     conn.execute(
         "UPDATE mails SET uid_confirmed = 0 WHERE folder = 'Sent'",
         [],
@@ -863,7 +859,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(table_exists, "fts_mails table should exist after v4 migration");
+        assert!(
+            table_exists,
+            "fts_mails table should exist after v4 migration"
+        );
 
         // Schema version should be 7
         let version: i32 = conn
@@ -916,7 +915,10 @@ mod tests {
         let fts_count: i32 = conn
             .query_row("SELECT COUNT(*) FROM fts_mails", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(fts_count, 1, "backfill should populate fts_mails for pre-existing mails");
+        assert_eq!(
+            fts_count, 1,
+            "backfill should populate fts_mails for pre-existing mails"
+        );
 
         // Verify the backfilled content is searchable
         let search_count: i32 = conn
@@ -976,7 +978,8 @@ mod tests {
             [],
         ).unwrap();
 
-        conn.execute("DELETE FROM mails WHERE id = 'm1'", []).unwrap();
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", [])
+            .unwrap();
 
         let count: i32 = conn
             .query_row(
@@ -1014,7 +1017,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(subject_count, 1, "3+ char Japanese substring search should work via FTS trigram");
+        assert_eq!(
+            subject_count, 1,
+            "3+ char Japanese substring search should work via FTS trigram"
+        );
     }
 
     #[test]
@@ -1056,32 +1062,45 @@ mod tests {
         conn.execute(
             "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'Proj')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_directories (id, project_id, path, is_primary)
              VALUES ('d1', 'p1', '/tmp/proj1', TRUE)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_files (id, directory_id, relative_path, size_bytes, mtime)
              VALUES ('f1', 'd1', 'a.txt', 10, '2026-07-09T00:00:00Z')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_cloud_rules (id, directory_id, scope, relative_path, allow)
              VALUES ('r1', 'd1', 'directory', '', TRUE)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_contexts (project_id, cached_context) VALUES ('p1', 'ctx')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        conn.execute("DELETE FROM projects WHERE id = 'p1'", []).unwrap();
+        conn.execute("DELETE FROM projects WHERE id = 'p1'", [])
+            .unwrap();
 
-        for table in ["project_directories", "project_files", "project_cloud_rules", "project_contexts"] {
+        for table in [
+            "project_directories",
+            "project_files",
+            "project_cloud_rules",
+            "project_contexts",
+        ] {
             let count: i32 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(count, 0, "{} should cascade-delete", table);
         }
@@ -1097,14 +1116,24 @@ mod tests {
             "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
              VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
             [],
-        ).unwrap();
-        conn.execute("INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P1')", []).unwrap();
-        conn.execute("INSERT INTO projects (id, account_id, name) VALUES ('p2', 'acc1', 'P2')", []).unwrap();
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p2', 'acc1', 'P2')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_directories (id, project_id, path, is_primary)
              VALUES ('d1', 'p1', '/tmp/shared', TRUE)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 同じパスを別案件に紐付けると UNIQUE(path) 違反
         let result = conn.execute(
@@ -1112,7 +1141,10 @@ mod tests {
              VALUES ('d2', 'p2', '/tmp/shared', TRUE)",
             [],
         );
-        assert!(result.is_err(), "same path must not be linked to two projects");
+        assert!(
+            result.is_err(),
+            "same path must not be linked to two projects"
+        );
     }
 
     #[test]
@@ -1125,13 +1157,19 @@ mod tests {
             "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
              VALUES ('acc1', 'A', 'a@example.com', 'i', 's', 'plain')",
             [],
-        ).unwrap();
-        conn.execute("INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P1')", []).unwrap();
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', 'P1')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_directories (id, project_id, path, is_primary)
              VALUES ('d1', 'p1', '/tmp/a', TRUE)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2つ目の primary は部分ユニークインデックス違反
         let result = conn.execute(
@@ -1233,9 +1271,11 @@ mod tests {
         .unwrap();
 
         let confirmed: i32 = conn
-            .query_row("SELECT uid_confirmed FROM mails WHERE id = 'm1'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT uid_confirmed FROM mails WHERE id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(confirmed, 1, "uid_confirmed defaults to 1 (confirmed)");
     }
@@ -1293,7 +1333,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(inbox_confirmed, 1, "INBOX 既存行は確定のまま");
-        assert_eq!(sent_confirmed, 0, "Sent 既存行は推定 uid として未確定に埋め戻す");
+        assert_eq!(
+            sent_confirmed, 0,
+            "Sent 既存行は推定 uid として未確定に埋め戻す"
+        );
 
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
@@ -1326,7 +1369,10 @@ mod tests {
              VALUES ('m2', 'acc1', 'INBOX', '<x@y>', 'a@b', 'c@d', 'S', '2026-07-10', 100)",
             [],
         );
-        assert!(result.is_err(), "same (account, folder, uid) must be rejected");
+        assert!(
+            result.is_err(),
+            "same (account, folder, uid) must be rejected"
+        );
 
         // 別フォルダなら同じ uid でも入る
         conn.execute(
@@ -1438,7 +1484,8 @@ mod tests {
         )
         .unwrap();
 
-        conn.execute("DELETE FROM mails WHERE id = 'm1'", []).unwrap();
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", [])
+            .unwrap();
 
         let count: i32 = conn
             .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
@@ -1524,7 +1571,11 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(flagged("m1"), 1, "flags に \\Flagged を含む行は埋め戻される");
+        assert_eq!(
+            flagged("m1"),
+            1,
+            "flags に \\Flagged を含む行は埋め戻される"
+        );
         assert_eq!(flagged("m2"), 0, "\\Flagged を含まない行は 0 のまま");
         assert_eq!(flagged("m3"), 0, "flags が NULL の行は 0 のまま");
 
@@ -1625,10 +1676,16 @@ mod tests {
             .unwrap();
 
         // メール削除で除外行も CASCADE 削除される
-        conn.execute("DELETE FROM mails WHERE id = 'm1'", []).unwrap();
-        let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM follow_exclusions", [], |row| row.get(0))
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", [])
             .unwrap();
-        assert_eq!(count, 0, "メール削除で除外トゥームストーンもCASCADE削除される");
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM follow_exclusions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "メール削除で除外トゥームストーンもCASCADE削除される"
+        );
     }
 }

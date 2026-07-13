@@ -52,7 +52,11 @@ pub fn extract_text(path: &Path) -> Result<ExtractedText, AppError> {
     buf.truncate(MAX_EXTRACT_BYTES_PER_FILE);
     let hash = sha256_hex(&buf);
     let text = String::from_utf8_lossy(&buf).into_owned();
-    Ok(ExtractedText { text, truncated, hash })
+    Ok(ExtractedText {
+        text,
+        truncated,
+        hash,
+    })
 }
 
 #[cfg(test)]

@@ -77,8 +77,8 @@ pub async fn get_inline_images(
     }
     let raw = raw?;
 
-    let attachments =
-        state.with_conn(|conn| cache_attachments(conn, &attachments_cache_root(), &mail_id, &raw))?;
+    let attachments = state
+        .with_conn(|conn| cache_attachments(conn, &attachments_cache_root(), &mail_id, &raw))?;
     Ok(to_inline_images(&attachments))
 }
 

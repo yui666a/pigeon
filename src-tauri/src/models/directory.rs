@@ -19,7 +19,7 @@ pub struct ProjectFile {
     pub size_bytes: i64,
     pub mtime: String,
     pub content_hash: Option<String>,
-    pub content_kind: String,   // 'none' | 'text' | 'pdf' | 'office' | 'other'
+    pub content_kind: String, // 'none' | 'text' | 'pdf' | 'office' | 'other'
     pub extract_status: String, // 'ok' | 'skipped_too_large' | 'unsupported' | 'error'
     pub indexed_at: String,
 }

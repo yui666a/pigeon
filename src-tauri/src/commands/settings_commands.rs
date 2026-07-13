@@ -29,12 +29,20 @@ pub(crate) fn load_llm_settings(
 ) -> Result<LlmSettings, AppError> {
     Ok(LlmSettings {
         provider: settings::get_or_default(conn, "llm_provider", "ollama")?,
-        ollama_endpoint: settings::get_or_default(conn, "ollama_endpoint", "http://localhost:11434")?,
+        ollama_endpoint: settings::get_or_default(
+            conn,
+            "ollama_endpoint",
+            "http://localhost:11434",
+        )?,
         ollama_model: settings::get_or_default(conn, "ollama_model", "llama3.1:8b")?,
         claude_model: settings::get_or_default(conn, "claude_model", "claude-haiku-4-5")?,
         claude_api_key_set: secret_is_set(store, CLAUDE_API_KEY)?,
         vertex_project_id: settings::get_or_default(conn, "vertex_project_id", "")?,
-        vertex_location: settings::get_or_default(conn, "vertex_location", DEFAULT_VERTEX_LOCATION)?,
+        vertex_location: settings::get_or_default(
+            conn,
+            "vertex_location",
+            DEFAULT_VERTEX_LOCATION,
+        )?,
         vertex_model: settings::get_or_default(conn, "vertex_model", DEFAULT_VERTEX_MODEL)?,
         vertex_sa_json_set: secret_is_set(store, VERTEX_SA_JSON)?,
         gemini_model: settings::get_or_default(conn, "gemini_model", DEFAULT_GEMINI_MODEL)?,
@@ -205,9 +213,18 @@ mod tests {
     fn test_store_then_load_roundtrip() {
         let (conn, store, _d) = setup();
         store_llm_settings(
-            &conn, &store, "claude", "http://x:11434", "llama3.1:8b",
-            "claude-sonnet-5", Some("sk-ant-xxx".to_string()),
-            "", "us-east5", "claude-haiku-4-5@20251001", None, "gemini-3.5-flash",
+            &conn,
+            &store,
+            "claude",
+            "http://x:11434",
+            "llama3.1:8b",
+            "claude-sonnet-5",
+            Some("sk-ant-xxx".to_string()),
+            "",
+            "us-east5",
+            "claude-haiku-4-5@20251001",
+            None,
+            "gemini-3.5-flash",
         )
         .unwrap();
         let s = load_llm_settings(&conn, &store).unwrap();
@@ -221,9 +238,18 @@ mod tests {
         let (conn, store, _d) = setup();
         store.insert(CLAUDE_API_KEY, b"existing-key").unwrap();
         store_llm_settings(
-            &conn, &store, "claude", "http://localhost:11434", "llama3.1:8b",
-            "claude-haiku-4-5", Some("".to_string()),
-            "", "us-east5", "claude-haiku-4-5@20251001", None, "gemini-3.5-flash",
+            &conn,
+            &store,
+            "claude",
+            "http://localhost:11434",
+            "llama3.1:8b",
+            "claude-haiku-4-5",
+            Some("".to_string()),
+            "",
+            "us-east5",
+            "claude-haiku-4-5@20251001",
+            None,
+            "gemini-3.5-flash",
         )
         .unwrap();
         // 空文字入力では既存キーが保持される
@@ -235,10 +261,18 @@ mod tests {
     fn test_vertex_store_then_load_roundtrip() {
         let (conn, store, _d) = setup();
         store_llm_settings(
-            &conn, &store, "claude_vertex", "http://localhost:11434", "llama3.1:8b",
-            "claude-haiku-4-5", None,
-            "my-gcp-project", "us-east5", "claude-sonnet-5",
-            Some("{\"type\":\"service_account\"}".to_string()), "gemini-3.5-flash",
+            &conn,
+            &store,
+            "claude_vertex",
+            "http://localhost:11434",
+            "llama3.1:8b",
+            "claude-haiku-4-5",
+            None,
+            "my-gcp-project",
+            "us-east5",
+            "claude-sonnet-5",
+            Some("{\"type\":\"service_account\"}".to_string()),
+            "gemini-3.5-flash",
         )
         .unwrap();
         let s = load_llm_settings(&conn, &store).unwrap();
@@ -253,9 +287,17 @@ mod tests {
         let (conn, store, _d) = setup();
         store.insert(VERTEX_SA_JSON, b"existing-sa").unwrap();
         store_llm_settings(
-            &conn, &store, "claude_vertex", "http://localhost:11434", "llama3.1:8b",
-            "claude-haiku-4-5", None,
-            "my-gcp-project", "us-east5", "claude-haiku-4-5@20251001", Some("".to_string()),
+            &conn,
+            &store,
+            "claude_vertex",
+            "http://localhost:11434",
+            "llama3.1:8b",
+            "claude-haiku-4-5",
+            None,
+            "my-gcp-project",
+            "us-east5",
+            "claude-haiku-4-5@20251001",
+            Some("".to_string()),
             "gemini-3.5-flash",
         )
         .unwrap();

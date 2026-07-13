@@ -268,8 +268,16 @@ mod tests {
         assert!(result.is_err(), "注入した失敗がエラーとして伝播する");
 
         assert_eq!(count_rows(&conn, "accounts"), 1, "アカウントは残る");
-        assert_eq!(count_rows(&conn, "mails"), 1, "メールの削除がロールバックされる");
-        assert_eq!(count_rows(&conn, "projects"), 1, "案件の削除がロールバックされる");
+        assert_eq!(
+            count_rows(&conn, "mails"),
+            1,
+            "メールの削除がロールバックされる"
+        );
+        assert_eq!(
+            count_rows(&conn, "projects"),
+            1,
+            "案件の削除がロールバックされる"
+        );
         assert_eq!(
             count_rows(&conn, "mail_project_assignments"),
             1,

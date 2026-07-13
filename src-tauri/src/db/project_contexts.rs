@@ -16,7 +16,10 @@ fn row_to_project_context(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectCo
     })
 }
 
-pub fn get_context(conn: &Connection, project_id: &str) -> Result<Option<ProjectContext>, AppError> {
+pub fn get_context(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<ProjectContext>, AppError> {
     conn.query_row(
         "SELECT project_id, cached_context, context_hash, inventory_hash,
                 allow_cloud_context, generated_at
@@ -124,7 +127,12 @@ mod tests {
         set_allow_cloud_context(&conn, "p1", true).unwrap();
         // 再生成してもユーザーの許可設定は消えない
         upsert_generated(&conn, "p1", "c2", "h2", "i2").unwrap();
-        assert!(get_context(&conn, "p1").unwrap().unwrap().allow_cloud_context);
+        assert!(
+            get_context(&conn, "p1")
+                .unwrap()
+                .unwrap()
+                .allow_cloud_context
+        );
     }
 
     #[test]
@@ -135,6 +143,10 @@ mod tests {
         update_cache_only(&conn, "p1", "手編集後", "h2").unwrap();
         let ctx = get_context(&conn, "p1").unwrap().unwrap();
         assert_eq!(ctx.cached_context.as_deref(), Some("手編集後"));
-        assert_eq!(ctx.inventory_hash.as_deref(), Some("ihash"), "inventory_hashは不変");
+        assert_eq!(
+            ctx.inventory_hash.as_deref(),
+            Some("ihash"),
+            "inventory_hashは不変"
+        );
     }
 }

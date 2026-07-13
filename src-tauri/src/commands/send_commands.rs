@@ -69,8 +69,9 @@ pub(crate) fn read_attachments(paths: &[String]) -> Result<Vec<OutgoingAttachmen
     paths
         .iter()
         .map(|path| {
-            let data = std::fs::read(path)
-                .map_err(|e| AppError::FileIo(format!("添付ファイルの読み込みに失敗 {}: {}", path, e)))?;
+            let data = std::fs::read(path).map_err(|e| {
+                AppError::FileIo(format!("添付ファイルの読み込みに失敗 {}: {}", path, e))
+            })?;
             let filename = std::path::Path::new(path)
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -115,7 +116,11 @@ pub(crate) fn build_outgoing(
 /// 送信済みメールのローカルDBレコードを構築する（folder='Sent'）。
 /// uid はここでは 0 のプレースホルダ。挿入時に `insert_sent_mail_with_next_uid` が
 /// フォルダ内 max(uid)+1 を原子的に採番する（TOCTOU による UNIQUE 衝突の防止）
-pub(crate) fn build_sent_record(account: &Account, outgoing: &OutgoingMail, raw_size: usize) -> Mail {
+pub(crate) fn build_sent_record(
+    account: &Account,
+    outgoing: &OutgoingMail,
+    raw_size: usize,
+) -> Mail {
     let now = chrono::Utc::now().to_rfc3339();
     Mail {
         id: uuid::Uuid::new_v4().to_string(),
@@ -189,7 +194,13 @@ pub async fn send_mail(
     // 2. 添付ファイルの読み込み → メッセージ構築（サイズ・アドレス検証含む）
     let attachments = read_attachments(&req.attachments)?;
     let message_id = smtp_client::generate_message_id();
-    let outgoing = build_outgoing(&account, &req, reply_source.as_ref(), &message_id, attachments);
+    let outgoing = build_outgoing(
+        &account,
+        &req,
+        reply_source.as_ref(),
+        &message_id,
+        attachments,
+    );
     let message = smtp_client::build_message(&outgoing)?;
     let raw = message.formatted();
 
@@ -392,7 +403,13 @@ mod tests {
     #[test]
     fn test_build_sent_record_empty_cc_is_none() {
         let account = make_account();
-        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+        let outgoing = build_outgoing(
+            &account,
+            &make_request(),
+            None,
+            "<mid@pigeon.local>",
+            vec![],
+        );
         let record = build_sent_record(&account, &outgoing, 100);
         assert!(record.cc_addr.is_none());
     }
@@ -401,7 +418,13 @@ mod tests {
     fn test_persist_sent_local_best_effort_inserts_record() {
         let conn = crate::test_helpers::setup_db();
         let account = make_account();
-        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+        let outgoing = build_outgoing(
+            &account,
+            &make_request(),
+            None,
+            "<mid@pigeon.local>",
+            vec![],
+        );
 
         persist_sent_local_best_effort(&conn, &account, &outgoing, 100);
 
@@ -419,7 +442,13 @@ mod tests {
         let conn = crate::test_helpers::setup_db();
         conn.execute_batch("DROP TABLE mails").unwrap();
         let account = make_account();
-        let outgoing = build_outgoing(&account, &make_request(), None, "<mid@pigeon.local>", vec![]);
+        let outgoing = build_outgoing(
+            &account,
+            &make_request(),
+            None,
+            "<mid@pigeon.local>",
+            vec![],
+        );
 
         persist_sent_local_best_effort(&conn, &account, &outgoing, 100);
     }
@@ -429,7 +458,13 @@ mod tests {
         // 挿入 → 取得で同じ内容が得られ、uid が原子的採番で単調増加すること
         let conn = crate::test_helpers::setup_db();
         let account = make_account();
-        let outgoing = build_outgoing(&account, &make_request(), None, "<mid1@pigeon.local>", vec![]);
+        let outgoing = build_outgoing(
+            &account,
+            &make_request(),
+            None,
+            "<mid1@pigeon.local>",
+            vec![],
+        );
 
         let rec1 = build_sent_record(&account, &outgoing, 100);
         let uid1 = mails::insert_sent_mail_with_next_uid(&conn, &rec1).unwrap();

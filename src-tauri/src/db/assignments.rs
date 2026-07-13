@@ -439,9 +439,9 @@ mod tests {
             has_attachments: false,
             raw_size: None,
             // (account_id, folder, uid) は UNIQUE (migrate_v6) のため id から導出
-            uid: id
-                .bytes()
-                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(u32::from(b))),
+            uid: id.bytes().fold(0u32, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(u32::from(b))
+            }),
             flags: None,
             is_read: false,
             is_flagged: false,
@@ -887,7 +887,10 @@ mod tests {
         assert!(result.is_err(), "注入した失敗がエラーとして伝播する");
 
         let info = get_assignment_info(&conn, "m1").unwrap();
-        assert!(info.is_none(), "新規 assignment がロールバックされ未分類のまま");
+        assert!(
+            info.is_none(),
+            "新規 assignment がロールバックされ未分類のまま"
+        );
     }
 
     #[test]

@@ -44,8 +44,7 @@ pub async fn rescan_project(
             }
         };
         let project = projects::get_project(&conn, project_id)?;
-        let prev = project_contexts::get_context(&conn, project_id)?
-            .and_then(|c| c.inventory_hash);
+        let prev = project_contexts::get_context(&conn, project_id)?.and_then(|c| c.inventory_hash);
         let rules = cloud_rules::list_rules(&conn, &dir.id)?;
         (dir, project.name, prev, rules)
     };
@@ -160,8 +159,7 @@ pub async fn rescan_project(
         Utc::now().format("%Y-%m-%d"),
         digest_body.trim()
     );
-    let new_md =
-        context_file::upsert_auto_section(existing.as_deref(), &project_name, &auto_body);
+    let new_md = context_file::upsert_auto_section(existing.as_deref(), &project_name, &auto_body);
     context_file::write_context_file(root, &new_md)?;
 
     // --- 8. キャッシュ更新（ロック内） ---
@@ -229,7 +227,9 @@ mod tests {
         std::fs::write(dir.path().join("香盤表.md"), "第1幕").unwrap();
         let db = setup(dir.path().to_str().unwrap());
 
-        let outcome = rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
         assert_eq!(outcome.status, "ok");
         assert!(outcome.regenerated);
         assert_eq!(outcome.file_count, 1);
@@ -241,7 +241,9 @@ mod tests {
 
         // キャッシュも更新されている
         let conn = db.lock().unwrap();
-        let ctx = crate::db::project_contexts::get_context(&conn, "p1").unwrap().unwrap();
+        let ctx = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
         assert!(ctx.cached_context.unwrap().contains("〇〇ホール"));
         assert!(ctx.inventory_hash.is_some());
     }
@@ -252,9 +254,13 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "x").unwrap();
         let db = setup(dir.path().to_str().unwrap());
 
-        let first = rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        let first = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
         assert!(first.regenerated);
-        let second = rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        let second = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
         assert!(!second.regenerated, "構成が同じならLLMを呼ばない");
     }
 
@@ -264,7 +270,9 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "x").unwrap();
         let db = setup(dir.path().to_str().unwrap());
 
-        rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
 
         // ユーザーが自由記入欄を編集
         let md_path = dir.path().join("PIGEON-CONTEXT.md");
@@ -274,7 +282,9 @@ mod tests {
 
         // ファイル追加 → 再生成
         std::fs::write(dir.path().join("b.txt"), "y").unwrap();
-        rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
 
         let md = std::fs::read_to_string(&md_path).unwrap();
         assert!(md.contains("会場担当: 伊藤さん"), "ユーザー欄は不可侵");
@@ -285,16 +295,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "x").unwrap();
         let db = setup(dir.path().to_str().unwrap());
-        rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
 
         // ディレクトリ消失（外付けHDD未接続を模擬）
         drop(dir);
-        let outcome = rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
         assert_eq!(outcome.status, "missing");
 
         let conn = db.lock().unwrap();
-        let ctx = crate::db::project_contexts::get_context(&conn, "p1").unwrap().unwrap();
-        assert!(ctx.cached_context.is_some(), "キャッシュは消さず分類に使い続ける");
+        let ctx = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        assert!(
+            ctx.cached_context.is_some(),
+            "キャッシュは消さず分類に使い続ける"
+        );
     }
 
     #[tokio::test]
@@ -302,15 +321,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "x").unwrap();
         let db = setup(dir.path().to_str().unwrap());
-        rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
 
         std::fs::write(dir.path().join("b.txt"), "y").unwrap();
-        let outcome = rescan_project(&db, &FailGenerator, "p1", false).await.unwrap();
+        let outcome = rescan_project(&db, &FailGenerator, "p1", false)
+            .await
+            .unwrap();
         assert_eq!(outcome.status, "ok");
         assert!(!outcome.regenerated, "LLM失敗時は再生成失敗として扱う");
 
         let md = std::fs::read_to_string(dir.path().join("PIGEON-CONTEXT.md")).unwrap();
-        assert!(md.contains("〇〇ホール"), "前回のautoセクションを維持（劣化しない）");
+        assert!(
+            md.contains("〇〇ホール"),
+            "前回のautoセクションを維持（劣化しない）"
+        );
     }
 
     #[tokio::test]
@@ -342,7 +368,9 @@ mod tests {
         }
 
         let saw_secret = std::sync::Arc::new(AtomicBool::new(false));
-        let spy = SpyGenerator { saw_secret: saw_secret.clone() };
+        let spy = SpyGenerator {
+            saw_secret: saw_secret.clone(),
+        };
         rescan_project(&db, &spy, "p1", true).await.unwrap();
 
         assert!(
@@ -366,7 +394,9 @@ mod tests {
         let db = setup(dir.path().to_str().unwrap());
 
         // 修正前は budget がマルチバイト文字境界に落ちて String::truncate が panic する。
-        let outcome = rescan_project(&db, &MockGenerator, "p1", false).await.unwrap();
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
         assert_eq!(outcome.status, "ok");
     }
 }
