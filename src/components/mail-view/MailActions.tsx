@@ -1,6 +1,7 @@
 import type { Mail } from "../../types/mail";
 import { useComposeStore } from "../../stores/composeStore";
 import { useMailStore } from "../../stores/mailStore";
+import { ARCHIVE_FOLDER } from "../../constants/folders";
 
 interface MailActionsProps {
   mail: Mail;
@@ -14,7 +15,7 @@ export function MailActions({ mail }: MailActionsProps) {
   const toggleFlagged = useMailStore((s) => s.toggleFlagged);
   const markMailUnread = useMailStore((s) => s.markMailUnread);
 
-  const isArchived = mail.folder === "Archive";
+  const isArchived = mail.folder === ARCHIVE_FOLDER;
 
   const buttonClass =
     "rounded border px-3 py-1 text-sm text-gray-700 hover:bg-gray-100";

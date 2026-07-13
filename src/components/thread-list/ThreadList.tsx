@@ -9,6 +9,7 @@ import { BulkActionBar } from "./BulkActionBar";
 import { EmptyState } from "../common/EmptyState";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
 import { useBulkActions } from "../../hooks/useBulkActions";
+import { INBOX_FOLDER } from "../../constants/folders";
 import type { Thread } from "../../types/mail";
 
 interface ThreadListProps {
@@ -45,7 +46,7 @@ export function ThreadList({ viewMode }: ThreadListProps) {
         });
     } else if (viewMode === "threads" && selectedAccountId) {
       syncAccount(selectedAccountId).then(() => {
-        fetchThreads(selectedAccountId, "INBOX");
+        fetchThreads(selectedAccountId, INBOX_FOLDER);
       });
     }
     clearSelection();
@@ -57,7 +58,7 @@ export function ThreadList({ viewMode }: ThreadListProps) {
         .then(setThreads)
         .catch(() => setThreads([]));
     } else if (selectedAccountId) {
-      void fetchThreads(selectedAccountId, "INBOX");
+      void fetchThreads(selectedAccountId, INBOX_FOLDER);
     }
   };
 
