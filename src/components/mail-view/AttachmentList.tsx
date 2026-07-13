@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 import type { Attachment } from "../../types/attachment";
 import { useErrorStore } from "../../stores/errorStore";
 
@@ -33,11 +32,10 @@ export function AttachmentList({ mailId }: AttachmentListProps) {
 
   const saveAttachment = async (attachment: Attachment) => {
     try {
-      const destPath = await save({ defaultPath: attachment.filename });
-      if (!destPath) return; // ユーザーがキャンセル
-      await invoke("save_attachment", {
+      // 保存先の選択はバックエンドがネイティブダイアログで行う
+      // （IPC 経由で保存先パスを渡さない。キャンセル時は false が返る）
+      await invoke<boolean>("save_attachment", {
         attachmentId: attachment.id,
-        destPath,
       });
     } catch (e) {
       useErrorStore.getState().addError(String(e));
