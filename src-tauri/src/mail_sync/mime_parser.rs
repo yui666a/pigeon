@@ -24,12 +24,19 @@ fn normalize_content_id(raw: &str) -> String {
 
 /// 元メールのバイト列から添付ファイルを抽出する純関数。
 /// mail-parser が添付と判定したパート（本文以外のパート）を返す。
+///
+/// ただし本文相当のパートは添付に含めない。カレンダー招待メールは
+/// `multipart/alternative` 内に本文としての `text/calendar` パートを持ち、
+/// これを `attachments()` が拾ってしまうため、名前なし添付（attachment-N）と
+/// して二重表示される。`Content-Disposition: attachment` でなく filename も
+/// 持たない `text/*` パートは本文の一部とみなして除外する。
 pub fn extract_attachments(raw: &[u8]) -> Vec<ExtractedAttachment> {
     let Some(message) = MessageParser::default().parse(raw) else {
         return Vec::new();
     };
     message
         .attachments()
+        .filter(|part| !is_inline_body_part(part))
         .map(|part| {
             let mime_type = part
                 .content_type()
@@ -46,6 +53,20 @@ pub fn extract_attachments(raw: &[u8]) -> Vec<ExtractedAttachment> {
             }
         })
         .collect()
+}
+
+/// 本文相当のパートか判定する。`Content-Disposition: attachment` でなく
+/// filename も持たない `text/*` パート（例: 招待メールの text/calendar 本文）は
+/// 添付ではなく本文の一部とみなす。名前付き添付や非 text の添付は対象外。
+fn is_inline_body_part(part: &mail_parser::MessagePart) -> bool {
+    let is_explicit_attachment = part
+        .content_disposition()
+        .is_some_and(|d| d.is_attachment());
+    if is_explicit_attachment || part.attachment_name().is_some() {
+        return false;
+    }
+    part.content_type()
+        .is_some_and(|ct| ct.ctype().eq_ignore_ascii_case("text"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -386,6 +407,46 @@ mod tests {
         assert!(attachments[0].filename.is_none());
         assert_eq!(attachments[0].mime_type, "application/octet-stream");
         assert_eq!(attachments[0].data, [0u8, 1, 2, 3]);
+    }
+
+    // カレンダー招待: text/calendar パート（本文相当・disposition 未指定）と
+    // Content-Disposition: attachment 付きの invite.ics を併せ持つ典型構造。
+    // 前者が filename なし添付として拾われ attachment-1 と二重表示される回帰を防ぐ
+    const CALENDAR_INVITE_EMAIL: &[u8] = b"From: organizer@example.com\r\n\
+        To: recipient@example.com\r\n\
+        Subject: Invitation\r\n\
+        Message-ID: <invite@example.com>\r\n\
+        Date: Sun, 12 Jul 2026 10:00:00 +0900\r\n\
+        MIME-Version: 1.0\r\n\
+        Content-Type: multipart/mixed; boundary=\"MIXED\"\r\n\
+        \r\n\
+        --MIXED\r\n\
+        Content-Type: multipart/alternative; boundary=\"ALT\"\r\n\
+        \r\n\
+        --ALT\r\n\
+        Content-Type: text/plain; charset=UTF-8\r\n\
+        \r\n\
+        You are invited.\r\n\
+        --ALT\r\n\
+        Content-Type: text/calendar; charset=UTF-8; method=REQUEST\r\n\
+        \r\n\
+        BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n\
+        --ALT--\r\n\
+        --MIXED\r\n\
+        Content-Type: application/ics; name=\"invite.ics\"\r\n\
+        Content-Disposition: attachment; filename=\"invite.ics\"\r\n\
+        \r\n\
+        BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n\
+        --MIXED--\r\n";
+
+    #[test]
+    fn test_extract_attachments_skips_inline_calendar_part() {
+        // 本文相当の text/calendar パート（disposition 未指定）は添付にせず、
+        // Content-Disposition: attachment の invite.ics だけを添付として返す
+        let atts = extract_attachments(CALENDAR_INVITE_EMAIL);
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].filename.as_deref(), Some("invite.ics"));
+        assert_eq!(atts[0].mime_type, "application/ics");
     }
 
     #[test]
