@@ -19,6 +19,15 @@ export function AccountForm({ onSubmit, onCancel }: AccountFormProps) {
     useAccountStore();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // OAuth 完了時はフォームを閉じる（step ガードにより再認証など
+  // このフォーム外で完了したフローには反応しない）
+  useEffect(() => {
+    if (step === "oauth" && oauthStatus === "success") {
+      resetOAuth();
+      onCancel();
+    }
+  }, [step, oauthStatus, resetOAuth, onCancel]);
+
   useEffect(() => {
     if (oauthStatus === "waiting") {
       timeoutRef.current = setTimeout(() => {
@@ -104,7 +113,7 @@ export function AccountForm({ onSubmit, onCancel }: AccountFormProps) {
           </div>
         )}
 
-        {oauthStatus === "idle" && (
+        {oauthStatus === "success" && (
           <div className="flex flex-col items-center gap-2 py-4">
             <p className="text-sm text-green-600">
               アカウントを追加しました。

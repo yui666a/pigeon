@@ -1,6 +1,11 @@
 export type AccountProvider = "google" | "other";
 
-export type OAuthStatus = "idle" | "waiting" | "exchanging" | "error";
+export type OAuthStatus =
+  | "idle"
+  | "waiting"
+  | "exchanging"
+  | "success"
+  | "error";
 
 export interface Account {
   id: string;
