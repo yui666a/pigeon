@@ -1,71 +1,23 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
 use tauri::State;
 
 use crate::classifier::factory::build_classifier;
+use crate::classifier::service::{self, PendingClassifications};
 use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
-use crate::models::classifier::{
-    ClassifyAction, ClassifyResponse, ClassifyResult, MailSummary, CONFIDENCE_UNCERTAIN,
-};
+use crate::models::classifier::ClassifyResponse;
 use crate::models::mail::Mail;
 use crate::models::project::{CreateProjectRequest, Project};
 use crate::state::{DbState, SecureStoreState};
-
-// ---------------------------------------------------------------------------
-// State types
-// ---------------------------------------------------------------------------
-
-/// 「新規案件を作成する」提案の保留キュー（mail_id → 提案内容）。
-///
-/// エントリはメールの割り当てが確定した時点で必ず除去する（除去漏れは
-/// メモリリークと古い提案の残留につながる）。確定経路は以下のすべて:
-/// - `approve_new_project` / `reject_classification`（提案自体への応答）
-/// - `approve_classification` / `move_mail` / `bulk_move_mails`（手動割り当て）
-/// - `classify_mail` の高確信度 Assign（再分類で提案が上書きされるケース）
-/// - `get_unclassified_threads` のスレッド追従（`auto_follow_threads`）
-///
-/// なおプロセス内メモリのため、アプリ再起動で提案は消える（揮発性）。
-/// 永続化の是非は将来課題。
-pub struct PendingClassifications(Mutex<HashMap<String, ClassifyResult>>);
-
-impl Default for PendingClassifications {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PendingClassifications {
-    pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
-    }
-
-    /// 提案を記録する（同一メールの既存提案は上書き）。
-    pub fn insert(&self, mail_id: String, result: ClassifyResult) -> Result<(), AppError> {
-        let mut map = self.0.lock().map_err(AppError::lock_err)?;
-        map.insert(mail_id, result);
-        Ok(())
-    }
-
-    /// 提案を除去する（存在しなければ何もしない・冪等）。
-    pub fn remove(&self, mail_id: &str) -> Result<(), AppError> {
-        let mut map = self.0.lock().map_err(AppError::lock_err)?;
-        map.remove(mail_id);
-        Ok(())
-    }
-
-    /// 提案が保留中かどうか。
-    pub fn contains(&self, mail_id: &str) -> Result<bool, AppError> {
-        let map = self.0.lock().map_err(AppError::lock_err)?;
-        Ok(map.contains_key(mail_id))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
 /// Classify a single mail by ID and persist the result.
+///
+/// ユースケースの本体（サマリ構築 → LLM実行 → 確信度ゲート → 振り分け）は
+/// `classifier::service::classify_one` にあり、ここでは分類器の構築と
+/// サービス呼び出しのみを行う。
 #[tauri::command]
 pub async fn classify_mail(
     db: State<'_, DbState>,
@@ -73,51 +25,8 @@ pub async fn classify_mail(
     secure_store: State<'_, SecureStoreState>,
     mail_id: String,
 ) -> Result<ClassifyResponse, AppError> {
-    // Load mail and settings while holding the lock briefly.
-    let (mail, project_summaries, corrections, classifier) = db.with_conn(|conn| {
-        let mail = mails::get_mail_by_id(conn, &mail_id)?;
-        let project_summaries = projects::build_project_summaries(conn, &mail.account_id, false)?;
-        let corrections = assignments::get_recent_corrections(conn, &mail.account_id, 20)?;
-        let classifier = build_classifier(conn, &secure_store.0)?;
-        Ok((mail, project_summaries, corrections, classifier))
-    })?;
-
-    let mail_summary = MailSummary::from_mail(&mail);
-
-    // Health check
-    classifier.health_check().await?;
-
-    // Classify
-    let result = classifier
-        .classify(&mail_summary, &project_summaries, &corrections)
-        .await?;
-
-    // Persist / queue pending
-    db.with_conn(|conn| persist_classify_result(conn, &pending, &mail_id, &result))?;
-
-    Ok(ClassifyResponse { mail_id, result })
-}
-
-/// 分類結果を確定・保留に振り分ける（`classify_mail` の永続化部分）。
-/// 高確信度の Assign は割り当てを確定し、過去の分類で残った Create 提案が
-/// あれば除去する。Create は提案として保留キューに積む。
-fn persist_classify_result(
-    conn: &rusqlite::Connection,
-    pending: &PendingClassifications,
-    mail_id: &str,
-    result: &ClassifyResult,
-) -> Result<(), AppError> {
-    match &result.action {
-        ClassifyAction::Assign { project_id } if result.confidence >= CONFIDENCE_UNCERTAIN => {
-            assignments::assign_mail(conn, mail_id, project_id, "ai", Some(result.confidence))?;
-            pending.remove(mail_id)?;
-        }
-        ClassifyAction::Create { .. } => {
-            pending.insert(mail_id.to_string(), result.clone())?;
-        }
-        _ => {}
-    }
-    Ok(())
+    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    service::classify_one(&db.0, classifier.as_ref(), &pending, &mail_id).await
 }
 
 /// Approve an AI classification (user confirms the assigned project).
@@ -267,6 +176,7 @@ pub fn get_mails_by_project(db: State<DbState>, project_id: String) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::classifier::{ClassifyAction, ClassifyResult};
     use crate::test_helpers::{insert_test_mail, setup_db};
 
     // --- get_mail_by_id (now in db::mails) ---
@@ -622,45 +532,6 @@ mod tests {
     }
 
     #[test]
-    fn test_persist_classify_result_assign_removes_stale_pending() {
-        let conn = setup_db();
-        let pending = PendingClassifications::new();
-        insert_test_mail(&conn, "m1", "Subject");
-        let proj = insert_project_for(&conn, "Proj");
-        // 以前の分類で Create 提案が残っている状態
-        pending
-            .insert("m1".into(), pending_create_result())
-            .unwrap();
-
-        let result = ClassifyResult {
-            action: ClassifyAction::Assign {
-                project_id: proj.id.clone(),
-            },
-            confidence: CONFIDENCE_UNCERTAIN,
-            reason: "sure".into(),
-        };
-        persist_classify_result(&conn, &pending, "m1", &result).unwrap();
-
-        assert!(
-            !pending.contains("m1").unwrap(),
-            "高確信度の割り当てで古い提案は除去される"
-        );
-        let assigned = assignments::get_mails_by_project(&conn, &proj.id).unwrap();
-        assert_eq!(assigned.len(), 1);
-    }
-
-    #[test]
-    fn test_persist_classify_result_create_queues_pending() {
-        let conn = setup_db();
-        let pending = PendingClassifications::new();
-        insert_test_mail(&conn, "m1", "Subject");
-
-        persist_classify_result(&conn, &pending, "m1", &pending_create_result()).unwrap();
-
-        assert!(pending.contains("m1").unwrap());
-    }
-
-    #[test]
     fn test_get_unclassified_threads_inner_removes_followed_pending() {
         // スレッド追従で割り当てが確定したメールの Create 提案も除去される
         let conn = setup_db();
@@ -687,28 +558,4 @@ mod tests {
         );
     }
 
-    // --- PendingClassifications ---
-
-    #[test]
-    fn test_pending_classifications_insert_and_remove() {
-        let pending = PendingClassifications::new();
-        let result = ClassifyResult {
-            action: ClassifyAction::Create {
-                project_name: "New".into(),
-                description: "desc".into(),
-            },
-            confidence: 0.75,
-            reason: "reason".into(),
-        };
-
-        pending.insert("mail-1".into(), result.clone()).unwrap();
-        pending.insert("mail-2".into(), result).unwrap();
-
-        assert!(pending.contains("mail-1").unwrap());
-        assert!(pending.contains("mail-2").unwrap());
-
-        pending.remove("mail-1").unwrap();
-        assert!(!pending.contains("mail-1").unwrap());
-        assert!(pending.contains("mail-2").unwrap());
-    }
 }

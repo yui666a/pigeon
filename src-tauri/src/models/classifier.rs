@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-pub const CONFIDENCE_AUTO_ASSIGN: f64 = 0.7;
-pub const CONFIDENCE_UNCERTAIN: f64 = 0.4;
-
 /// 分類プロンプトに載せる本文プレビューの最大文字数。
 pub const BODY_PREVIEW_CHARS: usize = 1000;
 

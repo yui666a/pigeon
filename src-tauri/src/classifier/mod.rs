@@ -6,6 +6,7 @@ pub mod gemini_vertex;
 pub mod ollama;
 pub mod parse;
 pub mod prompt;
+pub mod service;
 pub mod vertex_common;
 
 use crate::error::AppError;
