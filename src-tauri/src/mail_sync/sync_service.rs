@@ -8,12 +8,12 @@
 
 use std::future::Future;
 
-use rusqlite::Connection;
-
-use crate::db::{mails, settings};
+use crate::db::repository::{MailRepository, SqliteMailRepository};
+use crate::db::settings;
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser};
 use crate::models::account::{Account, AuthType};
+use crate::models::mail::Mail;
 use crate::state::DbState;
 
 /// IMAP 資格情報 (auth_type, username, credential)。
@@ -40,6 +40,15 @@ impl MergeStrategy {
             Self::InsertOrIgnore
         }
     }
+
+    /// 取得済みメール1件を戦略に従ってリポジトリへ反映する。
+    /// 新規取り込みなら true（既存行の無視・uid 確定更新のみなら false）。
+    pub fn apply(&self, repo: &dyn MailRepository, mail: &Mail) -> Result<bool, AppError> {
+        match self {
+            Self::InsertOrIgnore => repo.insert_mail(mail),
+            Self::UpsertByMessageId => repo.upsert_sent_mail(mail),
+        }
+    }
 }
 
 /// 差分同期の watermark（この UID より新しいメールを取得する）を読む。
@@ -47,15 +56,13 @@ impl MergeStrategy {
 /// スキップされ message_id マージによる uid 後追い確定が成立しないため、
 /// 確定行のみで計算する（設計書 2026-07-12-sent-sync-uidplus-design.md「C1」）。
 pub fn read_watermark(
-    conn: &Connection,
+    repo: &dyn MailRepository,
     account_id: &str,
     logical_folder: &str,
 ) -> Result<u32, AppError> {
     match MergeStrategy::for_logical_folder(logical_folder) {
-        MergeStrategy::InsertOrIgnore => mails::get_max_uid(conn, account_id, logical_folder),
-        MergeStrategy::UpsertByMessageId => {
-            mails::get_max_confirmed_uid(conn, account_id, logical_folder)
-        }
+        MergeStrategy::InsertOrIgnore => repo.get_max_uid(account_id, logical_folder),
+        MergeStrategy::UpsertByMessageId => repo.get_max_confirmed_uid(account_id, logical_folder),
     }
 }
 
@@ -83,7 +90,7 @@ where
 {
     let account_id = account.id.as_str();
     let (max_uid, initial_limit) = state.with_conn(|conn| {
-        let max_uid = read_watermark(conn, account_id, "INBOX")?;
+        let max_uid = read_watermark(&SqliteMailRepository::new(conn), account_id, "INBOX")?;
         let initial_limit = settings::get_u32_or(conn, "initial_sync_limit", 5000)?;
         Ok((max_uid, initial_limit))
     })?;
@@ -119,7 +126,8 @@ where
         match imap_client::fetch_flag_map(&mut session, "INBOX").await {
             Ok(flag_map) => {
                 let update_result = state.with_conn(|conn| {
-                    mails::update_flag_state(conn, account_id, "INBOX", &flag_map)
+                    SqliteMailRepository::new(conn)
+                        .update_flag_state(account_id, "INBOX", &flag_map)
                 });
                 if let Err(e) = update_result {
                     eprintln!("[warn] flag-state DB update failed: {}", e);
@@ -166,6 +174,7 @@ async fn sync_folder_into(
         |batch, progress| {
             // バッチ単位でロックを取り、挿入してから進捗を通知する
             state.with_conn(|conn| {
+                let repo = SqliteMailRepository::new(conn);
                 for fetched in batch {
                     if let Some(mail) = mime_parser::parse_mime(
                         &fetched.body,
@@ -176,14 +185,8 @@ async fn sync_folder_into(
                         fetched.is_flagged,
                         fetched.flags,
                     ) {
-                        let inserted = match strategy {
-                            MergeStrategy::InsertOrIgnore => mails::insert_mail(conn, &mail)?,
-                            MergeStrategy::UpsertByMessageId => {
-                                mails::upsert_sent_mail(conn, &mail)?
-                            }
-                        };
                         // 既存行の無視・uid 更新のみは新規取り込みに数えない
-                        if inserted {
+                        if strategy.apply(&repo, &mail)? {
                             count += 1;
                         }
                     }
@@ -211,7 +214,9 @@ async fn sync_sent_folder(
 ) -> u32 {
     // 読み出し失敗を watermark=0 に丸めると全件再取得になるため、
     // この関数のベストエフォート方針に合わせて警告ログを出して同期をスキップする
-    let sent_since = match state.with_conn(|conn| read_watermark(conn, account_id, "Sent")) {
+    let sent_since = match state
+        .with_conn(|conn| read_watermark(&SqliteMailRepository::new(conn), account_id, "Sent"))
+    {
         Ok(uid) => uid,
         Err(e) => {
             eprintln!("[warn] Sent watermark read failed: {}", e);
@@ -272,7 +277,8 @@ where
     Fut: Future<Output = Result<ImapCredentials, AppError>>,
 {
     let account_id = account.id.as_str();
-    let min_uid = state.with_conn(|conn| mails::get_min_uid(conn, account_id, "INBOX"))?;
+    let min_uid =
+        state.with_conn(|conn| SqliteMailRepository::new(conn).get_min_uid(account_id, "INBOX"))?;
 
     // min_uid=0 はローカルにメールが1件もない（通常の初回同期に任せる範囲）。
     // バックフィルの対象がそもそも存在しないため、接続せずに終える
@@ -329,6 +335,7 @@ async fn backfill_folder_into(
         limit,
         |batch, progress| {
             state.with_conn(|conn| {
+                let repo = SqliteMailRepository::new(conn);
                 for m in batch {
                     if let Some(mail) = mime_parser::parse_mime(
                         &m.body,
@@ -339,7 +346,7 @@ async fn backfill_folder_into(
                         m.is_flagged,
                         m.flags,
                     ) {
-                        if mails::insert_mail(conn, &mail)? {
+                        if repo.insert_mail(&mail)? {
                             fetched += 1;
                         }
                     }
@@ -361,6 +368,100 @@ async fn backfill_folder_into(
 mod tests {
     use super::*;
     use crate::test_helpers::{make_mail, setup_db};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    /// メソッド呼び出しを記録するモックリポジトリ。
+    /// 実 SQLite なしで、サービス層が「どの永続化操作を選ぶか」を検証する。
+    #[derive(Default)]
+    struct MockMailRepository {
+        max_uid: u32,
+        max_confirmed_uid: u32,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl MockMailRepository {
+        fn record(&self, call: impl Into<String>) {
+            self.calls.borrow_mut().push(call.into());
+        }
+    }
+
+    impl MailRepository for MockMailRepository {
+        fn insert_mail(&self, mail: &Mail) -> Result<bool, AppError> {
+            self.record(format!("insert_mail({})", mail.id));
+            Ok(true)
+        }
+
+        fn upsert_sent_mail(&self, mail: &Mail) -> Result<bool, AppError> {
+            self.record(format!("upsert_sent_mail({})", mail.id));
+            Ok(false)
+        }
+
+        fn get_max_uid(&self, _account_id: &str, folder: &str) -> Result<u32, AppError> {
+            self.record(format!("get_max_uid({})", folder));
+            Ok(self.max_uid)
+        }
+
+        fn get_max_confirmed_uid(&self, _account_id: &str, folder: &str) -> Result<u32, AppError> {
+            self.record(format!("get_max_confirmed_uid({})", folder));
+            Ok(self.max_confirmed_uid)
+        }
+
+        fn get_min_uid(&self, _account_id: &str, folder: &str) -> Result<u32, AppError> {
+            self.record(format!("get_min_uid({})", folder));
+            Ok(0)
+        }
+
+        fn update_flag_state(
+            &self,
+            _account_id: &str,
+            folder: &str,
+            _flags_by_uid: &HashMap<u32, (bool, bool)>,
+        ) -> Result<usize, AppError> {
+            self.record(format!("update_flag_state({})", folder));
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn test_read_watermark_inbox_reads_max_uid_from_repository() {
+        // モックで DB なしに watermark のルーティングを検証できる
+        // （MailRepository trait 導入の目的の実証）
+        let repo = MockMailRepository {
+            max_uid: 42,
+            max_confirmed_uid: 7,
+            ..Default::default()
+        };
+        assert_eq!(read_watermark(&repo, "acc1", "INBOX").unwrap(), 42);
+        assert_eq!(*repo.calls.borrow(), vec!["get_max_uid(INBOX)"]);
+    }
+
+    #[test]
+    fn test_read_watermark_sent_reads_confirmed_uid_from_repository() {
+        // Sent は確定 uid のみを watermark にする（C1）。confirmed 側だけが呼ばれること
+        let repo = MockMailRepository {
+            max_uid: 42,
+            max_confirmed_uid: 7,
+            ..Default::default()
+        };
+        assert_eq!(read_watermark(&repo, "acc1", "Sent").unwrap(), 7);
+        assert_eq!(*repo.calls.borrow(), vec!["get_max_confirmed_uid(Sent)"]);
+    }
+
+    #[test]
+    fn test_merge_strategy_apply_routes_to_insert_or_upsert() {
+        let repo = MockMailRepository::default();
+        let mail = make_mail("m1", "<m1@ex.com>", "A", "2026-07-13T10:00:00");
+
+        assert!(MergeStrategy::InsertOrIgnore.apply(&repo, &mail).unwrap());
+        assert!(!MergeStrategy::UpsertByMessageId
+            .apply(&repo, &mail)
+            .unwrap());
+        assert_eq!(
+            *repo.calls.borrow(),
+            vec!["insert_mail(m1)", "upsert_sent_mail(m1)"]
+        );
+    }
 
     #[test]
     fn test_merge_strategy_sent_uses_upsert_by_message_id() {
@@ -397,7 +498,8 @@ mod tests {
         crate::db::mails::insert_mail(&conn, &m1).unwrap();
         crate::db::mails::insert_mail(&conn, &m2).unwrap();
 
-        assert_eq!(read_watermark(&conn, "acc1", "INBOX").unwrap(), 9);
+        let repo = SqliteMailRepository::new(&conn);
+        assert_eq!(read_watermark(&repo, "acc1", "INBOX").unwrap(), 9);
     }
 
     #[test]
@@ -415,14 +517,16 @@ mod tests {
         crate::db::mails::insert_mail(&conn, &estimated).unwrap();
         crate::db::mails::insert_mail(&conn, &confirmed).unwrap();
 
-        assert_eq!(read_watermark(&conn, "acc1", "Sent").unwrap(), 40);
+        let repo = SqliteMailRepository::new(&conn);
+        assert_eq!(read_watermark(&repo, "acc1", "Sent").unwrap(), 40);
     }
 
     #[test]
     fn test_read_watermark_empty_folder_is_zero() {
         let conn = setup_db();
-        assert_eq!(read_watermark(&conn, "acc1", "INBOX").unwrap(), 0);
-        assert_eq!(read_watermark(&conn, "acc1", "Sent").unwrap(), 0);
+        let repo = SqliteMailRepository::new(&conn);
+        assert_eq!(read_watermark(&repo, "acc1", "INBOX").unwrap(), 0);
+        assert_eq!(read_watermark(&repo, "acc1", "Sent").unwrap(), 0);
     }
 
     #[test]
