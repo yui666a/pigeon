@@ -81,6 +81,11 @@ pub async fn fetch_mails_backfill_batched(
   「`limit` 未満しか対象 UID がなかった＝これ以上古いメールがサーバーにない」を表す
   （`plan_backfill_batches` に渡す前の「フィルタ後・切り詰め前」の総数が `limit` 未満かで判定）
 
+> **追記（2026-07-13 リファクタリング）**: `backfill_account_inner` / `backfill_folder_into` は
+> `mail_sync/sync_service.rs` へ移動した（`sync_folder_into` 等の通常同期ロジックと同居）。
+> `backfill_account` コマンド自体（SyncLocks 共有・`backfill-progress` emit・
+> `BackfillOutcome` 返却）は引き続き `commands/mail_commands.rs`。
+
 ### commands/mail_commands.rs: `backfill_account`
 
 ```rust
