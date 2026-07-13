@@ -424,6 +424,105 @@ fn migrate_v14(conn: &Connection) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    /// v15 相当の失敗するマイグレーション: 一部のスキーマ変更
+    /// （ALTER TABLE ADD COLUMN = 非冪等）を適用した後に失敗する。
+    /// 途中失敗時の原子性（ロールバック）検証用。
+    fn migrate_broken_partial(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch("ALTER TABLE mails ADD COLUMN broken_col INTEGER;")?;
+        // 存在しないテーブルへの INSERT で故意に失敗させる
+        conn.execute("INSERT INTO no_such_table (x) VALUES (1)", [])?;
+        Ok(())
+    }
+
+    /// v15 相当の正常なマイグレーション（再実行検証用）。
+    /// migrate_broken_partial と同じ ALTER TABLE を含むため、
+    /// 先行の失敗がロールバックされていなければ duplicate column で失敗する。
+    fn migrate_fixed(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch("ALTER TABLE mails ADD COLUMN broken_col INTEGER;")?;
+        Ok(())
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                params![table, column],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count > 0
+    }
+
+    fn schema_version(conn: &Connection) -> i32 {
+        conn.query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn test_failed_migration_rolls_back_partial_changes() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
+        with_broken.push((15, migrate_broken_partial));
+
+        let result = apply_migrations(&conn, &with_broken);
+        assert!(result.is_err(), "壊れたマイグレーションは失敗する");
+
+        // 途中まで適用されたスキーマ変更がロールバックされている
+        assert!(
+            !column_exists(&conn, "mails", "broken_col"),
+            "失敗したマイグレーションの部分適用はロールバックされる"
+        );
+        // schema_version は進んでいない
+        assert_eq!(
+            schema_version(&conn),
+            14,
+            "失敗したバージョンに schema_version は進まない"
+        );
+    }
+
+    #[test]
+    fn test_rerun_after_failure_completes_without_duplicate_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
+        with_broken.push((15, migrate_broken_partial));
+        assert!(apply_migrations(&conn, &with_broken).is_err());
+
+        // 修正版で再実行 → duplicate column にならず完走する
+        let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
+        with_fixed.push((15, migrate_fixed));
+        apply_migrations(&conn, &with_fixed)
+            .expect("失敗後の再実行は duplicate column にならず完走する");
+
+        assert!(column_exists(&conn, "mails", "broken_col"));
+        assert_eq!(schema_version(&conn), 15);
+    }
+
+    #[test]
+    fn test_earlier_versions_stay_committed_when_later_version_fails() {
+        let conn = Connection::open_in_memory().unwrap();
+        // v0 から実行し、最後のバージョンだけ失敗させる
+        let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
+        with_broken.push((15, migrate_broken_partial));
+
+        assert!(apply_migrations(&conn, &with_broken).is_err());
+
+        // 成功済みバージョン（v1〜v14）はコミット済みのまま
+        assert_eq!(
+            schema_version(&conn),
+            14,
+            "成功したバージョンまでは確定している"
+        );
+        assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
+
+        // その後、通常の run_migrations は冪等に成功する
+        run_migrations(&conn).unwrap();
+        assert_eq!(schema_version(&conn), 14);
+    }
+
     #[test]
     fn test_run_migrations_creates_tables() {
         let conn = Connection::open_in_memory().unwrap();
