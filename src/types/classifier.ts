@@ -24,4 +24,10 @@ export interface ClassifyProgressEvent {
   account_id: string;
   current: number;
   total: number;
+  /**
+   * このステップで案件へ確定割り当てされたメールの ID（あれば）。
+   * バッチ分類中に、確定したメールを未分類一覧から即座に消すために使う。
+   * 確信度不足で未分類に留まった場合や Create 提案の場合は null。
+   */
+  assigned_mail_id: string | null;
 }

@@ -35,6 +35,9 @@ struct ClassifyProgressEvent {
     account_id: String,
     current: usize,
     total: usize,
+    /// このステップで案件へ確定割り当てされたメールの ID（あれば）。
+    /// フロントが未分類一覧から即座に消すために使う。
+    assigned_mail_id: Option<String>,
 }
 
 /// 未分類メールのバッチ分類を開始/再開する。
@@ -59,7 +62,7 @@ pub async fn classify_batch(
         &pending,
         &batches,
         &account_id,
-        |current, total| {
+        |current, total, assigned_mail_id| {
             // 進捗はベストエフォート（emit 失敗で分類は止めない）
             let _ = app.emit(
                 "classify-progress",
@@ -67,6 +70,7 @@ pub async fn classify_batch(
                     account_id: account_id.clone(),
                     current,
                     total,
+                    assigned_mail_id: assigned_mail_id.map(str::to_string),
                 },
             );
         },

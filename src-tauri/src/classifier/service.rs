@@ -181,14 +181,17 @@ impl ClassifyBatches {
 /// 1 件分の処理は `classify_one` に委譲するため、LLM 呼び出し中に DB ロックを
 /// 保持しない方針もそのまま維持される（`ClassifyBatches` のロックも
 /// メール間の状態更新時のみ短く取る）。
-/// 進捗は `on_progress(処理済み件数, キュー全長)` で都度通知する。
+/// 進捗は `on_progress(処理済み件数, キュー全長, 案件に確定割り当てされた mail_id)`
+/// で都度通知する。第3引数は、そのステップで案件へ確定割り当て（Assign）された
+/// メールの ID（フロントが未分類一覧から即座に消すために使う）。確信度不足で
+/// 未分類に留まった場合や Create 提案の場合は `None`。
 pub async fn classify_batch(
     db: &Mutex<Connection>,
     classifier: &dyn LlmClassifier,
     pending: &PendingClassifications,
     batches: &ClassifyBatches,
     account_id: &str,
-    on_progress: impl Fn(usize, usize),
+    on_progress: impl Fn(usize, usize, Option<&str>),
 ) -> Result<ClassifyBatchOutcome, AppError> {
     let begun = batches.try_begin(account_id, || {
         let conn = db.lock().map_err(AppError::lock_err)?;
@@ -216,7 +219,13 @@ pub async fn classify_batch(
             }
         };
         index += 1;
-        on_progress(index, total);
+        // 案件へ確定割り当て（Assign）されたメールのみ、未分類一覧から消せるよう
+        // ID を渡す。確信度不足で Unclassified に落ちた場合や Create 提案は None
+        let assigned_mail_id = match response.result.action {
+            ClassifyAction::Assign { .. } => Some(response.mail_id.as_str()),
+            _ => None,
+        };
+        on_progress(index, total, assigned_mail_id);
         if matches!(response.result.action, ClassifyAction::Create { .. }) {
             batches.pause(account_id, index)?;
             return Ok(ClassifyBatchOutcome::Paused {
@@ -674,7 +683,7 @@ mod tests {
         let llm = SeqLlm::new(vec![assign_result(&proj.id, 0.9); 3]);
         let progress: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
-        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |c, t| {
+        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |c, t, _| {
             progress.lock().unwrap().push((c, t));
         })
         .await
@@ -686,6 +695,61 @@ mod tests {
         ));
         assert_eq!(assigned_mail_ids(&db, &proj.id).len(), 3);
         assert_eq!(*progress.lock().unwrap(), vec![(1, 3), (2, 3), (3, 3)]);
+    }
+
+    #[tokio::test]
+    async fn test_classify_batch_reports_assigned_mail_id_on_confident_assign() {
+        // 高確信度の Assign では、そのステップで確定した mail_id が
+        // on_progress の第3引数として通知される（フロントの逐次非表示用）
+        let db = Mutex::new(setup_db());
+        let pending = PendingClassifications::new();
+        let batches = ClassifyBatches::new();
+        let proj = {
+            let conn = db.lock().unwrap();
+            insert_batch_mails(&conn);
+            insert_project(&conn, "Proj")
+        };
+        let llm = SeqLlm::new(vec![assign_result(&proj.id, 0.9); 3]);
+        let assigned: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+
+        classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _, id| {
+            assigned.lock().unwrap().push(id.map(str::to_string));
+        })
+        .await
+        .unwrap();
+
+        // 3件すべて確定割り当てされ、それぞれの mail_id が通知される
+        let ids = assigned.lock().unwrap();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.iter().all(|id| id.is_some()));
+    }
+
+    #[tokio::test]
+    async fn test_classify_batch_reports_none_when_confidence_too_low() {
+        // 確信度が閾値未満の Assign は永続化されず未分類に留まるため、
+        // 確定 mail_id は通知されない（None）
+        let db = Mutex::new(setup_db());
+        let pending = PendingClassifications::new();
+        let batches = ClassifyBatches::new();
+        let proj = {
+            let conn = db.lock().unwrap();
+            insert_batch_mails(&conn);
+            insert_project(&conn, "Proj")
+        };
+        // CONFIDENCE_UNCERTAIN 未満 → apply_result が Unclassified に正規化する
+        let low = CONFIDENCE_UNCERTAIN - 0.1;
+        let llm = SeqLlm::new(vec![assign_result(&proj.id, low); 3]);
+        let assigned: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+
+        classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _, id| {
+            assigned.lock().unwrap().push(id.map(str::to_string));
+        })
+        .await
+        .unwrap();
+
+        let ids = assigned.lock().unwrap();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.iter().all(|id| id.is_none()));
     }
 
     #[tokio::test]
@@ -705,7 +769,7 @@ mod tests {
         ]);
 
         // 1回目: 先頭の m1 が create → そこで停止し提案を返す
-        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _| {})
+        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _, _| {})
             .await
             .unwrap();
 
@@ -729,7 +793,7 @@ mod tests {
 
         // 2回目（承認/却下後の再開に相当）: m1 は再分類せず m2 から続行して完了
         let progress: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
-        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |c, t| {
+        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |c, t, _| {
             progress.lock().unwrap().push((c, t));
         })
         .await
@@ -765,7 +829,7 @@ mod tests {
         let llm = SeqLlm::new(vec![assign_result(&proj.id, 0.9); 3]);
 
         // 1件目の処理直後にユーザーがキャンセルした状況を再現
-        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _| {
+        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _, _| {
             batches.cancel("acc1").unwrap();
         })
         .await
@@ -778,7 +842,7 @@ mod tests {
         assert_eq!(llm.remaining(), 2, "キャンセル後は分類しない");
 
         // バッチは破棄済み: 次回は新しいスナップショット（残り2件）で開始する
-        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _| {})
+        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _, _| {})
             .await
             .unwrap();
         assert!(matches!(
@@ -799,12 +863,12 @@ mod tests {
         };
 
         let bad = StubLlm::unhealthy(assign_result(&proj.id, 0.9));
-        let res = classify_batch(&db, &bad, &pending, &batches, "acc1", |_, _| {}).await;
+        let res = classify_batch(&db, &bad, &pending, &batches, "acc1", |_, _, _| {}).await;
         assert!(matches!(res, Err(AppError::OllamaConnection(_))));
 
         // エラーでバッチは破棄され、次回は新規スナップショットで最初から
         let good = SeqLlm::new(vec![assign_result(&proj.id, 0.9); 3]);
-        let outcome = classify_batch(&db, &good, &pending, &batches, "acc1", |_, _| {})
+        let outcome = classify_batch(&db, &good, &pending, &batches, "acc1", |_, _, _| {})
             .await
             .unwrap();
         assert!(matches!(
@@ -826,7 +890,7 @@ mod tests {
         batches.try_begin("acc1", || Ok(vec!["m1".into()])).unwrap();
 
         let llm = SeqLlm::new(vec![]);
-        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _| {})
+        let outcome = classify_batch(&db, &llm, &pending, &batches, "acc1", |_, _, _| {})
             .await
             .unwrap();
 
