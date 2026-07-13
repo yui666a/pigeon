@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 
+use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, DeletePlan};
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
 use crate::mail_sync::{imap_client, mime_parser, oauth};
@@ -531,50 +532,6 @@ async fn push_seen_flag(
     store_result
 }
 
-/// 削除のサーバー反映方式（設計書 2026-07-12-mail-delete-archive-design.md）
-#[derive(Debug, PartialEq)]
-enum DeletePlan {
-    /// サーバーで削除後にローカル行を削除する。
-    /// サーバー側は \Trash フォルダがあればゴミ箱へ移動、なければ完全削除
-    /// （imap_client::delete_message_remote 参照）
-    Server,
-    /// ローカル行の削除のみ。Sent フォルダ同期（2026-07-12-sent-sync-uidplus-design.md）
-    /// により送信後の Sent 行の uid は後追いで確定するが、同期前の送信直後の行は
-    /// 推定 uid のままで、確定済みかをローカル行から判定する手段が現状ない。
-    /// 破壊的操作での誤爆を避けるため Sent は安全側で LocalOnly を維持する（v1 制限）。
-    LocalOnly,
-}
-
-fn plan_delete(folder: &str) -> DeletePlan {
-    if folder == "Sent" {
-        DeletePlan::LocalOnly
-    } else {
-        DeletePlan::Server
-    }
-}
-
-/// アーカイブのサーバー反映方式
-#[derive(Debug, PartialEq)]
-enum ArchivePlan {
-    /// COPY せず \Deleted + EXPUNGE のみ（Gmail: INBOX ラベル剥がし = アーカイブ）
-    DeleteOnly,
-    /// archive_folder へ UID COPY してから \Deleted + EXPUNGE（一般 IMAP）
-    CopyThenDelete(String),
-    /// ローカルの folder 更新のみ（Sent。DeletePlan::LocalOnly と同じ理由で
-    /// uid 確定状態の判定手段が未整備のため安全側で維持。v1 制限）
-    LocalOnly,
-}
-
-fn plan_archive(provider: &AccountProvider, folder: &str, archive_folder: &str) -> ArchivePlan {
-    if folder == "Sent" {
-        return ArchivePlan::LocalOnly;
-    }
-    match provider {
-        AccountProvider::Google => ArchivePlan::DeleteOnly,
-        AccountProvider::Other => ArchivePlan::CopyThenDelete(archive_folder.to_string()),
-    }
-}
-
 /// 削除・アーカイブ対象のアカウントとメールを読み込む。
 /// アカウント不在は AccountNotFound、メール不在は MailNotFound。
 fn load_mail_context(
@@ -748,48 +705,6 @@ mod tests {
     use crate::db::{assignments, projects};
     use crate::models::project::CreateProjectRequest;
     use crate::test_helpers::{make_mail, setup_db};
-
-    #[test]
-    fn test_plan_delete_inbox_requires_server() {
-        assert_eq!(plan_delete("INBOX"), DeletePlan::Server);
-        assert_eq!(plan_delete("Archive"), DeletePlan::Server);
-    }
-
-    #[test]
-    fn test_plan_delete_sent_is_local_only() {
-        // Sent の uid は APPEND 時の推定値でサーバー UID と不一致の可能性がある
-        // ため v1 ではサーバー反映しない（設計書「v1 の制限」）
-        assert_eq!(plan_delete("Sent"), DeletePlan::LocalOnly);
-    }
-
-    #[test]
-    fn test_plan_archive_google_deletes_without_copy() {
-        // Gmail は INBOX からの削除 = ラベル剥がしがアーカイブ相当
-        assert_eq!(
-            plan_archive(&AccountProvider::Google, "INBOX", "Archive"),
-            ArchivePlan::DeleteOnly
-        );
-    }
-
-    #[test]
-    fn test_plan_archive_other_copies_to_archive_folder() {
-        assert_eq!(
-            plan_archive(&AccountProvider::Other, "INBOX", "MyArchive"),
-            ArchivePlan::CopyThenDelete("MyArchive".to_string())
-        );
-    }
-
-    #[test]
-    fn test_plan_archive_sent_is_local_only() {
-        assert_eq!(
-            plan_archive(&AccountProvider::Google, "Sent", "Archive"),
-            ArchivePlan::LocalOnly
-        );
-        assert_eq!(
-            plan_archive(&AccountProvider::Other, "Sent", "Archive"),
-            ArchivePlan::LocalOnly
-        );
-    }
 
     #[test]
     fn test_load_mail_context_returns_account_and_mail() {

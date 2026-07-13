@@ -1,17 +1,11 @@
 use tauri::{AppHandle, State};
 
 use crate::commands::mail_commands::resolve_imap_credentials;
+use crate::commands::mail_policy::is_local_only_folder;
 use crate::db::{accounts, mails};
 use crate::error::AppError;
 use crate::mail_sync::imap_client;
 use crate::state::DbState;
-
-/// Sent 等、サーバー UID を信頼できないフォルダか（v1 制限。既存の
-/// mail_commands::plan_delete と同じ判定対象だが「サーバー反映方式」ではなく
-/// 「サーバー UID を信頼できるか」という別の意味なので独自に持つ）。
-fn is_local_only_folder(folder: &str) -> bool {
-    folder == "Sent"
-}
 
 /// メールのスター/フラグ（\Flagged）を設定する。DB は即時更新し、IMAP への
 /// \Flagged 反映はバックグラウンドでベストエフォート実行する（mark_read と同型）。
@@ -137,20 +131,4 @@ async fn push_unseen_flag(
         eprintln!("[warn] IMAP logout failed: {}", e);
     }
     store_result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_local_only_folder_sent() {
-        assert!(is_local_only_folder("Sent"));
-    }
-
-    #[test]
-    fn test_is_local_only_folder_inbox_and_archive() {
-        assert!(!is_local_only_folder("INBOX"));
-        assert!(!is_local_only_folder("Archive"));
-    }
 }

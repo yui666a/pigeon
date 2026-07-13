@@ -1,9 +1,10 @@
 use tauri::State;
 
+use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, DeletePlan};
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
 use crate::mail_sync::imap_client;
-use crate::models::account::{Account, AccountProvider};
+use crate::models::account::Account;
 use crate::models::mail::Mail;
 use crate::state::{DbState, SecureStoreState};
 
@@ -29,37 +30,6 @@ impl BulkResult {
             Ok(()) => self.succeeded.push(mail_id),
             Err(e) => self.failed.push((mail_id, e.to_string())),
         }
-    }
-}
-
-// 以下の plan_delete / plan_archive は mail_commands.rs の同名関数と
-// 判定ロジックが完全に一致している必要がある（意図的な重複）。
-// Why not shared: 実装時点で mail_commands.rs は並行編集中の他ブランチ
-// （Sent フォルダ同期対応。Sent の LocalOnly 判定を変更中）が触っており、
-// 共通化すると衝突するため個別に複製した。sent-sync 側で判定ロジックが
-// 変わった場合はこちらも必ず追随させること。共通化はブランチ統合時に
-// リードがスタック順を決めて対応する（設計書
-// 2026-07-13-bulk-actions-design.md「v1の制限」参照）。
-
-/// 削除のサーバー反映方式（mail_commands::plan_delete と同じ判定）
-fn plan_delete(folder: &str) -> bool {
-    folder != "Sent"
-}
-
-/// アーカイブのサーバー反映方式（mail_commands::plan_archive と同じ判定）
-enum ArchivePlan {
-    DeleteOnly,
-    CopyThenDelete(String),
-    LocalOnly,
-}
-
-fn plan_archive(provider: &AccountProvider, folder: &str, archive_folder: &str) -> ArchivePlan {
-    if folder == "Sent" {
-        return ArchivePlan::LocalOnly;
-    }
-    match provider {
-        AccountProvider::Google => ArchivePlan::DeleteOnly,
-        AccountProvider::Other => ArchivePlan::CopyThenDelete(archive_folder.to_string()),
     }
 }
 
@@ -106,7 +76,7 @@ async fn delete_one(
         mails::get_mail_by_id(&conn, mail_id)?
     };
 
-    if plan_delete(&mail.folder) {
+    if plan_delete(&mail.folder) == DeletePlan::Server {
         imap_client::delete_message_remote(
             &account.imap_host,
             account.imap_port,
@@ -230,41 +200,6 @@ mod tests {
     use crate::db::{assignments, projects};
     use crate::models::project::CreateProjectRequest;
     use crate::test_helpers::{make_mail, setup_db};
-
-    #[test]
-    fn test_plan_delete_inbox_requires_server() {
-        assert!(plan_delete("INBOX"));
-        assert!(plan_delete("Archive"));
-    }
-
-    #[test]
-    fn test_plan_delete_sent_is_local_only() {
-        assert!(!plan_delete("Sent"));
-    }
-
-    #[test]
-    fn test_plan_archive_google_deletes_without_copy() {
-        assert!(matches!(
-            plan_archive(&AccountProvider::Google, "INBOX", "Archive"),
-            ArchivePlan::DeleteOnly
-        ));
-    }
-
-    #[test]
-    fn test_plan_archive_other_copies_to_archive_folder() {
-        assert!(matches!(
-            plan_archive(&AccountProvider::Other, "INBOX", "MyArchive"),
-            ArchivePlan::CopyThenDelete(dest) if dest == "MyArchive"
-        ));
-    }
-
-    #[test]
-    fn test_plan_archive_sent_is_local_only() {
-        assert!(matches!(
-            plan_archive(&AccountProvider::Google, "Sent", "Archive"),
-            ArchivePlan::LocalOnly
-        ));
-    }
 
     #[test]
     fn test_bulk_result_collects_success_and_failure() {
