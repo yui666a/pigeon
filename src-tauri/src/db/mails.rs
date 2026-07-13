@@ -3,22 +3,52 @@ use crate::error::AppError;
 use crate::models::mail::{Mail, Thread, UnreadCounts};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
-/// Column list for SELECT queries on the mails table (no table prefix).
-/// Must match the field order expected by `row_to_mail`.
-pub const MAIL_COLUMNS: &str = "id, account_id, folder, message_id, in_reply_to, \"references\",
-     from_addr, to_addr, cc_addr, subject, body_text, body_html,
-     date, has_attachments, raw_size, uid, flags, is_read, is_flagged, fetched_at, uid_confirmed";
+/// mails テーブルのカラム名の唯一の定義。
+/// SELECT 句（`MAIL_COLUMNS` / `MAIL_COLUMNS_PREFIXED`）・INSERT 句・
+/// `MAIL_COLUMN_COUNT` はすべてここから導出する。カラム追加時は
+/// この配列と `row_to_mail`（と INSERT の VALUES）だけを同期すればよい。
+pub const MAIL_COLUMN_NAMES: &[&str] = &[
+    "id",
+    "account_id",
+    "folder",
+    "message_id",
+    "in_reply_to",
+    "\"references\"",
+    "from_addr",
+    "to_addr",
+    "cc_addr",
+    "subject",
+    "body_text",
+    "body_html",
+    "date",
+    "has_attachments",
+    "raw_size",
+    "uid",
+    "flags",
+    "is_read",
+    "is_flagged",
+    "fetched_at",
+    "uid_confirmed",
+];
 
 /// Number of columns in MAIL_COLUMNS / MAIL_COLUMNS_PREFIXED.
 /// JOIN クエリで追加カラムを読む際のオフセットとして使う。
-pub const MAIL_COLUMN_COUNT: usize = 21;
+pub const MAIL_COLUMN_COUNT: usize = MAIL_COLUMN_NAMES.len();
+
+/// Column list for SELECT queries on the mails table (no table prefix).
+/// Must match the field order expected by `row_to_mail`.
+pub static MAIL_COLUMNS: LazyLock<String> = LazyLock::new(|| MAIL_COLUMN_NAMES.join(", "));
 
 /// Column list with `m.` table prefix for JOIN queries.
-pub const MAIL_COLUMNS_PREFIXED: &str =
-    "m.id, m.account_id, m.folder, m.message_id, m.in_reply_to, m.\"references\",
-     m.from_addr, m.to_addr, m.cc_addr, m.subject, m.body_text, m.body_html,
-     m.date, m.has_attachments, m.raw_size, m.uid, m.flags, m.is_read, m.is_flagged, m.fetched_at, m.uid_confirmed";
+pub static MAIL_COLUMNS_PREFIXED: LazyLock<String> = LazyLock::new(|| {
+    MAIL_COLUMN_NAMES
+        .iter()
+        .map(|c| format!("m.{}", c))
+        .collect::<Vec<_>>()
+        .join(", ")
+});
 
 /// Map a rusqlite Row to a Mail struct. Column order must match `MAIL_COLUMNS`.
 pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
@@ -50,7 +80,7 @@ pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
 /// Load a single mail by ID.
 pub fn get_mail_by_id(conn: &Connection, mail_id: &str) -> Result<Mail, AppError> {
     conn.query_row(
-        &format!("SELECT {} FROM mails WHERE id = ?1", MAIL_COLUMNS),
+        &format!("SELECT {} FROM mails WHERE id = ?1", *MAIL_COLUMNS),
         params![mail_id],
         row_to_mail,
     )
@@ -63,11 +93,11 @@ pub fn get_mail_by_id(conn: &Connection, mail_id: &str) -> Result<Mail, AppError
 /// CASCADE で消えるため、必ず IGNORE で既存行を守ること。
 pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
     let affected = conn.execute(
-        "INSERT OR IGNORE INTO mails
-         (id, account_id, folder, message_id, in_reply_to, \"references\",
-          from_addr, to_addr, cc_addr, subject, body_text, body_html,
-          date, has_attachments, raw_size, uid, flags, is_read, is_flagged, fetched_at, uid_confirmed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+        &format!(
+            "INSERT OR IGNORE INTO mails ({})
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            *MAIL_COLUMNS
+        ),
         params![
             mail.id,
             mail.account_id,
@@ -108,13 +138,13 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
 /// サーバー実 uid へ後追い確定される。設計書 2026-07-12-sent-sync-uidplus-design.md）。
 pub fn insert_sent_mail_with_next_uid(conn: &Connection, mail: &Mail) -> Result<u32, AppError> {
     conn.execute(
-        "INSERT INTO mails
-         (id, account_id, folder, message_id, in_reply_to, \"references\",
-          from_addr, to_addr, cc_addr, subject, body_text, body_html,
-          date, has_attachments, raw_size, uid, flags, is_read, is_flagged, fetched_at, uid_confirmed)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                (SELECT COALESCE(MAX(uid), 0) + 1 FROM mails WHERE account_id = ?2 AND folder = ?3),
-                ?16, ?17, ?18, ?19, 0",
+        &format!(
+            "INSERT INTO mails ({})
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                    (SELECT COALESCE(MAX(uid), 0) + 1 FROM mails WHERE account_id = ?2 AND folder = ?3),
+                    ?16, ?17, ?18, ?19, 0",
+            *MAIL_COLUMNS
+        ),
         params![
             mail.id,
             mail.account_id,
@@ -152,7 +182,7 @@ pub fn get_mails_by_account(
 ) -> Result<Vec<Mail>, AppError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM mails WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC",
-        MAIL_COLUMNS
+        *MAIL_COLUMNS
     ))?;
     let mails = stmt
         .query_map(params![account_id, folder], row_to_mail)?
@@ -168,7 +198,7 @@ pub fn get_all_mails_by_account(
 ) -> Result<Vec<Mail>, AppError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM mails WHERE account_id = ?1 ORDER BY date DESC",
-        MAIL_COLUMNS
+        *MAIL_COLUMNS
     ))?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?

@@ -125,7 +125,7 @@ pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec
              LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
              WHERE mpa.mail_id IS NULL AND m.account_id = ?1 AND m.folder = 'INBOX'
              ORDER BY m.date DESC",
-        MAIL_COLUMNS_PREFIXED
+        *MAIL_COLUMNS_PREFIXED
     ))?;
     let mails = stmt
         .query_map(params![account_id], row_to_mail)?
@@ -140,7 +140,7 @@ pub fn get_mails_by_project(conn: &Connection, project_id: &str) -> Result<Vec<M
              JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
              WHERE mpa.project_id = ?1
              ORDER BY m.date DESC",
-        MAIL_COLUMNS_PREFIXED
+        *MAIL_COLUMNS_PREFIXED
     ))?;
     let mails = stmt
         .query_map(params![project_id], row_to_mail)?
