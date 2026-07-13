@@ -4,7 +4,7 @@ import { useComposeStore } from "../stores/composeStore";
 import { useMailStore } from "../stores/mailStore";
 import { useSearchStore } from "../stores/searchStore";
 import { useUiStore } from "../stores/uiStore";
-import type { ComposeMode } from "../utils/composePrefill";
+import type { ComposeMode } from "../types/compose";
 import type { Mail } from "../types/mail";
 
 const NAV_SHORTCUTS: Record<string, 1 | -1> = {

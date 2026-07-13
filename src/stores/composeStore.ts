@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Draft, Mail, SendMailRequest } from "../types/mail";
-import type { ComposeMode } from "../utils/composePrefill";
+import type { ComposeMode } from "../types/compose";
 import { buildPrefill, splitRecipients } from "../utils/composePrefill";
 import type { ComposeFormat } from "../utils/composeFormat";
 import { getDefaultComposeFormat } from "../utils/composeFormat";

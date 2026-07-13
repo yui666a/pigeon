@@ -1,7 +1,6 @@
 import type { Mail } from "../types/mail";
+import type { ComposeMode } from "../types/compose";
 import { formatFullDate } from "./date";
-
-export type ComposeMode = "new" | "reply" | "replyAll" | "forward";
 
 /** Compose画面の初期値。宛先はカンマ区切り文字列としてUIで保持する */
 export interface ComposePrefill {
