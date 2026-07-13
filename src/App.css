@@ -1,1 +1,31 @@
 @import "tailwindcss";
+
+/*
+ * アプリ全体の UI テキスト選択を無効化する。
+ * スレッドの D&D（mousedown+mousemove の独自実装）中に、サイドバーの
+ * メールアドレス・案件名や一覧のテキストが範囲選択されてしまうのを防ぐ。
+ * メール本文・ヘッダなど「ユーザーがコピーしたい箇所」だけ .selectable で
+ * 選択を再有効化する（デスクトップメール/チャットアプリの標準的な扱い）。
+ */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.selectable,
+.selectable * {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}
+
+/* 入力系（検索ボックス・メール作成フォーム・TipTap の contenteditable）は
+   常に選択・編集できるようにする */
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}

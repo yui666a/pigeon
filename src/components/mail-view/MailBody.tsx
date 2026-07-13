@@ -34,7 +34,7 @@ export function MailBody({ mail }: MailBodyProps) {
   }, [mail.id, mail.has_attachments, bodyHtml]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-4">
+    <div className="selectable flex-1 overflow-y-auto px-6 py-4">
       {resolvedHtml ? (
         <div
           className="prose max-w-none text-sm"
