@@ -1,17 +1,19 @@
 use async_trait::async_trait;
-use gcp_auth::{CustomServiceAccount, TokenProvider};
+use gcp_auth::CustomServiceAccount;
 use serde::Serialize;
 
 use crate::classifier::anthropic_common::{
     extract_text, user_messages, MessageParam, MessagesResponse,
 };
+use crate::classifier::vertex_common;
 use crate::classifier::{build_http_client, LlmClassifier, TextGenerator};
 use crate::error::AppError;
 
 /// Vertex 上では anthropic_version はヘッダではなくボディに入れ、値はこの固定文字列。
 const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
-const GCP_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 const MAX_TOKENS: u32 = 1024;
+const PUBLISHER: &str = "anthropic";
+const METHOD: &str = "rawPredict";
 
 /// Claude on Vertex AI（GCP Agent Platform）経由のクラシファイア。
 /// Anthropic 直 API (`ClaudeClassifier`) との差分は、エンドポイント・認証（Bearer トークン）・
@@ -31,8 +33,7 @@ impl ClaudeVertexClassifier {
         location: impl Into<String>,
         model: impl Into<String>,
     ) -> Result<Self, AppError> {
-        let service_account = CustomServiceAccount::from_json(sa_json)
-            .map_err(|e| AppError::MissingApiKey(format!("claude_vertex (invalid SA JSON: {e})")))?;
+        let service_account = vertex_common::parse_service_account(sa_json, "claude_vertex")?;
         let client = build_http_client()?;
         Ok(Self {
             service_account,
@@ -44,18 +45,13 @@ impl ClaudeVertexClassifier {
     }
 
     /// rawPredict エンドポイント URL を組み立てる。
-    ///
-    /// `global` はホスト名が特殊で、`global-aiplatform...` ではなく
-    /// `aiplatform.googleapis.com`（プレフィックス無し）になる。それ以外の
-    /// リージョンは `{location}-aiplatform.googleapis.com`。
-    fn endpoint_url(location: &str, project_id: &str, model: &str) -> String {
-        let host = if location == "global" {
-            "aiplatform.googleapis.com".to_string()
-        } else {
-            format!("{location}-aiplatform.googleapis.com")
-        };
-        format!(
-            "https://{host}/v1/projects/{project_id}/locations/{location}/publishers/anthropic/models/{model}:rawPredict"
+    fn endpoint_url(&self) -> String {
+        vertex_common::endpoint_url(
+            &self.location,
+            &self.project_id,
+            PUBLISHER,
+            &self.model,
+            METHOD,
         )
     }
 
@@ -69,19 +65,9 @@ impl ClaudeVertexClassifier {
         }
     }
 
-    /// SA からアクセストークンを取得する（クレート側でキャッシュ・失効管理される）。
-    async fn access_token(&self) -> Result<String, AppError> {
-        let token = self
-            .service_account
-            .token(&[GCP_SCOPE])
-            .await
-            .map_err(|e| AppError::HttpRequest(format!("Vertex token error: {e}")))?;
-        Ok(token.as_str().to_string())
-    }
-
     async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
-        let url = Self::endpoint_url(&self.location, &self.project_id, &self.model);
-        let token = self.access_token().await?;
+        let url = self.endpoint_url();
+        let token = vertex_common::access_token(&self.service_account).await?;
         let body = Self::build_request(system_prompt, user_prompt);
 
         let response = self
@@ -134,8 +120,8 @@ impl LlmClassifier for ClaudeVertexClassifier {
     /// 専用の軽量エンドポイントが無いため、最小のダミーメッセージを rawPredict に投げて
     /// 疎通・認証・権限をまとめて検証する。
     async fn health_check(&self) -> Result<(), AppError> {
-        let url = Self::endpoint_url(&self.location, &self.project_id, &self.model);
-        let token = self.access_token().await?;
+        let url = self.endpoint_url();
+        let token = vertex_common::access_token(&self.service_account).await?;
         let body = VertexMessagesRequest {
             anthropic_version: VERTEX_ANTHROPIC_VERSION.to_string(),
             max_tokens: 1,
@@ -166,30 +152,23 @@ impl LlmClassifier for ClaudeVertexClassifier {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_endpoint_url_shape() {
-        let url = ClaudeVertexClassifier::endpoint_url(
-            "us-east5",
+    fn make_classifier(location: &str) -> ClaudeVertexClassifier {
+        let sa_json = include_str!("test_sa.json");
+        ClaudeVertexClassifier::new(
+            sa_json,
             "pigeon-mail-xxxxxx",
+            location,
             "claude-haiku-4-5@20251001",
-        );
-        assert_eq!(
-            url,
-            "https://us-east5-aiplatform.googleapis.com/v1/projects/pigeon-mail-xxxxxx/locations/us-east5/publishers/anthropic/models/claude-haiku-4-5@20251001:rawPredict"
-        );
+        )
+        .unwrap()
     }
 
     #[test]
-    fn test_endpoint_url_global_has_no_region_prefix() {
-        // global はホスト名にリージョン接頭辞が付かない。
-        let url = ClaudeVertexClassifier::endpoint_url(
-            "global",
-            "pigeon-mail-xxxxxx",
-            "claude-haiku-4-5@20251001",
-        );
+    fn test_endpoint_url_uses_anthropic_raw_predict() {
+        let c = make_classifier("us-east5");
         assert_eq!(
-            url,
-            "https://aiplatform.googleapis.com/v1/projects/pigeon-mail-xxxxxx/locations/global/publishers/anthropic/models/claude-haiku-4-5@20251001:rawPredict"
+            c.endpoint_url(),
+            "https://us-east5-aiplatform.googleapis.com/v1/projects/pigeon-mail-xxxxxx/locations/us-east5/publishers/anthropic/models/claude-haiku-4-5@20251001:rawPredict"
         );
     }
 
