@@ -27,6 +27,13 @@ export function AccountList({
   if (accounts.length === 0) {
     return <p className="px-4 py-2 text-sm text-gray-400">アカウントなし</p>;
   }
+
+  const backfillLabel = (account: Account): string => {
+    if (backfillingAccountId === account.id) return "取得中…";
+    if (backfillExhausted?.[account.id] === true) return "全件取得済み";
+    return "過去のメールを取得";
+  };
+
   return (
     <ul className="flex flex-col">
       {accounts.map((account) => (
@@ -71,23 +78,22 @@ export function AccountList({
                 再認証
               </button>
             )}
-            {!account.needs_reauth && onBackfill && (() => {
-              const isBackfilling = backfillingAccountId === account.id;
-              const isExhausted = backfillExhausted?.[account.id] === true;
-              return (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onBackfill(account.id);
-                  }}
-                  disabled={isBackfilling || isExhausted}
-                  className="ml-1 shrink-0 rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="過去のメールを取得"
-                >
-                  {isBackfilling ? "取得中…" : isExhausted ? "全件取得済み" : "過去のメールを取得"}
-                </button>
-              );
-            })()}
+            {!account.needs_reauth && onBackfill && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onBackfill(account.id);
+                }}
+                disabled={
+                  backfillingAccountId === account.id ||
+                  backfillExhausted?.[account.id] === true
+                }
+                className="ml-1 shrink-0 rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                title="過去のメールを取得"
+              >
+                {backfillLabel(account)}
+              </button>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation();
