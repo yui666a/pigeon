@@ -150,7 +150,8 @@ src-tauri/src/
 ├── classifier/              # LLM分類レイヤー
 │   ├── mod.rs               # LlmClassifier trait 定義
 │   ├── ollama.rs            # OllamaClassifier 実装
-│   └── prompt.rs            # プロンプト構築ロジック
+│   ├── prompt.rs            # プロンプト構築ロジック
+│   └── service.rs           # 分類ユースケース（確信度ゲート・PendingClassifications）
 ├── models/
 │   ├── project.rs           # Project, ProjectSummary 構造体
 │   └── classifier.rs        # ClassifyResult, MailSummary, CorrectionEntry 等
@@ -402,6 +403,15 @@ Rules:
 | < 0.4 | assign / unclassified | `unclassified` — 未分類のまま | INSERT しない |
 | any | create | `pending_proposal` — ユーザー承認待ち | INSERT しない。インメモリの `PendingClassification` に保持 |
 
+確信度 < 0.4 の assign は永続化しないだけでなく、フロントへ返す応答も
+`unclassified` に正規化する（却下した候補案件と確信度は `reason` に残す）。
+DB に存在しない割り当てを「assign」として見せると、承認時に割り当て不在で
+不整合になるため。保留キュー（`PendingClassifications`）は新規案件提案
+（create）の承認フロー専用であり、低確信度 assign は積まない。
+
+この振り分け（確信度ゲート）の実装は `classifier/service.rs` の
+`apply_result` に集約する（後述 §確信度閾値）。
+
 ### ユーザー操作による状態遷移
 
 ```
@@ -435,7 +445,8 @@ Rules:
 
 ### 確信度閾値
 
-閾値はコード内の定数として一箇所に集約する。
+閾値はコード内の定数として一箇所に集約する。置き場所は確信度ポリシーを
+実装するサービス層（`src-tauri/src/classifier/service.rs`）とする。
 
 ```rust
 pub const CONFIDENCE_AUTO_ASSIGN: f64 = 0.7;
