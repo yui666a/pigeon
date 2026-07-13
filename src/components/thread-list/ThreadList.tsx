@@ -8,6 +8,7 @@ import { ThreadItem } from "./ThreadItem";
 import { BulkActionBar } from "./BulkActionBar";
 import { EmptyState } from "../common/EmptyState";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
+import { useBulkActions } from "../../hooks/useBulkActions";
 import type { Thread } from "../../types/mail";
 
 interface ThreadListProps {
@@ -27,11 +28,6 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   const syncAccount = useMailStore((s) => s.syncAccount);
   const selectThread = useMailStore((s) => s.selectThread);
   const setThreads = useMailStore((s) => s.setThreads);
-  const bulkDeleteMails = useMailStore((s) => s.bulkDeleteMails);
-  const bulkArchiveMails = useMailStore((s) => s.bulkArchiveMails);
-  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
-  const selectedThreadIds = useSelectionStore((s) => s.selectedThreadIds);
-  const selectedMailIds = useSelectionStore((s) => s.selectedMailIds);
   const clearSelection = useSelectionStore((s) => s.clear);
   const { visible, hasMore, remaining, showMore } = useDisplayLimit(
     threads,
@@ -65,38 +61,12 @@ export function ThreadList({ viewMode }: ThreadListProps) {
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (!selectedAccountId) return;
-    const mailIds = selectedMailIds(threads);
-    if (mailIds.length === 0) return;
-    if (
-      !window.confirm(
-        `選択した ${selectedThreadIds.size} スレッドを削除しますか？サーバーにゴミ箱があればゴミ箱へ移動し、無い場合は完全に削除されます。`,
-      )
-    ) {
-      return;
-    }
-    await bulkDeleteMails(selectedAccountId, mailIds);
-    clearSelection();
-    reloadThreads();
-  };
-
-  const handleBulkArchive = async () => {
-    if (!selectedAccountId) return;
-    const mailIds = selectedMailIds(threads);
-    if (mailIds.length === 0) return;
-    await bulkArchiveMails(selectedAccountId, mailIds);
-    clearSelection();
-    reloadThreads();
-  };
-
-  const handleBulkMove = async (projectId: string) => {
-    const mailIds = selectedMailIds(threads);
-    if (mailIds.length === 0) return;
-    await bulkMoveMails(mailIds, projectId);
-    clearSelection();
-    reloadThreads();
-  };
+  const { handleBulkDelete, handleBulkArchive, handleBulkMove, selectedCount } =
+    useBulkActions({
+      accountId: selectedAccountId,
+      threads,
+      reload: reloadThreads,
+    });
 
   if (!selectedAccountId) {
     return <EmptyState message="アカウントを選択してください" />;
@@ -125,7 +95,7 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   return (
     <div className="flex h-full flex-col">
       <BulkActionBar
-        selectedCount={selectedThreadIds.size}
+        selectedCount={selectedCount}
         projects={projects}
         onDelete={() => void handleBulkDelete()}
         onArchive={() => void handleBulkArchive()}

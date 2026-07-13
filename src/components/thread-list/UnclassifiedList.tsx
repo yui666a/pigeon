@@ -9,6 +9,7 @@ import { ThreadDragItem } from "./ThreadDragItem";
 import { BulkActionBar } from "./BulkActionBar";
 import { NewProjectProposal } from "../common/NewProjectProposal";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
+import { useBulkActions } from "../../hooks/useBulkActions";
 import type { Thread } from "../../types/mail";
 
 export function UnclassifiedList() {
@@ -24,12 +25,7 @@ export function UnclassifiedList() {
   const unclassifiedThreads = useMailStore((s) => s.unclassifiedThreads);
   const fetchUnclassified = useMailStore((s) => s.fetchUnclassified);
   const selectThread = useMailStore((s) => s.selectThread);
-  const bulkDeleteMails = useMailStore((s) => s.bulkDeleteMails);
-  const bulkArchiveMails = useMailStore((s) => s.bulkArchiveMails);
-  const bulkMoveMails = useMailStore((s) => s.bulkMoveMails);
   const projects = useProjectStore((s) => s.projects);
-  const selectedThreadIds = useSelectionStore((s) => s.selectedThreadIds);
-  const selectedMailIds = useSelectionStore((s) => s.selectedMailIds);
   const clearSelection = useSelectionStore((s) => s.clear);
   const {
     visible: visibleThreads,
@@ -37,6 +33,15 @@ export function UnclassifiedList() {
     remaining,
     showMore,
   } = useDisplayLimit(unclassifiedThreads, selectedAccountId);
+
+  const { handleBulkDelete, handleBulkArchive, handleBulkMove, selectedCount } =
+    useBulkActions({
+      accountId: selectedAccountId,
+      threads: unclassifiedThreads,
+      reload: () => {
+        if (selectedAccountId) void fetchUnclassified(selectedAccountId);
+      },
+    });
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -68,37 +73,6 @@ export function UnclassifiedList() {
     selectThread(thread);
   };
 
-  const handleBulkDelete = async () => {
-    const mailIds = selectedMailIds(unclassifiedThreads);
-    if (mailIds.length === 0) return;
-    if (
-      !window.confirm(
-        `選択した ${selectedThreadIds.size} スレッドを削除しますか？サーバーにゴミ箱があればゴミ箱へ移動し、無い場合は完全に削除されます。`,
-      )
-    ) {
-      return;
-    }
-    await bulkDeleteMails(selectedAccountId, mailIds);
-    clearSelection();
-    void fetchUnclassified(selectedAccountId);
-  };
-
-  const handleBulkArchive = async () => {
-    const mailIds = selectedMailIds(unclassifiedThreads);
-    if (mailIds.length === 0) return;
-    await bulkArchiveMails(selectedAccountId, mailIds);
-    clearSelection();
-    void fetchUnclassified(selectedAccountId);
-  };
-
-  const handleBulkMove = async (projectId: string) => {
-    const mailIds = selectedMailIds(unclassifiedThreads);
-    if (mailIds.length === 0) return;
-    await bulkMoveMails(mailIds, projectId);
-    clearSelection();
-    void fetchUnclassified(selectedAccountId);
-  };
-
   return (
     <div className="border-b">
       <div className="flex items-center justify-between px-4 py-2">
@@ -126,7 +100,7 @@ export function UnclassifiedList() {
       {unclassifiedThreads.length > 0 && (
         <div>
           <BulkActionBar
-            selectedCount={selectedThreadIds.size}
+            selectedCount={selectedCount}
             projects={projects}
             onDelete={() => void handleBulkDelete()}
             onArchive={() => void handleBulkArchive()}
