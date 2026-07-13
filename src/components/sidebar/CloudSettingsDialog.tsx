@@ -85,17 +85,6 @@ export function CloudSettingsDialog({
 
   const tree = useMemo(() => buildTree(files), [files]);
 
-  const refreshRules = useCallback(async () => {
-    try {
-      const rulesRes = await invoke<CloudRule[]>("get_cloud_rules", {
-        directoryId: directory.id,
-      });
-      setRules(rulesRes);
-    } catch (e) {
-      useErrorStore.getState().addError(String(e));
-    }
-  }, [directory.id]);
-
   const handleToggleNode = async (node: TreeNode) => {
     const scope = node.isDir ? "directory" : "file";
     const ops = planToggle(rules, scope, node.path);
@@ -113,7 +102,7 @@ export function CloudSettingsDialog({
     } finally {
       // 途中で失敗してもバックエンドは部分適用済みの可能性があるため、
       // 成功・失敗を問わず必ず実ルールと表示を再同期する
-      await refreshRules();
+      await reload();
     }
   };
 
