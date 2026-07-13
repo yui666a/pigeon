@@ -79,13 +79,21 @@ pub fn list_accounts(conn: &Connection) -> Result<Vec<Account>, AppError> {
 }
 
 pub fn delete_account(conn: &Connection, id: &str) -> Result<(), AppError> {
-    // V1のmailsテーブルにはON DELETE CASCADEがないため、先に関連データを削除
-    conn.execute("DELETE FROM mails WHERE account_id = ?1", params![id])?;
-    conn.execute("DELETE FROM projects WHERE account_id = ?1", params![id])?;
-    let affected = conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
+    // 複数テーブルの削除を原子的に行う（途中失敗でメールだけ消えた
+    // 中途半端な状態を残さない）。
+    // V1のmailsテーブルにはON DELETE CASCADEがないため、先に手動で削除する。
+    // それ以外の関連は FK の CASCADE で消える:
+    //   mails → mail_project_assignments / correction_log / attachments / follow_exclusions
+    //   accounts → projects / drafts、projects → project_directories → project_files 等
+    //   fts_mails は mails の DELETE トリガーで同期される
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM mails WHERE account_id = ?1", params![id])?;
+    tx.execute("DELETE FROM projects WHERE account_id = ?1", params![id])?;
+    let affected = tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;
     if affected == 0 {
         return Err(AppError::AccountNotFound(id.to_string()));
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -207,6 +215,76 @@ mod tests {
         delete_account(&conn, &account.id).unwrap();
         let result = get_account(&conn, &account.id);
         assert!(result.is_err());
+    }
+
+    /// acc1 のメール・案件・割り当て・下書きを一式作る（delete_account テスト用）。
+    /// 共有 setup_db（FK 有効・acc1 作成済み）の接続を前提とする。
+    fn seed_account_data(conn: &Connection) {
+        let mail = crate::test_helpers::make_mail(
+            "m1",
+            "<m1@example.com>",
+            "Subject",
+            "2026-04-13T10:00:00",
+        );
+        crate::db::mails::insert_mail(conn, &mail).unwrap();
+        crate::db::projects::insert_project_with_id(conn, "proj1", "acc1", "Proj", None, None)
+            .unwrap();
+        crate::db::assignments::assign_mail(conn, "m1", "proj1", "user", None).unwrap();
+        conn.execute(
+            "INSERT INTO drafts (id, account_id, subject) VALUES ('d1', 'acc1', 'Draft')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn count_rows(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn test_delete_account_removes_all_related_rows() {
+        // B-4: mails は手動 DELETE、projects/drafts は accounts からの CASCADE、
+        // assignments は mails からの CASCADE で、関連データが漏れなく消えること
+        let conn = crate::test_helpers::setup_db();
+        seed_account_data(&conn);
+
+        delete_account(&conn, "acc1").unwrap();
+
+        assert_eq!(count_rows(&conn, "accounts"), 0);
+        assert_eq!(count_rows(&conn, "mails"), 0);
+        assert_eq!(count_rows(&conn, "projects"), 0);
+        assert_eq!(count_rows(&conn, "mail_project_assignments"), 0);
+        assert_eq!(count_rows(&conn, "drafts"), 0);
+    }
+
+    #[test]
+    fn test_delete_account_rolls_back_atomically_on_mid_failure() {
+        // B-4: mails/projects の削除成功後に accounts の削除が失敗したら、
+        // 全体がロールバックされて中途半端な削除が残らないこと
+        let conn = crate::test_helpers::setup_db();
+        seed_account_data(&conn);
+
+        // 失敗注入: 最後の書き込み（accounts の DELETE）だけを失敗させる
+        conn.execute_batch(
+            "CREATE TRIGGER fail_account_delete BEFORE DELETE ON accounts
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        let result = delete_account(&conn, "acc1");
+        assert!(result.is_err(), "注入した失敗がエラーとして伝播する");
+
+        assert_eq!(count_rows(&conn, "accounts"), 1, "アカウントは残る");
+        assert_eq!(count_rows(&conn, "mails"), 1, "メールの削除がロールバックされる");
+        assert_eq!(count_rows(&conn, "projects"), 1, "案件の削除がロールバックされる");
+        assert_eq!(
+            count_rows(&conn, "mail_project_assignments"),
+            1,
+            "案件割り当ても失われない"
+        );
     }
 
     #[test]

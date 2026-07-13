@@ -285,7 +285,19 @@ pub fn confirm_uid(conn: &Connection, mail_id: &str, uid: u32) -> Result<(), App
 /// - 占有行が異なる message_id: この行の取り込みをスキップして警告（バッチは継続させる）
 ///
 /// 戻り値は「新規の取り込みが起きたか」（同期件数の集計用。確定・統合・スキップは false）。
+///
+/// 判定（SELECT）から書き込み（DELETE/UPDATE/INSERT）までを1トランザクションで包む。
+/// 特に `merge_duplicate_sent_rows` は DELETE → UPDATE の複数書き込みのため、
+/// 途中失敗で削除だけが残ると案件割り当ての保持という設計意図が崩れる。
 pub fn upsert_sent_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let inserted = upsert_sent_mail_in_tx(&tx, mail)?;
+    tx.commit()?;
+    Ok(inserted)
+}
+
+/// `upsert_sent_mail` の本体。呼び出し側でトランザクション境界を張ること。
+fn upsert_sent_mail_in_tx(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
     let existing_by_mid =
         get_mail_id_by_message_id(conn, &mail.account_id, &mail.folder, &mail.message_id)?;
 
@@ -1138,6 +1150,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "案件割り当ては失われない");
+    }
+
+    #[test]
+    fn test_upsert_sent_mail_merge_rolls_back_atomically_on_mid_failure() {
+        // B-1: 重複統合は DELETE（占有行の削除）→ UPDATE（uid 確定）の複数書き込み。
+        // 途中で失敗したときに DELETE だけが残る中途半端な状態にならないこと
+        // （案件割り当ての保持を最重要視する設計意図のため、全体がロールバックされる）。
+        use crate::db::{assignments, projects};
+        use crate::models::project::CreateProjectRequest;
+
+        let conn = setup_db();
+        // 送信時ローカル行（推定 uid=1・未確定・案件割り当てあり）
+        let mut local = make_mail("s1", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        local.folder = "Sent".into();
+        local.uid = 1;
+        local.uid_confirmed = false;
+        insert_mail(&conn, &local).unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+        assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
+
+        // 同一メールの重複行が確定先 uid=5000 を占有（統合で削除される側）
+        let mut occupant = make_mail("s_dup", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        occupant.folder = "Sent".into();
+        occupant.uid = 5000;
+        occupant.uid_confirmed = true;
+        insert_mail(&conn, &occupant).unwrap();
+
+        // 失敗注入: 統合の2番目の書き込み（s1 の uid 確定 UPDATE）だけを失敗させる
+        conn.execute_batch(
+            "CREATE TRIGGER fail_confirm BEFORE UPDATE OF uid ON mails
+             WHEN NEW.id = 's1' AND NEW.uid = 5000
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        let mut server = make_mail("s_srv", "<mid@pigeon.local>", "件名", "2026-07-12T10:00:00");
+        server.folder = "Sent".into();
+        server.uid = 5000;
+        let result = upsert_sent_mail(&conn, &server);
+        assert!(result.is_err(), "注入した失敗がエラーとして伝播する");
+
+        // ロールバックにより、先行する DELETE（s_dup の削除）も取り消されていること
+        let all = get_mails_by_account(&conn, "acc1", "Sent").unwrap();
+        assert_eq!(all.len(), 2, "途中失敗では部分的な書き込みが残らない");
+        assert!(get_mail_by_id(&conn, "s_dup").is_ok(), "削除がロールバックされる");
+        let s1 = get_mail_by_id(&conn, "s1").unwrap();
+        assert_eq!(s1.uid, 1, "s1 も元のまま");
+        assert!(!s1.uid_confirmed);
     }
 
     #[test]
