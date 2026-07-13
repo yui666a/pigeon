@@ -23,10 +23,13 @@ export const ThreadItem = memo(function ThreadItem({
   const isChecked = useSelectionStore((s) => s.isSelected(thread.thread_id));
   const toggleThread = useSelectionStore((s) => s.toggleThread);
 
+  // 選択 > 既読(グレー) > 未読(デフォルト白) の優先順で背景色を決める
+  const bgClass = selected ? "bg-blue-50" : hasUnread ? "" : "bg-gray-100";
+
   return (
     <div
       onMouseDown={onMouseDown}
-      className={`flex w-full cursor-pointer items-start gap-2 border-b px-4 py-3 text-left hover:bg-gray-50 ${selected ? "bg-blue-50" : ""}`}
+      className={`flex w-full cursor-pointer items-start gap-2 border-b px-4 py-3 text-left hover:bg-gray-50 ${bgClass}`}
     >
       <input
         type="checkbox"
