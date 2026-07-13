@@ -839,8 +839,6 @@ mod tests {
         use crate::models::project::CreateProjectRequest;
 
         let conn = setup_db();
-        // CASCADE の検証には外部キーの有効化が必要（本番は lib.rs で有効化している）
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         let mail = make_mail("m1", "<msg1@example.com>", "Deal", "2026-07-12T10:00:00");
         insert_mail(&conn, &mail).unwrap();
         let req = CreateProjectRequest {

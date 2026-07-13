@@ -183,31 +183,9 @@ pub fn merge_projects(conn: &mut Connection, source_id: &str, target_id: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::insert_account_with_id;
-    use crate::db::migrations::run_migrations;
-    use crate::models::account::{AccountProvider, AuthType, CreateAccountRequest};
-
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        run_migrations(&conn).unwrap();
-        conn
-    }
-
-    fn create_test_account(conn: &Connection, id: &str) {
-        let req = CreateAccountRequest {
-            name: "Test Account".into(),
-            email: format!("{}@example.com", id),
-            imap_host: "imap.example.com".into(),
-            imap_port: 993,
-            smtp_host: "smtp.example.com".into(),
-            smtp_port: 587,
-            auth_type: AuthType::Plain,
-            provider: AccountProvider::Other,
-            password: None,
-        };
-        insert_account_with_id(conn, id, &req).unwrap();
-    }
+    // 共有ヘルパの setup_db は FK 有効化・マイグレーション適用済みで、
+    // テストアカウント acc1 を作成済みの接続を返す
+    use crate::test_helpers::setup_db;
 
     fn sample_create_req(account_id: &str) -> CreateProjectRequest {
         CreateProjectRequest {
@@ -221,7 +199,6 @@ mod tests {
     #[test]
     fn test_insert_and_get_project() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let req = sample_create_req("acc1");
         let project = insert_project(&conn, &req).unwrap();
@@ -243,7 +220,6 @@ mod tests {
     #[test]
     fn test_list_projects_excludes_archived() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let req = sample_create_req("acc1");
         let p1 = insert_project(&conn, &req).unwrap();
@@ -269,7 +245,6 @@ mod tests {
     #[test]
     fn test_update_project() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let project = insert_project(&conn, &sample_create_req("acc1")).unwrap();
 
@@ -288,7 +263,6 @@ mod tests {
     #[test]
     fn test_delete_project() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let project = insert_project(&conn, &sample_create_req("acc1")).unwrap();
         delete_project(&conn, &project.id).unwrap();
@@ -310,7 +284,6 @@ mod tests {
     #[test]
     fn test_build_project_summaries_includes_cached_context() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
         let p = insert_project(&conn, &sample_create_req("acc1")).unwrap();
         crate::db::project_contexts::upsert_generated(&conn, &p.id, "会場: 〇〇ホール", "h", "i")
             .unwrap();
@@ -322,7 +295,6 @@ mod tests {
     #[test]
     fn test_build_project_summaries_cloud_excludes_unallowed_context() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
         let p = insert_project(&conn, &sample_create_req("acc1")).unwrap();
         crate::db::project_contexts::upsert_generated(&conn, &p.id, "秘密のコンテキスト", "h", "i")
             .unwrap();
@@ -343,7 +315,6 @@ mod tests {
     #[test]
     fn test_build_project_summaries_includes_top_senders() {
         let conn = setup_db();
-        create_test_account(&conn, "acc1");
         let p = insert_project(&conn, &sample_create_req("acc1")).unwrap();
 
         let m1 = crate::test_helpers::make_mail("m1", "<m1@ex>", "Mail 1", "2026-04-13T10:00:00");
@@ -361,7 +332,6 @@ mod tests {
     #[test]
     fn test_merge_projects_moves_mails() {
         let mut conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let source = insert_project(&conn, &CreateProjectRequest {
             account_id: "acc1".into(),
@@ -402,7 +372,6 @@ mod tests {
     #[test]
     fn test_merge_projects_source_empty() {
         let mut conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let source = insert_project(&conn, &CreateProjectRequest {
             account_id: "acc1".into(),
@@ -429,7 +398,6 @@ mod tests {
     #[test]
     fn test_merge_projects_source_not_found() {
         let mut conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let target = insert_project(&conn, &CreateProjectRequest {
             account_id: "acc1".into(),
@@ -445,7 +413,6 @@ mod tests {
     #[test]
     fn test_merge_projects_target_not_found() {
         let mut conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let source = insert_project(&conn, &CreateProjectRequest {
             account_id: "acc1".into(),
@@ -461,7 +428,6 @@ mod tests {
     #[test]
     fn test_merge_preserves_existing_target_mails() {
         let mut conn = setup_db();
-        create_test_account(&conn, "acc1");
 
         let source = insert_project(&conn, &CreateProjectRequest {
             account_id: "acc1".into(),
