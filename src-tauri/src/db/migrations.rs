@@ -148,89 +148,49 @@ fn migrate_v3(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 1マイグレーション = (適用後のスキーマバージョン, 適用関数)
+type Migration = (i32, fn(&Connection) -> Result<(), AppError>);
+
+/// バージョン昇順に並べたマイグレーション一覧。
+/// 追記時はこの配列の末尾に1行足すだけでよい。
+/// v11 は別機能で予約済みのため欠番（マージ時に順序解決される）
+const MIGRATIONS: &[Migration] = &[
+    (1, migrate_v1),
+    (2, migrate_v2),
+    (3, migrate_v3),
+    (4, migrate_v4),
+    (5, migrate_v5),
+    (6, migrate_v6),
+    (7, migrate_v7),
+    (8, migrate_v8),
+    (9, migrate_v9),
+    (10, migrate_v10),
+    (12, migrate_v12),
+    (13, migrate_v13),
+    (14, migrate_v14),
+];
+
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
-    let mut version = get_schema_version(conn)?;
+    apply_migrations(conn, MIGRATIONS)
+}
 
-    if version < 1 {
-        migrate_v1(conn)?;
-        version = 1;
-        set_schema_version(conn, version)?;
+/// マイグレーション一覧を順に適用する。
+/// 各バージョンは「migrate_vN → set_schema_version(N)」を1トランザクションで
+/// 包んで適用するため、途中失敗時に「スキーマ一部適用済み + version 未更新」の
+/// 中途半端な状態にならない。失敗したバージョンは全体がロールバックされ、
+/// 次回起動時にそのバージョンから安全に再実行できる。
+fn apply_migrations(conn: &Connection, migrations: &[Migration]) -> Result<(), AppError> {
+    let version = get_schema_version(conn)?;
+
+    for &(target_version, migrate) in migrations {
+        if version >= target_version {
+            continue;
+        }
+        let tx = conn.unchecked_transaction()?;
+        migrate(&tx)?;
+        set_schema_version(&tx, target_version)?;
+        tx.commit()?;
     }
-
-    if version < 2 {
-        migrate_v2(conn)?;
-        version = 2;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 3 {
-        migrate_v3(conn)?;
-        version = 3;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 4 {
-        migrate_v4(conn)?;
-        version = 4;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 5 {
-        migrate_v5(conn)?;
-        version = 5;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 6 {
-        migrate_v6(conn)?;
-        version = 6;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 7 {
-        migrate_v7(conn)?;
-        version = 7;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 8 {
-        migrate_v8(conn)?;
-        version = 8;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 9 {
-        migrate_v9(conn)?;
-        version = 9;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 10 {
-        migrate_v10(conn)?;
-        version = 10;
-        set_schema_version(conn, version)?;
-    }
-
-    // v11 は別機能で予約済みのため欠番（マージ時に順序解決される）
-    if version < 12 {
-        migrate_v12(conn)?;
-        version = 12;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 13 {
-        migrate_v13(conn)?;
-        version = 13;
-        set_schema_version(conn, version)?;
-    }
-
-    if version < 14 {
-        migrate_v14(conn)?;
-        version = 14;
-        set_schema_version(conn, version)?;
-    }
-
-    let _ = version;
 
     Ok(())
 }
@@ -469,6 +429,105 @@ fn migrate_v14(conn: &Connection) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v15 相当の失敗するマイグレーション: 一部のスキーマ変更
+    /// （ALTER TABLE ADD COLUMN = 非冪等）を適用した後に失敗する。
+    /// 途中失敗時の原子性（ロールバック）検証用。
+    fn migrate_broken_partial(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch("ALTER TABLE mails ADD COLUMN broken_col INTEGER;")?;
+        // 存在しないテーブルへの INSERT で故意に失敗させる
+        conn.execute("INSERT INTO no_such_table (x) VALUES (1)", [])?;
+        Ok(())
+    }
+
+    /// v15 相当の正常なマイグレーション（再実行検証用）。
+    /// migrate_broken_partial と同じ ALTER TABLE を含むため、
+    /// 先行の失敗がロールバックされていなければ duplicate column で失敗する。
+    fn migrate_fixed(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch("ALTER TABLE mails ADD COLUMN broken_col INTEGER;")?;
+        Ok(())
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                params![table, column],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count > 0
+    }
+
+    fn schema_version(conn: &Connection) -> i32 {
+        conn.query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn test_failed_migration_rolls_back_partial_changes() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
+        with_broken.push((15, migrate_broken_partial));
+
+        let result = apply_migrations(&conn, &with_broken);
+        assert!(result.is_err(), "壊れたマイグレーションは失敗する");
+
+        // 途中まで適用されたスキーマ変更がロールバックされている
+        assert!(
+            !column_exists(&conn, "mails", "broken_col"),
+            "失敗したマイグレーションの部分適用はロールバックされる"
+        );
+        // schema_version は進んでいない
+        assert_eq!(
+            schema_version(&conn),
+            14,
+            "失敗したバージョンに schema_version は進まない"
+        );
+    }
+
+    #[test]
+    fn test_rerun_after_failure_completes_without_duplicate_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
+        with_broken.push((15, migrate_broken_partial));
+        assert!(apply_migrations(&conn, &with_broken).is_err());
+
+        // 修正版で再実行 → duplicate column にならず完走する
+        let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
+        with_fixed.push((15, migrate_fixed));
+        apply_migrations(&conn, &with_fixed)
+            .expect("失敗後の再実行は duplicate column にならず完走する");
+
+        assert!(column_exists(&conn, "mails", "broken_col"));
+        assert_eq!(schema_version(&conn), 15);
+    }
+
+    #[test]
+    fn test_earlier_versions_stay_committed_when_later_version_fails() {
+        let conn = Connection::open_in_memory().unwrap();
+        // v0 から実行し、最後のバージョンだけ失敗させる
+        let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
+        with_broken.push((15, migrate_broken_partial));
+
+        assert!(apply_migrations(&conn, &with_broken).is_err());
+
+        // 成功済みバージョン（v1〜v14）はコミット済みのまま
+        assert_eq!(
+            schema_version(&conn),
+            14,
+            "成功したバージョンまでは確定している"
+        );
+        assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
+
+        // その後、通常の run_migrations は冪等に成功する
+        run_migrations(&conn).unwrap();
+        assert_eq!(schema_version(&conn), 14);
+    }
 
     #[test]
     fn test_run_migrations_creates_tables() {
