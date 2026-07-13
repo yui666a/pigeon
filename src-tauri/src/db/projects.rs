@@ -40,12 +40,14 @@ pub fn insert_project_with_id(
 
 pub fn insert_project(conn: &Connection, req: &CreateProjectRequest) -> Result<Project, AppError> {
     let id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO projects (id, account_id, name, description, color)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, req.account_id, req.name, req.description, req.color],
-    )?;
-    get_project(conn, &id)
+    insert_project_with_id(
+        conn,
+        &id,
+        &req.account_id,
+        &req.name,
+        req.description.as_deref(),
+        req.color.as_deref(),
+    )
 }
 
 pub fn get_project(conn: &Connection, id: &str) -> Result<Project, AppError> {
@@ -165,13 +167,7 @@ pub fn merge_projects(conn: &mut Connection, source_id: &str, target_id: &str) -
 
     // Reassign each mail to the target project and log the correction
     for mail_id in &mail_ids {
-        tx.execute(
-            "UPDATE mail_project_assignments
-             SET project_id = ?1, assigned_by = 'user', corrected_from = ?2
-             WHERE mail_id = ?3",
-            params![target_id, source_id, mail_id],
-        )?;
-        assignments::insert_correction(&tx, mail_id, Some(source_id), target_id)?;
+        assignments::reassign_with_correction(&tx, mail_id, source_id, target_id)?;
     }
 
     // Delete the source project (no cascade issues since assignments were moved)
