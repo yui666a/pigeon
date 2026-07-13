@@ -121,7 +121,9 @@ pub async fn classify_one(
 /// - Assign（確信度 >= `CONFIDENCE_UNCERTAIN`）: 割り当てを確定し、過去の分類で
 ///   残った Create 提案があれば除去する
 /// - Assign（確信度 < `CONFIDENCE_UNCERTAIN`）: 永続化しない（設計書 §確信度による
-///   初期状態: INSERT しない）
+///   初期状態: INSERT しない）。DB に存在しない割り当てを「assign」として
+///   フロントに見せると承認時に割り当て不在で不整合になるため、応答も
+///   Unclassified に正規化する（却下した候補は理由に残す）
 /// - Create: 確信度によらず提案として保留キューに積む（ユーザー承認待ち）
 /// - Unclassified: 何も永続化しない
 pub fn apply_result(
@@ -136,8 +138,14 @@ pub fn apply_result(
             pending.remove(mail_id)?;
             Ok(result)
         }
-        // 低確信度の Assign は永続化しない
-        ClassifyAction::Assign { .. } => Ok(result),
+        ClassifyAction::Assign { ref project_id } => Ok(ClassifyResult {
+            reason: format!(
+                "確信度 {:.2} が閾値 {CONFIDENCE_UNCERTAIN} 未満のため未分類のままにします（候補: {project_id}）。{}",
+                result.confidence, result.reason
+            ),
+            action: ClassifyAction::Unclassified,
+            confidence: result.confidence,
+        }),
         ClassifyAction::Create { .. } => {
             pending.insert(mail_id.to_string(), result.clone())?;
             Ok(result)
@@ -287,6 +295,41 @@ mod tests {
 
         assert!(matches!(res.result.action, ClassifyAction::Assign { .. }));
         assert_eq!(assigned_mail_ids(&db, &proj.id), vec!["m1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_classify_one_low_confidence_assign_normalized_to_unclassified() {
+        // 設計書（phase2 §確信度による初期状態）: 確信度 < 0.4 の assign は
+        // 永続化しない。加えて、DB に存在しない割り当てをフロントに
+        // 「assign」として見せない（承認時に割り当て不在で不整合になる）ため、
+        // 応答も Unclassified に正規化する。
+        let db = Mutex::new(setup_db());
+        let pending = PendingClassifications::new();
+        let proj = {
+            let conn = db.lock().unwrap();
+            insert_test_mail(&conn, "m1", "Subject");
+            insert_project(&conn, "Proj")
+        };
+        let llm = StubLlm::returning(assign_result(&proj.id, 0.3));
+
+        let res = classify_one(&db, &llm, &pending, "m1").await.unwrap();
+
+        assert!(
+            matches!(res.result.action, ClassifyAction::Unclassified),
+            "低確信度の assign は unclassified としてフロントへ返す"
+        );
+        assert!(
+            res.result.reason.contains(&proj.id),
+            "却下した候補は理由に残す（デバッグ・透明性のため）"
+        );
+        assert!(
+            assigned_mail_ids(&db, &proj.id).is_empty(),
+            "低確信度の assign は永続化しない"
+        );
+        assert!(
+            !pending.contains("m1").unwrap(),
+            "pending は新規案件提案（Create）専用。assign は積まない"
+        );
     }
 
     #[tokio::test]
