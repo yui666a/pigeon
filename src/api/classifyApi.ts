@@ -1,5 +1,5 @@
 import { invokeCommand } from "./client";
-import type { ClassifyResponse, UnclassifiedMailRef } from "../types/classifier";
+import type { ClassifyBatchOutcome, ClassifyResponse } from "../types/classifier";
 import type { Project } from "../types/project";
 
 /** AI 分類系 Tauri commands の型付きラッパ */
@@ -13,8 +13,17 @@ export const classifyApi = {
   classifyMail: (mailId: string) =>
     invokeCommand<ClassifyResponse>("classify_mail", { mailId }),
 
-  fetchUnclassifiedMailRefs: (accountId: string) =>
-    invokeCommand<UnclassifiedMailRef[]>("get_unclassified_mails", { accountId }),
+  /**
+   * 未分類メールのバッチ分類を開始/再開する。
+   * 1 invoke で「次の停止点（create 提案）or 完了/中断」まで進む。
+   * 進捗は classify-progress イベントで届く。
+   */
+  classifyBatch: (accountId: string) =>
+    invokeCommand<ClassifyBatchOutcome>("classify_batch", { accountId }),
+
+  /** 実行中/承認待ちのバッチ分類を中止する */
+  cancelClassification: (accountId: string) =>
+    invokeCommand<void>("cancel_classification", { accountId }),
 
   /** 新規案件の提案を承認し、作成された案件を返す */
   approveNewProject: (mailId: string, projectName: string, description?: string) =>

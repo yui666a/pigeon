@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useClassifyStore } from "../../stores/classifyStore";
 
 interface ClassifyButtonProps {
@@ -11,6 +12,14 @@ export function ClassifyButton({ accountId }: ClassifyButtonProps) {
   const cancelClassification = useClassifyStore(
     (s) => s.cancelClassification,
   );
+  const initProgressListener = useClassifyStore((s) => s.initProgressListener);
+
+  useEffect(() => {
+    const promise = initProgressListener();
+    return () => {
+      promise.then((unlisten) => unlisten());
+    };
+  }, [initProgressListener]);
 
   if (classifying) {
     return (

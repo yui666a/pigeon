@@ -1,18 +1,28 @@
 import { create } from "zustand";
+import { listen } from "@tauri-apps/api/event";
 import { classifyApi } from "../api/classifyApi";
 import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 import { useProjectStore } from "./projectStore";
-import type { ClassifyResponse, UnclassifiedMailRef } from "../types/classifier";
+import type {
+  ClassifyProgressEvent,
+  ClassifyResponse,
+} from "../types/classifier";
 
+/**
+ * バッチ分類の制御ストア。
+ *
+ * ループの本体はバックエンド（classify_batch）にあり、ここは
+ * 「1 invoke → create 提案で停止したら承認/却下 → 再 invoke で再開」の
+ * 薄い制御と進捗イベントの反映だけを持つ
+ * （設計: docs/superpowers/specs/2026-07-13-classify-batch-backend-design.md）。
+ */
 interface ClassifyState {
   classifying: boolean;
   progress: { current: number; total: number } | null;
   pendingProposal: ClassifyResponse | null;
-  // 内部: 逐次ループの状態
-  _queue: UnclassifiedMailRef[];
-  _index: number;
-  _cancelled: boolean;
+  // 内部: 実行中バッチのアカウント（再開・キャンセルの宛先）
+  _accountId: string | null;
 
   classifyMail: (mailId: string) => Promise<void>;
   classifyAll: (accountId: string) => Promise<void>;
@@ -23,43 +33,52 @@ interface ClassifyState {
     description?: string,
   ) => Promise<void>;
   rejectClassification: (mailId: string) => Promise<void>;
+  /** classify-progress イベントの購読を張る（ClassifyButton がマウント時に呼ぶ） */
+  initProgressListener: () => Promise<() => void>;
 }
 
 export const useClassifyStore = create<ClassifyState>((set, get) => {
-  // 次の1件を分類し、create でなければ自動で次へ進む
-  const classifyNext = async (): Promise<void> => {
-    const { _queue, _index, _cancelled } = get();
-    if (_cancelled || _index >= _queue.length) {
-      set({ classifying: false, progress: null, pendingProposal: null });
-      return;
-    }
-    const mail = _queue[_index];
-    let res: ClassifyResponse;
+  // classify_batch を1回 invoke し、戻り値（次の停止点 or 完了）を状態に反映する
+  const runBatch = async (accountId: string): Promise<void> => {
+    set({ classifying: true, pendingProposal: null, _accountId: accountId });
     try {
-      res = await classifyApi.classifyMail(mail.id);
+      const outcome = await classifyApi.classifyBatch(accountId);
+      switch (outcome.status) {
+        case "paused":
+          // create 提案で停止。承認/却下を待つ（approve/reject が再開する）
+          set({
+            pendingProposal: outcome.proposal,
+            progress: { current: outcome.done, total: outcome.total },
+          });
+          return;
+        case "already_running":
+          // 進行中のバッチに任せる（進捗はイベントで届く）
+          return;
+        default:
+          // completed / cancelled
+          set({
+            classifying: false,
+            progress: null,
+            pendingProposal: null,
+            _accountId: null,
+          });
+      }
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));
-      set({ classifying: false, progress: null });
-      return;
+      set({
+        classifying: false,
+        progress: null,
+        pendingProposal: null,
+        _accountId: null,
+      });
     }
-    set({
-      _index: _index + 1,
-      progress: { current: _index + 1, total: _queue.length },
-    });
-    if (res.action === "create") {
-      set({ pendingProposal: res });
-      return; // 停止：承認/却下を待つ
-    }
-    await classifyNext();
   };
 
   return {
     classifying: false,
     progress: null,
     pendingProposal: null,
-    _queue: [],
-    _index: 0,
-    _cancelled: false,
+    _accountId: null,
 
     classifyMail: async (mailId) => {
       try {
@@ -70,25 +89,26 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
     },
 
     classifyAll: async (accountId) => {
-      try {
-        const mails = await classifyApi.fetchUnclassifiedMailRefs(accountId);
-        set({
-          classifying: true,
-          _queue: mails,
-          _index: 0,
-          _cancelled: false,
-          pendingProposal: null,
-          progress: { current: 0, total: mails.length },
-        });
-        await classifyNext();
-      } catch (e) {
-        set({ classifying: false, progress: null });
-        useErrorStore.getState().addError(errorMessage(e));
-      }
+      await runBatch(accountId);
     },
 
     cancelClassification: async () => {
-      set({ _cancelled: true, classifying: false, progress: null, pendingProposal: null });
+      const accountId = get()._accountId;
+      if (accountId) {
+        try {
+          await classifyApi.cancelClassification(accountId);
+        } catch (e) {
+          useErrorStore.getState().addError(errorMessage(e));
+        }
+      }
+      // 実行中の invoke が返るのを待たず即座に表示を畳む
+      //（バックエンドは次のメール処理前に中断してバッチを破棄する）
+      set({
+        classifying: false,
+        progress: null,
+        pendingProposal: null,
+        _accountId: null,
+      });
     },
 
     approveNewProject: async (mailId, projectName, description) => {
@@ -99,11 +119,14 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
           description,
         );
         useProjectStore.getState().addProject(project);
-        set({ pendingProposal: null });
-        await classifyNext();
       } catch (e) {
+        // 承認に失敗しただけなので提案は残す（再試行できる）
         useErrorStore.getState().addError(errorMessage(e));
+        return;
       }
+      set({ pendingProposal: null });
+      const accountId = get()._accountId;
+      if (accountId) await runBatch(accountId); // 新案件込みで続きから再開
     },
 
     rejectClassification: async (mailId) => {
@@ -113,7 +136,27 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
         useErrorStore.getState().addError(errorMessage(e));
       }
       set({ pendingProposal: null });
-      await classifyNext();
+      const accountId = get()._accountId;
+      if (accountId) await runBatch(accountId); // 却下メールはスキップして再開
+    },
+
+    initProgressListener: async () => {
+      const unlisten = await listen<ClassifyProgressEvent>(
+        "classify-progress",
+        (event) => {
+          // 実行中バッチのアカウントの進捗のみ反映する
+          const { _accountId, classifying } = get();
+          if (classifying && _accountId === event.payload.account_id) {
+            set({
+              progress: {
+                current: event.payload.current,
+                total: event.payload.total,
+              },
+            });
+          }
+        },
+      );
+      return unlisten;
     },
   };
 });
