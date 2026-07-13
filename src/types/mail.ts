@@ -91,3 +91,11 @@ export interface BulkResult {
   /** [mail_id, エラーメッセージ] の組 */
   failed: [string, string][];
 }
+
+/** backfill_account の結果 */
+export interface BackfillOutcome {
+  /** 今回取り込んだ件数 */
+  fetched: number;
+  /** これ以上サーバーに古いメールが無いか */
+  exhausted: boolean;
+}
