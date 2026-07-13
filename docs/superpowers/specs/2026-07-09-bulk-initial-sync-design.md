@@ -102,6 +102,9 @@ pub async fn fetch_mails_batched(
 
 - `sync_account_inner` は `on_batch` 内でパース・DB挿入・`app_handle.emit("sync-progress", ...)` を行う
 - `sync_account` command は `AppHandle` を受け取る形に変更（`tauri::command` の引数追加のみ）
+- **追記（2026-07-13 リファクタリング）**: `sync_account_inner` 相当の処理は
+  `mail_sync/sync_service.rs::sync_account` へ移動した。`sync-progress` の emit は
+  コマンド層がコールバックとして注入する（設計意図は本書のまま）
 - 既存の `fetch_mails_since_uid` は削除し、テストも新関数に置き換える
 
 ### フロントエンド
