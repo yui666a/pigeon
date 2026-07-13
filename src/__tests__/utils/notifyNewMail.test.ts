@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   notifyNewMail,
+  ensureNotificationPermission,
   isNotificationEnabled,
   isSubjectPreviewEnabled,
   buildNotificationBody,
@@ -133,6 +134,64 @@ describe("notifyNewMail", () => {
       title: "Pigeon",
       body: "2件の新着メールを受信しました",
     });
+  });
+});
+
+describe("ensureNotificationPermission", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it("does nothing and returns false when notifications are disabled", async () => {
+    localStorage.setItem(NOTIFY_NEW_MAIL_KEY, "false");
+
+    const result = await ensureNotificationPermission();
+
+    expect(result).toBe(false);
+    // 無効時は権限ダイアログを出さない（余計なダイアログを避ける）
+    expect(mockIsPermissionGranted).not.toHaveBeenCalled();
+    expect(mockRequestPermission).not.toHaveBeenCalled();
+  });
+
+  it("returns true without requesting when already granted", async () => {
+    mockIsPermissionGranted.mockResolvedValue(true);
+
+    const result = await ensureNotificationPermission();
+
+    expect(result).toBe(true);
+    expect(mockRequestPermission).not.toHaveBeenCalled();
+  });
+
+  it("requests permission when not yet granted and returns the result", async () => {
+    mockIsPermissionGranted.mockResolvedValue(false);
+    mockRequestPermission.mockResolvedValue("granted");
+
+    const result = await ensureNotificationPermission();
+
+    expect(mockRequestPermission).toHaveBeenCalled();
+    expect(result).toBe(true);
+  });
+
+  it("returns false when permission is denied", async () => {
+    mockIsPermissionGranted.mockResolvedValue(false);
+    mockRequestPermission.mockResolvedValue("denied");
+
+    expect(await ensureNotificationPermission()).toBe(false);
+  });
+
+  it("returns false (swallows) when the plugin throws", async () => {
+    mockIsPermissionGranted.mockRejectedValue(new Error("plugin unavailable"));
+
+    await expect(ensureNotificationPermission()).resolves.toBe(false);
+  });
+
+  it("does not send any notification (permission-only)", async () => {
+    mockIsPermissionGranted.mockResolvedValue(true);
+
+    await ensureNotificationPermission();
+
+    expect(mockSendNotification).not.toHaveBeenCalled();
   });
 });
 

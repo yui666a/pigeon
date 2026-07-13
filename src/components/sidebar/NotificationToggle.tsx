@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   NOTIFY_NEW_MAIL_KEY,
   NOTIFY_SUBJECT_PREVIEW_KEY,
+  ensureNotificationPermission,
   isNotificationEnabled,
   isSubjectPreviewEnabled,
 } from "../../utils/notifyNewMail";
@@ -22,6 +23,8 @@ export function NotificationToggle() {
     if (next) {
       // デフォルト ON のため、有効化はキー削除で表現する
       localStorage.removeItem(NOTIFY_NEW_MAIL_KEY);
+      // ON にした時点で権限ダイアログを出しておく（新着を待たずに許可を得る）
+      void ensureNotificationPermission();
     } else {
       localStorage.setItem(NOTIFY_NEW_MAIL_KEY, "false");
     }

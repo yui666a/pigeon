@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { Thread } from "../../types/mail";
 import { useMailDrag } from "../../hooks/useMailDrag";
 import { formatShortDate } from "../../utils/date";
+import { threadBackgroundClass } from "../../utils/threadStyle";
 import { useSelectionStore } from "../../stores/selectionStore";
 
 interface ThreadItemProps {
@@ -23,10 +24,12 @@ export const ThreadItem = memo(function ThreadItem({
   const isChecked = useSelectionStore((s) => s.isSelected(thread.thread_id));
   const toggleThread = useSelectionStore((s) => s.toggleThread);
 
+  const bgClass = threadBackgroundClass(thread, selected);
+
   return (
     <div
       onMouseDown={onMouseDown}
-      className={`flex w-full cursor-pointer items-start gap-2 border-b px-4 py-3 text-left hover:bg-gray-50 ${selected ? "bg-blue-50" : ""}`}
+      className={`flex w-full cursor-pointer items-start gap-2 border-b px-4 py-3 text-left hover:bg-gray-50 ${bgClass}`}
     >
       <input
         type="checkbox"

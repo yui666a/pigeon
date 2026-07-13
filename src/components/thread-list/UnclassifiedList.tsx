@@ -74,31 +74,32 @@ export function UnclassifiedList() {
   };
 
   return (
-    <div className="border-b">
-      <div className="flex items-center justify-between px-4 py-2">
-        <h3 className="text-sm font-medium text-gray-700">
-          未分類メール ({unclassifiedMails.length})
-        </h3>
-      </div>
-
-      <ClassifyButton accountId={selectedAccountId} />
-
-      {pendingProposal && pendingProposal.action === "create" && (
-        <div className="space-y-2 px-4 pb-2">
-          <NewProjectProposal
-            key={pendingProposal.mail_id}
-            mailId={pendingProposal.mail_id}
-            suggestedName={pendingProposal.project_name ?? ""}
-            suggestedDescription={pendingProposal.description}
-            reason={pendingProposal.reason}
-            onApprove={handleApproveNewProject}
-            onReject={rejectClassification}
-          />
+    <div className="flex h-full flex-col">
+      {/* 上部の固定領域: 見出し・分類ボタン・新規案件提案・一括操作バー */}
+      <div className="shrink-0 border-b">
+        <div className="flex items-center justify-between px-4 py-2">
+          <h3 className="text-sm font-medium text-gray-700">
+            未分類メール ({unclassifiedMails.length})
+          </h3>
         </div>
-      )}
 
-      {unclassifiedThreads.length > 0 && (
-        <div>
+        <ClassifyButton accountId={selectedAccountId} />
+
+        {pendingProposal && pendingProposal.action === "create" && (
+          <div className="space-y-2 px-4 pb-2">
+            <NewProjectProposal
+              key={pendingProposal.mail_id}
+              mailId={pendingProposal.mail_id}
+              suggestedName={pendingProposal.project_name ?? ""}
+              suggestedDescription={pendingProposal.description}
+              reason={pendingProposal.reason}
+              onApprove={handleApproveNewProject}
+              onReject={rejectClassification}
+            />
+          </div>
+        )}
+
+        {unclassifiedThreads.length > 0 && (
           <BulkActionBar
             selectedCount={selectedCount}
             projects={projects}
@@ -107,23 +108,27 @@ export function UnclassifiedList() {
             onMove={(projectId) => void handleBulkMove(projectId)}
             onClear={clearSelection}
           />
-          <div className="max-h-48 overflow-y-auto">
-            {visibleThreads.map((thread) => (
-              <ThreadDragItem
-                key={thread.thread_id}
-                thread={thread}
-                onClick={() => handleThreadClick(thread)}
-              />
-            ))}
-            {hasMore && (
-              <button
-                onClick={showMore}
-                className="w-full py-2 text-xs text-blue-600 hover:bg-gray-50"
-              >
-                もっと見る（残り {remaining.toLocaleString()} 件）
-              </button>
-            )}
-          </div>
+        )}
+      </div>
+
+      {/* スレッド一覧: ペインの残り高さを使ってスクロールする */}
+      {unclassifiedThreads.length > 0 && (
+        <div className="flex-1 overflow-y-auto">
+          {visibleThreads.map((thread) => (
+            <ThreadDragItem
+              key={thread.thread_id}
+              thread={thread}
+              onClick={() => handleThreadClick(thread)}
+            />
+          ))}
+          {hasMore && (
+            <button
+              onClick={showMore}
+              className="w-full py-2 text-xs text-blue-600 hover:bg-gray-50"
+            >
+              もっと見る（残り {remaining.toLocaleString()} 件）
+            </button>
+          )}
         </div>
       )}
     </div>

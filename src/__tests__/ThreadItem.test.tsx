@@ -85,6 +85,33 @@ describe("ThreadItem", () => {
     expect(subject.className).toContain("font-medium");
   });
 
+  it("applies a grey background when all mails are read", () => {
+    const thread = makeThread({ mails: [makeMail("m1"), makeMail("m2")] });
+    const { container } = render(
+      <ThreadItem thread={thread} selected={false} onClick={vi.fn()} />,
+    );
+    expect(container.firstElementChild!.className).toContain("bg-gray-100");
+  });
+
+  it("does not apply the grey background when the thread has unread mail", () => {
+    const thread = makeThread({
+      mails: [makeMail("m1"), makeMail("m2", { is_read: false })],
+    });
+    const { container } = render(
+      <ThreadItem thread={thread} selected={false} onClick={vi.fn()} />,
+    );
+    expect(container.firstElementChild!.className).not.toContain("bg-gray-100");
+  });
+
+  it("prioritizes the selected background over the read-state background", () => {
+    const thread = makeThread({ mails: [makeMail("m1"), makeMail("m2")] });
+    const { container } = render(
+      <ThreadItem thread={thread} selected={true} onClick={vi.fn()} />,
+    );
+    expect(container.firstElementChild!.className).toContain("bg-blue-50");
+    expect(container.firstElementChild!.className).not.toContain("bg-gray-100");
+  });
+
   it("shows a star when the thread contains a flagged mail", () => {
     const thread = makeThread({
       mails: [makeMail("m1"), makeMail("m2", { is_flagged: true })],
