@@ -87,8 +87,7 @@ pub fn get_drafts_by_account(conn: &Connection, account_id: &str) -> Result<Vec<
     ))?;
     let drafts = stmt
         .query_map(params![account_id], row_to_draft)?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(drafts)
 }
 

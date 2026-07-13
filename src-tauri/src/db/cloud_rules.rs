@@ -56,8 +56,7 @@ pub fn list_rules(conn: &Connection, directory_id: &str) -> Result<Vec<CloudRule
                 allow: row.get(4)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rules)
 }
 

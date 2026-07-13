@@ -57,8 +57,7 @@ pub fn list_files(conn: &Connection, directory_id: &str) -> Result<Vec<ProjectFi
                 indexed_at: row.get(8)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(files)
 }
 

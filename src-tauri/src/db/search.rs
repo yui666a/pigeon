@@ -92,8 +92,7 @@ fn search_fts(
                 snippet,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(results)
 }
@@ -132,8 +131,7 @@ fn search_like(
                 snippet: mail.subject,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(results)
 }
