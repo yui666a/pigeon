@@ -299,8 +299,9 @@ pub fn move_mail_to_project(
 /// 推論のため、確信度スコアを持たないことで区別する）。ユーザーの訂正判断を経由しない
 /// 機械的な追従のため `correction_log` には記録しない（誤った学習信号になるのを避ける）。
 ///
-/// 戻り値は追従割り当てしたメール数。
-pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize, AppError> {
+/// 戻り値は追従割り当てしたメールIDの一覧。呼び出し側が保留中の分類提案
+/// （`PendingClassifications`）の掃除などの後処理に使う。
+pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<Vec<String>, AppError> {
     // 読み出しは3クエリに固定する: 軽量メタ（本文カラムを読まない）・割り当てマップ・除外集合。
     // 以前は本文込み全メールのロード + メール毎の get_assignment_info 発行（N+1）だった
     let metas = mails::get_thread_metas_by_account(conn, account_id)?;
@@ -314,7 +315,7 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize,
     // INSERT 毎の autocommit を避けられ、途中失敗時に「スレッドの一部だけ追従された」
     // 中途半端な状態を残さない
     let tx = conn.unchecked_transaction()?;
-    let mut followed = 0;
+    let mut followed = Vec::new();
     for mail_ids in &thread_mail_ids {
         let assigned_projects: HashSet<&String> =
             mail_ids.iter().filter_map(|id| assigned.get(id)).collect();
@@ -336,7 +337,7 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize,
                 continue;
             }
             assign_mail(&tx, mail_id, target_project, "ai", None)?;
-            followed += 1;
+            followed.push(mail_id.clone());
         }
     }
     tx.commit()?;
@@ -939,7 +940,7 @@ mod tests {
         assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
 
         let followed = auto_follow_threads(&conn, "acc1").unwrap();
-        assert_eq!(followed, 1);
+        assert_eq!(followed.len(), 1);
 
         let info = get_assignment_info(&conn, "m2").unwrap().unwrap();
         assert_eq!(info.0, "proj1");
@@ -966,7 +967,7 @@ mod tests {
         assign_mail(&conn, "m2", "proj2", "user", Some(1.0)).unwrap();
 
         let followed = auto_follow_threads(&conn, "acc1").unwrap();
-        assert_eq!(followed, 0);
+        assert!(followed.is_empty());
 
         let info = get_assignment_info(&conn, "m3").unwrap();
         assert!(info.is_none(), "曖昧なスレッドは未分類のまま");
@@ -984,7 +985,7 @@ mod tests {
         insert_mail(&conn, &m2);
 
         let followed = auto_follow_threads(&conn, "acc1").unwrap();
-        assert_eq!(followed, 0);
+        assert!(followed.is_empty());
         assert!(get_assignment_info(&conn, "m1").unwrap().is_none());
         assert!(get_assignment_info(&conn, "m2").unwrap().is_none());
     }
@@ -1007,7 +1008,7 @@ mod tests {
         assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
 
         let followed = auto_follow_threads(&conn, "acc1").unwrap();
-        assert_eq!(followed, 1);
+        assert_eq!(followed.len(), 1);
         assert!(
             get_assignment_info(&conn, "m3").unwrap().is_none(),
             "無関係なスレッドは影響を受けない"
@@ -1114,7 +1115,7 @@ mod tests {
         assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
 
         // 1回目の追従で m2 が proj1 に入る
-        assert_eq!(auto_follow_threads(&conn, "acc1").unwrap(), 1);
+        assert_eq!(auto_follow_threads(&conn, "acc1").unwrap().len(), 1);
         assert!(get_assignment_info(&conn, "m2").unwrap().is_some());
 
         // ユーザーが m2 を却下（割り当て解除 + 除外トゥームストーン）
@@ -1123,7 +1124,7 @@ mod tests {
 
         // 一覧を開き直しても（＝再度追従を走らせても）m2 は復活しない
         assert_eq!(
-            auto_follow_threads(&conn, "acc1").unwrap(),
+            auto_follow_threads(&conn, "acc1").unwrap().len(),
             0,
             "却下したメールはスレッド追従で再割り当てされない"
         );

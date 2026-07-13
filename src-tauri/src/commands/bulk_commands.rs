@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::db::{accounts, assignments, mails, settings};
+use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
 use crate::mail_sync::imap_client;
 use crate::models::account::{Account, AccountProvider};
@@ -201,16 +201,24 @@ async fn archive_one(
 }
 
 /// 複数メールを一括で案件へ割り当てる。IMAP 通信を伴わないため同期関数のまま。
+/// 単体の `move_mail` と同じ本体（`move_mail_inner`）を1件ずつ再利用するため、
+/// 保留中の分類提案（`PendingClassifications`）の掃除も同じ挙動になる。
 #[tauri::command]
 pub fn bulk_move_mails(
     state: State<DbState>,
+    pending: State<crate::commands::classify_commands::PendingClassifications>,
     mail_ids: Vec<String>,
     project_id: String,
 ) -> Result<BulkResult, AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
     let mut result = BulkResult::new();
     for mail_id in mail_ids {
-        let outcome = assignments::move_mail_to_project(&conn, &mail_id, &project_id);
+        let outcome = crate::commands::classify_commands::move_mail_inner(
+            &conn,
+            &pending,
+            &mail_id,
+            &project_id,
+        );
         result.push(mail_id, outcome);
     }
     Ok(result)
@@ -219,7 +227,7 @@ pub fn bulk_move_mails(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::projects;
+    use crate::db::{assignments, projects};
     use crate::models::project::CreateProjectRequest;
     use crate::test_helpers::{make_mail, setup_db};
 
@@ -297,6 +305,51 @@ mod tests {
         let assigned = assignments::get_mails_by_project(&conn, &proj.id).unwrap();
         assert_eq!(assigned.len(), 1);
         assert_eq!(assigned[0].id, "m1");
+    }
+
+    #[test]
+    fn test_bulk_move_mails_removes_pending_for_succeeded_only() {
+        // 割り当てが確定した m1 の Create 提案は除去され、失敗した m2 の提案は残る
+        use crate::commands::classify_commands::PendingClassifications;
+        use crate::models::classifier::{ClassifyAction, ClassifyResult};
+
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        let m1 = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-07-13T10:00:00");
+        mails::insert_mail(&conn, &m1).unwrap();
+        // m2 はDBに存在しない → move は失敗する
+
+        let req = CreateProjectRequest {
+            account_id: "acc1".into(),
+            name: "Proj".into(),
+            description: None,
+            color: None,
+        };
+        let proj = projects::insert_project(&conn, &req).unwrap();
+
+        let suggestion = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: "Suggested".into(),
+                description: "desc".into(),
+            },
+            confidence: 0.8,
+            reason: "test".into(),
+        };
+        pending.insert("m1".into(), suggestion.clone()).unwrap();
+        pending.insert("m2".into(), suggestion).unwrap();
+
+        // bulk_move_mails コマンド本体と同じループ
+        let mut result = BulkResult::new();
+        for mail_id in ["m1", "m2"] {
+            let outcome = crate::commands::classify_commands::move_mail_inner(
+                &conn, &pending, mail_id, &proj.id,
+            );
+            result.push(mail_id.to_string(), outcome);
+        }
+
+        assert_eq!(result.succeeded, vec!["m1".to_string()]);
+        assert!(!pending.contains("m1").unwrap(), "確定した提案は除去");
+        assert!(pending.contains("m2").unwrap(), "失敗した提案は保持");
     }
 
     #[test]
