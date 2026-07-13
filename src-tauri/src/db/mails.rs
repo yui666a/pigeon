@@ -447,36 +447,38 @@ fn has_project_assignment(conn: &Connection, mail_id: &str) -> Result<bool, AppE
     Ok(exists)
 }
 
-/// メールを既読にし、サーバー反映に必要な (folder, uid) を返す。
-pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
+/// mails の bool 1カラムを更新し、サーバー反映に必要な (folder, uid) を返す共通処理
+/// （mark_read / mark_unread / set_flagged の本体）。対象が存在しなければ MailNotFound。
+/// `column` は SQL に直接埋め込むため、このモジュール内の固定リテラルのみ渡すこと。
+fn set_mail_bool_column(
+    conn: &Connection,
+    mail_id: &str,
+    column: &str,
+    value: bool,
+) -> Result<(String, u32), AppError> {
     let (folder, uid): (String, u32) = conn
         .query_row(
             "SELECT folder, uid FROM mails WHERE id = ?1",
             params![mail_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
+        .optional()?
+        .ok_or_else(|| AppError::MailNotFound(mail_id.to_string()))?;
     conn.execute(
-        "UPDATE mails SET is_read = 1 WHERE id = ?1",
-        params![mail_id],
+        &format!("UPDATE mails SET {} = ?1 WHERE id = ?2", column),
+        params![value, mail_id],
     )?;
     Ok((folder, uid))
 }
 
+/// メールを既読にし、サーバー反映に必要な (folder, uid) を返す。
+pub fn mark_read(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
+    set_mail_bool_column(conn, mail_id, "is_read", true)
+}
+
 /// メールを未読に戻し、サーバー反映に必要な (folder, uid) を返す（mark_read の逆）。
 pub fn mark_unread(conn: &Connection, mail_id: &str) -> Result<(String, u32), AppError> {
-    let (folder, uid): (String, u32) = conn
-        .query_row(
-            "SELECT folder, uid FROM mails WHERE id = ?1",
-            params![mail_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
-    conn.execute(
-        "UPDATE mails SET is_read = 0 WHERE id = ?1",
-        params![mail_id],
-    )?;
-    Ok((folder, uid))
+    set_mail_bool_column(conn, mail_id, "is_read", false)
 }
 
 /// メールのスター/フラグを設定し、サーバー反映に必要な (folder, uid) を返す。
@@ -485,18 +487,7 @@ pub fn set_flagged(
     mail_id: &str,
     flagged: bool,
 ) -> Result<(String, u32), AppError> {
-    let (folder, uid): (String, u32) = conn
-        .query_row(
-            "SELECT folder, uid FROM mails WHERE id = ?1",
-            params![mail_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|_| AppError::MailNotFound(mail_id.to_string()))?;
-    conn.execute(
-        "UPDATE mails SET is_flagged = ?1 WHERE id = ?2",
-        params![flagged, mail_id],
-    )?;
-    Ok((folder, uid))
+    set_mail_bool_column(conn, mail_id, "is_flagged", flagged)
 }
 
 /// 直近の未読メール（INBOX）の件名を新しい順に最大 limit 件返す。
