@@ -142,15 +142,15 @@ describe("AccountForm", () => {
       ).toBeInTheDocument();
     });
 
-    it("shows success state when OAuth completes", async () => {
+    it("closes the form when OAuth completes successfully", async () => {
+      const mockResetOAuth = vi.fn(() => {
+        useAccountStore.setState({ oauthStatus: "idle", oauthError: null });
+      });
       useAccountStore.setState({
         startOAuth: vi.fn(async () => {
-          // Simulate full flow: waiting -> idle (success)
-          useAccountStore.setState({ oauthStatus: "idle", oauthError: null });
+          useAccountStore.setState({ oauthStatus: "waiting" });
         }),
-        resetOAuth: vi.fn(() => {
-          useAccountStore.setState({ oauthStatus: "idle", oauthError: null });
-        }),
+        resetOAuth: mockResetOAuth,
       });
 
       render(
@@ -161,9 +161,37 @@ describe("AccountForm", () => {
           screen.getByRole("button", { name: /Google でログイン/ }),
         );
       });
+      expect(screen.getByText("ブラウザで認証中です...")).toBeInTheDocument();
+
+      // Simulate deep-link callback finishing: waiting -> exchanging -> success
+      await act(async () => {
+        useAccountStore.setState({ oauthStatus: "success", oauthError: null });
+      });
+
+      expect(mockOnCancel).toHaveBeenCalledTimes(1);
+      expect(mockResetOAuth).toHaveBeenCalled();
+    });
+
+    it("does not treat initial 'idle' status as success", async () => {
+      // startOAuth that has not transitioned the status yet (still idle)
+      useAccountStore.setState({
+        startOAuth: vi.fn(async () => {}),
+        resetOAuth: vi.fn(),
+      });
+
+      render(
+        <AccountForm onSubmit={mockOnSubmit} onCancel={mockOnCancel} />,
+      );
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: /Google でログイン/ }),
+        );
+      });
+
       expect(
-        screen.getByText("アカウントを追加しました。"),
-      ).toBeInTheDocument();
+        screen.queryByText("アカウントを追加しました。"),
+      ).not.toBeInTheDocument();
+      expect(mockOnCancel).not.toHaveBeenCalled();
     });
 
     it("returns to provider selection when cancel is clicked during OAuth", async () => {

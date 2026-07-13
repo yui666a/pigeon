@@ -102,7 +102,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     try {
       await invoke("handle_oauth_callback", { url });
       const accounts = await invoke<Account[]>("get_accounts");
-      set({ accounts, oauthStatus: "idle", oauthError: null, reauthAccountId: null });
+      set({ accounts, oauthStatus: "success", oauthError: null, reauthAccountId: null });
     } catch (e) {
       set({ oauthStatus: "error", oauthError: String(e), reauthAccountId: null });
       useErrorStore.getState().addError(String(e));
