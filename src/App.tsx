@@ -12,6 +12,7 @@ import { ComposeModal } from "./components/compose/ComposeModal";
 import { useUiStore } from "./stores/uiStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useMailStore } from "./stores/mailStore";
+import { ensureNotificationPermission } from "./utils/notifyNewMail";
 
 function App() {
   const viewMode = useUiStore((s) => s.viewMode);
@@ -25,6 +26,12 @@ function App() {
       promise.then((unlisten) => unlisten());
     };
   }, [initNewMailListener]);
+
+  // 通知が有効なら起動時に権限を確保しておく。新着検知を待って初めて権限を
+  // 求める設計だと、一度も新着が来ないと通知が届かないため前倒しで要求する
+  useEffect(() => {
+    void ensureNotificationPermission();
+  }, []);
 
   return (
     <div className="flex h-screen">

@@ -68,6 +68,27 @@ async function fetchPreviewSubjects(accountId: string): Promise<string[]> {
 }
 
 /**
+ * デスクトップ通知の権限を確保する。通知が有効な場合のみ、必要なら
+ * macOS の権限ダイアログを出して許可を求める。付与済みなら即 true。
+ *
+ * 新着検知を待たずにアプリ起動時・通知トグルON時へ前倒しで呼ぶことで、
+ * 「一度も新着を受けていないと権限ダイアログが出ず通知が届かない」問題を
+ * 防ぐ。通知が無効なときは余計なダイアログを避けるため何もしない。
+ *
+ * @returns 通知を送ってよい状態なら true。無効・拒否・プラグインエラー時は false。
+ */
+export async function ensureNotificationPermission(): Promise<boolean> {
+  if (!isNotificationEnabled()) return false;
+  try {
+    if (await isPermissionGranted()) return true;
+    return (await requestPermission()) === "granted";
+  } catch (e) {
+    console.error("ensureNotificationPermission failed:", e);
+    return false;
+  }
+}
+
+/**
  * 新着メールのデスクトップ通知を表示する。
  * 通知は補助機能のため、権限拒否・プラグインエラーは静かにスキップし、
  * エラートーストは出さない。
@@ -81,11 +102,7 @@ export async function notifyNewMail(
 ): Promise<void> {
   if (!isNotificationEnabled()) return;
   try {
-    let granted = await isPermissionGranted();
-    if (!granted) {
-      granted = (await requestPermission()) === "granted";
-    }
-    if (!granted) return;
+    if (!(await ensureNotificationPermission())) return;
 
     const previewEnabled = isSubjectPreviewEnabled();
     const subjects =
