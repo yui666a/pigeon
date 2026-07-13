@@ -81,7 +81,10 @@ mod tests {
         assert!(is_cloud_allowed(&rules, "図面/平面図.pdf"));
         assert!(is_cloud_allowed(&rules, "図面/sub/詳細.pdf"));
         assert!(!is_cloud_allowed(&rules, "契約/見積.pdf"), "許可外はfalse");
-        assert!(!is_cloud_allowed(&rules, "図面外.txt"), "前方一致の誤爆をしない");
+        assert!(
+            !is_cloud_allowed(&rules, "図面外.txt"),
+            "前方一致の誤爆をしない"
+        );
     }
 
     #[test]
@@ -98,7 +101,10 @@ mod tests {
             rule("file", "予算メモ.md", false),
         ];
         assert!(is_cloud_allowed(&rules, "他.txt"));
-        assert!(!is_cloud_allowed(&rules, "予算メモ.md"), "明示除外が親許可に勝つ");
+        assert!(
+            !is_cloud_allowed(&rules, "予算メモ.md"),
+            "明示除外が親許可に勝つ"
+        );
     }
 
     #[test]

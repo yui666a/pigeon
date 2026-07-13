@@ -31,7 +31,13 @@ pub fn set_rule(
         "INSERT INTO project_cloud_rules (id, directory_id, scope, relative_path, allow)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(directory_id, scope, relative_path) DO UPDATE SET allow = ?5",
-        params![Uuid::new_v4().to_string(), directory_id, scope, normalized_path, allow],
+        params![
+            Uuid::new_v4().to_string(),
+            directory_id,
+            scope,
+            normalized_path,
+            allow
+        ],
     )?;
     Ok(())
 }
@@ -75,7 +81,9 @@ mod tests {
             [],
         )
         .unwrap();
-        crate::db::directories::link_directory(conn, "p1", "/tmp/x").unwrap().id
+        crate::db::directories::link_directory(conn, "p1", "/tmp/x")
+            .unwrap()
+            .id
     }
 
     #[test]

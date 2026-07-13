@@ -146,7 +146,11 @@ pub fn delete_project(conn: &Connection, id: &str) -> Result<(), AppError> {
 /// Merge source project into target project within a transaction.
 /// All mails from source are reassigned to target, correction_log entries are recorded,
 /// and the source project is deleted.
-pub fn merge_projects(conn: &mut Connection, source_id: &str, target_id: &str) -> Result<u32, AppError> {
+pub fn merge_projects(
+    conn: &mut Connection,
+    source_id: &str,
+    target_id: &str,
+) -> Result<u32, AppError> {
     // Validate both projects exist before starting
     let _source = get_project(conn, source_id)?;
     let _target = get_project(conn, target_id)?;
@@ -155,10 +159,10 @@ pub fn merge_projects(conn: &mut Connection, source_id: &str, target_id: &str) -
 
     // Get all mail IDs currently assigned to the source project
     let mail_ids: Vec<String> = {
-        let mut stmt = tx.prepare(
-            "SELECT mail_id FROM mail_project_assignments WHERE project_id = ?1",
-        )?;
-        let ids = stmt.query_map(params![source_id], |row| row.get(0))?
+        let mut stmt =
+            tx.prepare("SELECT mail_id FROM mail_project_assignments WHERE project_id = ?1")?;
+        let ids = stmt
+            .query_map(params![source_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ids
     };
@@ -331,18 +335,26 @@ mod tests {
     fn test_merge_projects_moves_mails() {
         let mut conn = setup_db();
 
-        let source = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Source".into(),
-            description: None,
-            color: None,
-        }).unwrap();
-        let target = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Target".into(),
-            description: None,
-            color: None,
-        }).unwrap();
+        let source = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Source".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
+        let target = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Target".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
 
         // Insert mails and assign to source
         let m1 = crate::test_helpers::make_mail("m1", "<m1@ex>", "Mail 1", "2026-04-13T10:00:00");
@@ -360,7 +372,10 @@ mod tests {
         assert_eq!(target_mails.len(), 2);
 
         // Source project should be deleted
-        assert!(matches!(get_project(&conn, &source.id), Err(AppError::ProjectNotFound(_))));
+        assert!(matches!(
+            get_project(&conn, &source.id),
+            Err(AppError::ProjectNotFound(_))
+        ));
 
         // Corrections should be logged
         let corrections = assignments::get_recent_corrections(&conn, "acc1", 20).unwrap();
@@ -371,24 +386,35 @@ mod tests {
     fn test_merge_projects_source_empty() {
         let mut conn = setup_db();
 
-        let source = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Empty Source".into(),
-            description: None,
-            color: None,
-        }).unwrap();
-        let target = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Target".into(),
-            description: None,
-            color: None,
-        }).unwrap();
+        let source = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Empty Source".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
+        let target = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Target".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
 
         let moved = merge_projects(&mut conn, &source.id, &target.id).unwrap();
         assert_eq!(moved, 0);
 
         // Source should still be deleted
-        assert!(matches!(get_project(&conn, &source.id), Err(AppError::ProjectNotFound(_))));
+        assert!(matches!(
+            get_project(&conn, &source.id),
+            Err(AppError::ProjectNotFound(_))
+        ));
         // Target should still exist
         assert!(get_project(&conn, &target.id).is_ok());
     }
@@ -397,12 +423,16 @@ mod tests {
     fn test_merge_projects_source_not_found() {
         let mut conn = setup_db();
 
-        let target = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Target".into(),
-            description: None,
-            color: None,
-        }).unwrap();
+        let target = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Target".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
 
         let result = merge_projects(&mut conn, "nonexistent", &target.id);
         assert!(matches!(result, Err(AppError::ProjectNotFound(_))));
@@ -412,12 +442,16 @@ mod tests {
     fn test_merge_projects_target_not_found() {
         let mut conn = setup_db();
 
-        let source = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Source".into(),
-            description: None,
-            color: None,
-        }).unwrap();
+        let source = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Source".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
 
         let result = merge_projects(&mut conn, &source.id, "nonexistent");
         assert!(matches!(result, Err(AppError::ProjectNotFound(_))));
@@ -427,18 +461,26 @@ mod tests {
     fn test_merge_preserves_existing_target_mails() {
         let mut conn = setup_db();
 
-        let source = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Source".into(),
-            description: None,
-            color: None,
-        }).unwrap();
-        let target = insert_project(&conn, &CreateProjectRequest {
-            account_id: "acc1".into(),
-            name: "Target".into(),
-            description: None,
-            color: None,
-        }).unwrap();
+        let source = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Source".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
+        let target = insert_project(
+            &conn,
+            &CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Target".into(),
+                description: None,
+                color: None,
+            },
+        )
+        .unwrap();
 
         // Existing mail in target
         let m1 = crate::test_helpers::make_mail("m1", "<m1@ex>", "Existing", "2026-04-13T09:00:00");

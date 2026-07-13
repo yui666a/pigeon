@@ -396,18 +396,10 @@ mod tests {
         // 既に割り当て済みの m1 に対する返信 m2 は、一覧取得時に自動追従され
         // 未分類一覧から消えること
         let conn = setup_db();
-        let m1 = crate::test_helpers::make_mail(
-            "m1",
-            "<m1@ex.com>",
-            "Re: Test",
-            "2026-07-12T10:00:00",
-        );
-        let mut m2 = crate::test_helpers::make_mail(
-            "m2",
-            "<m2@ex.com>",
-            "Re: Test",
-            "2026-07-12T11:00:00",
-        );
+        let m1 =
+            crate::test_helpers::make_mail("m1", "<m1@ex.com>", "Re: Test", "2026-07-12T10:00:00");
+        let mut m2 =
+            crate::test_helpers::make_mail("m2", "<m2@ex.com>", "Re: Test", "2026-07-12T11:00:00");
         m2.in_reply_to = Some("<m1@ex.com>".into());
         crate::db::mails::insert_mail(&conn, &m1).unwrap();
         crate::db::mails::insert_mail(&conn, &m2).unwrap();
@@ -435,18 +427,10 @@ mod tests {
     fn test_get_unclassified_threads_groups_replies() {
         // 返信の連鎖（References）が1スレッドにまとまること
         let conn = setup_db();
-        let m1 = crate::test_helpers::make_mail(
-            "m1",
-            "<t1@ex.com>",
-            "Re: Test",
-            "2026-07-12T10:00:00",
-        );
-        let mut m2 = crate::test_helpers::make_mail(
-            "m2",
-            "<t3@ex.com>",
-            "Re: Test",
-            "2026-07-12T11:00:00",
-        );
+        let m1 =
+            crate::test_helpers::make_mail("m1", "<t1@ex.com>", "Re: Test", "2026-07-12T10:00:00");
+        let mut m2 =
+            crate::test_helpers::make_mail("m2", "<t3@ex.com>", "Re: Test", "2026-07-12T11:00:00");
         // 中間のメール（自分の返信 <t2> は Sent にあり未分類一覧には無い）を
         // 飛び越えて References で繋がるケース
         m2.references = Some("<t1@ex.com> <t2@pigeon.local>".into());
@@ -617,5 +601,4 @@ mod tests {
             "追従で確定したメールの提案も除去される"
         );
     }
-
 }

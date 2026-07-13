@@ -64,10 +64,7 @@ pub fn build_user_prompt(
                 ));
             }
             if let Some(context) = project.context.as_deref() {
-                prompt.push_str(&format!(
-                    "  Context: {}\n",
-                    context.replace('\n', " / ")
-                ));
+                prompt.push_str(&format!("  Context: {}\n", context.replace('\n', " / ")));
             }
         }
     }

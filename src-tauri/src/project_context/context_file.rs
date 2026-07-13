@@ -19,11 +19,7 @@ pub fn split_at_marker(content: &str) -> (String, Option<String>) {
 }
 
 /// auto セクションだけを差し替えた全文を返す。ユーザー欄（マーカーより上）は不可侵。
-pub fn upsert_auto_section(
-    existing: Option<&str>,
-    project_name: &str,
-    auto_body: &str,
-) -> String {
+pub fn upsert_auto_section(existing: Option<&str>, project_name: &str, auto_body: &str) -> String {
     let user_section = match existing {
         Some(content) => split_at_marker(content).0,
         None => format!(
@@ -32,7 +28,12 @@ pub fn upsert_auto_section(
         ),
     };
     let user_trimmed = user_section.trim_end();
-    format!("{}\n\n{}\n{}\n", user_trimmed, AUTO_MARKER, auto_body.trim())
+    format!(
+        "{}\n\n{}\n{}\n",
+        user_trimmed,
+        AUTO_MARKER,
+        auto_body.trim()
+    )
 }
 
 /// 分類プロンプト注入用の切詰め。ユーザー欄を優先し、残り枠に auto を入れる。
@@ -60,7 +61,11 @@ pub fn read_context_file(dir: &Path) -> Result<Option<String>, AppError> {
     match std::fs::read_to_string(&path) {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(AppError::DirectoryScan(format!("{}: {}", path.display(), e))),
+        Err(e) => Err(AppError::DirectoryScan(format!(
+            "{}: {}",
+            path.display(),
+            e
+        ))),
     }
 }
 
@@ -109,10 +114,7 @@ mod tests {
 
     #[test]
     fn test_upsert_multiple_markers_first_wins() {
-        let existing = format!(
-            "user部\n{}\n中身1\n{}\n中身2\n",
-            AUTO_MARKER, AUTO_MARKER
-        );
+        let existing = format!("user部\n{}\n中身1\n{}\n中身2\n", AUTO_MARKER, AUTO_MARKER);
         let result = upsert_auto_section(Some(&existing), "ignored", "新");
         // 最初のマーカーを正とし、それ以降全体が auto セクションとして置換される
         assert_eq!(result.matches(AUTO_MARKER).count(), 1);

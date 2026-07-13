@@ -421,11 +421,7 @@ async fn store_flag_delta(
         .select(folder)
         .await
         .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
-    let query = format!(
-        "{}FLAGS.SILENT ({})",
-        if add { "+" } else { "-" },
-        flag
-    );
+    let query = format!("{}FLAGS.SILENT ({})", if add { "+" } else { "-" }, flag);
     let _updates: Vec<_> = session
         .uid_store(uid.to_string(), &query)
         .await
@@ -874,13 +870,22 @@ mod tests {
         // 未読メールが Gmail 本体ごと既読化される（2026-07-13 の実不具合）。
         // FETCH 項目は必ず BODY.PEEK[] であることを回帰テストとして固定する。
         for items in [FETCH_ITEMS_SYNC, FETCH_ITEMS_RAW] {
-            assert!(items.contains("BODY.PEEK["), "must use BODY.PEEK[]: {items}");
-            assert!(!items.contains("RFC822"), "RFC822 sets \\Seen implicitly: {items}");
+            assert!(
+                items.contains("BODY.PEEK["),
+                "must use BODY.PEEK[]: {items}"
+            );
+            assert!(
+                !items.contains("RFC822"),
+                "RFC822 sets \\Seen implicitly: {items}"
+            );
         }
         // PEEK なしの BODY[ が紛れ込んでいないこと（BODY.PEEK[ は除外して判定）
         for items in [FETCH_ITEMS_SYNC, FETCH_ITEMS_RAW] {
             let without_peek = items.replace("BODY.PEEK[", "");
-            assert!(!without_peek.contains("BODY["), "non-PEEK BODY[] found: {items}");
+            assert!(
+                !without_peek.contains("BODY["),
+                "non-PEEK BODY[] found: {items}"
+            );
         }
     }
 }

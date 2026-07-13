@@ -410,14 +410,26 @@ mod tests {
     #[test]
     fn test_insert_mail_ignores_duplicate_uid_and_keeps_existing_row() {
         let conn = setup_db();
-        let original = make_mail("m1", "<msg1@example.com>", "Original", "2026-04-13T10:00:00");
+        let original = make_mail(
+            "m1",
+            "<msg1@example.com>",
+            "Original",
+            "2026-04-13T10:00:00",
+        );
         assert!(insert_mail(&conn, &original).unwrap(), "初回は挿入される");
 
         // 同期の多重実行を模擬: 同じ (account, folder, uid) を別idで再挿入
-        let mut duplicate =
-            make_mail("m2", "<msg1@example.com>", "Duplicate", "2026-04-13T10:00:00");
+        let mut duplicate = make_mail(
+            "m2",
+            "<msg1@example.com>",
+            "Duplicate",
+            "2026-04-13T10:00:00",
+        );
         duplicate.uid = original.uid;
-        assert!(!insert_mail(&conn, &duplicate).unwrap(), "重複は挿入されない");
+        assert!(
+            !insert_mail(&conn, &duplicate).unwrap(),
+            "重複は挿入されない"
+        );
 
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
         assert_eq!(mails.len(), 1);
@@ -470,8 +482,9 @@ mod tests {
         insert_mail(&conn, &m2).unwrap();
 
         // サーバー側: uid=101 は既読+フラグ、uid=102 は未読+フラグなし（他クライアントでの変更を模擬）
-        let state: HashMap<u32, (bool, bool)> =
-            [(101, (true, true)), (102, (false, false))].into_iter().collect();
+        let state: HashMap<u32, (bool, bool)> = [(101, (true, true)), (102, (false, false))]
+            .into_iter()
+            .collect();
         let updated = update_flag_state(&conn, "acc1", "INBOX", &state).unwrap();
         assert_eq!(updated, 2);
 
@@ -493,8 +506,9 @@ mod tests {
         insert_mail(&conn, &m1).unwrap();
 
         // uid=101 は既に既読・未フラグで変更なし。uid=999 は DB に存在しない
-        let state: HashMap<u32, (bool, bool)> =
-            [(101, (true, false)), (999, (true, true))].into_iter().collect();
+        let state: HashMap<u32, (bool, bool)> = [(101, (true, false)), (999, (true, true))]
+            .into_iter()
+            .collect();
         let updated = update_flag_state(&conn, "acc1", "INBOX", &state).unwrap();
         assert_eq!(updated, 0, "変更のない行・未知の uid は更新されない");
     }
@@ -819,7 +833,11 @@ mod tests {
         // B-10: 「行なし」は Ok(0) だが、DB 破損等の実エラーを 0 に丸めてはいけない。
         // watermark が誤って 0 になると全件再取得や取りこぼしを誘発するため Err で伝播する
         let conn = setup_db();
-        assert_eq!(get_max_uid(&conn, "acc1", "INBOX").unwrap(), 0, "行なしは Ok(0)");
+        assert_eq!(
+            get_max_uid(&conn, "acc1", "INBOX").unwrap(),
+            0,
+            "行なしは Ok(0)"
+        );
 
         // 実エラーを注入: mails テーブル自体を破壊する
         conn.execute_batch("DROP TABLE mails").unwrap();

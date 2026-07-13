@@ -98,8 +98,12 @@ mod tests {
         let mut conn = setup_db();
         let dir_id = setup_dir(&mut conn);
 
-        replace_inventory(&mut conn, &dir_id, &[entry("a.pdf", 100), entry("sub/b.txt", 20)])
-            .unwrap();
+        replace_inventory(
+            &mut conn,
+            &dir_id,
+            &[entry("a.pdf", 100), entry("sub/b.txt", 20)],
+        )
+        .unwrap();
 
         let files = list_files(&conn, &dir_id).unwrap();
         assert_eq!(files.len(), 2);
@@ -112,8 +116,12 @@ mod tests {
         let mut conn = setup_db();
         let dir_id = setup_dir(&mut conn);
 
-        replace_inventory(&mut conn, &dir_id, &[entry("a.pdf", 100), entry("b.txt", 20)])
-            .unwrap();
+        replace_inventory(
+            &mut conn,
+            &dir_id,
+            &[entry("a.pdf", 100), entry("b.txt", 20)],
+        )
+        .unwrap();
         // b.txt が消えた状態で再スキャン
         replace_inventory(&mut conn, &dir_id, &[entry("a.pdf", 100)]).unwrap();
 

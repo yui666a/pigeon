@@ -44,7 +44,10 @@ pub fn scan_directory(root: &Path) -> Result<ScanResult, AppError> {
     }
     let inventory_hash = extractor::sha256_hex(hash_input.as_bytes());
 
-    Ok(ScanResult { files, inventory_hash })
+    Ok(ScanResult {
+        files,
+        inventory_hash,
+    })
 }
 
 fn walk(
@@ -139,15 +142,27 @@ mod tests {
         make_tree(dir.path());
 
         let result = scan_directory(dir.path()).unwrap();
-        let paths: Vec<&str> = result.files.iter().map(|f| f.relative_path.as_str()).collect();
+        let paths: Vec<&str> = result
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
         assert_eq!(paths, vec!["図面/平面図.pdf", "搬入.txt", "香盤表.md"]);
 
-        let md = result.files.iter().find(|f| f.relative_path == "香盤表.md").unwrap();
+        let md = result
+            .files
+            .iter()
+            .find(|f| f.relative_path == "香盤表.md")
+            .unwrap();
         assert_eq!(md.content_kind, "text");
         assert_eq!(md.extract_status, "ok");
         assert!(md.content_hash.is_some());
 
-        let pdf = result.files.iter().find(|f| f.relative_path.ends_with("平面図.pdf")).unwrap();
+        let pdf = result
+            .files
+            .iter()
+            .find(|f| f.relative_path.ends_with("平面図.pdf"))
+            .unwrap();
         assert_eq!(pdf.content_kind, "pdf");
         assert_eq!(pdf.extract_status, "unsupported");
         assert!(pdf.content_hash.is_none());
@@ -162,10 +177,15 @@ mod tests {
         std::fs::write(dir.path().join(CONTEXT_FILE_NAME), "# ctx").unwrap();
         std::fs::write(dir.path().join("keep.txt"), "keep").unwrap();
         #[cfg(unix)]
-        std::os::unix::fs::symlink(dir.path().join("keep.txt"), dir.path().join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("keep.txt"), dir.path().join("link.txt"))
+            .unwrap();
 
         let result = scan_directory(dir.path()).unwrap();
-        let paths: Vec<&str> = result.files.iter().map(|f| f.relative_path.as_str()).collect();
+        let paths: Vec<&str> = result
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
         assert_eq!(paths, vec!["keep.txt"]);
     }
 
@@ -192,8 +212,14 @@ mod tests {
     #[test]
     fn test_classify_io_error() {
         use std::io::{Error, ErrorKind};
-        assert_eq!(classify_io_error(&Error::from(ErrorKind::NotFound)), "missing");
-        assert_eq!(classify_io_error(&Error::from(ErrorKind::PermissionDenied)), "inaccessible");
+        assert_eq!(
+            classify_io_error(&Error::from(ErrorKind::NotFound)),
+            "missing"
+        );
+        assert_eq!(
+            classify_io_error(&Error::from(ErrorKind::PermissionDenied)),
+            "inaccessible"
+        );
         assert_eq!(classify_io_error(&Error::from(ErrorKind::Other)), "error");
     }
 }

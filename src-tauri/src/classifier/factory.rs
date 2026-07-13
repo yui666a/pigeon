@@ -271,8 +271,7 @@ mod tests {
         let (_c, store, _d) = setup();
         store.insert("claude_api_key", b"sk-ant-stored").unwrap();
         // 空文字の明示キーは「未入力」扱いで保存済みキーにフォールバック
-        let result =
-            build_classifier_from_params(&params("claude", Some("   "), "", None), &store);
+        let result = build_classifier_from_params(&params("claude", Some("   "), "", None), &store);
         assert!(result.is_ok());
     }
 
@@ -317,7 +316,9 @@ mod tests {
     #[test]
     fn test_from_params_vertex_falls_back_to_stored_sa() {
         let (_c, store, _d) = setup();
-        store.insert("vertex_sa_json", TEST_SA_JSON.as_bytes()).unwrap();
+        store
+            .insert("vertex_sa_json", TEST_SA_JSON.as_bytes())
+            .unwrap();
         // 明示 SA が None なら保存済み SA を使う
         let result = build_classifier_from_params(
             &params("claude_vertex", None, "test-project", None),
@@ -363,7 +364,9 @@ mod tests {
         let (conn, store, _d) = setup();
         settings::set(&conn, "llm_provider", "claude_vertex").unwrap();
         settings::set(&conn, "vertex_project_id", "test-project").unwrap();
-        store.insert("vertex_sa_json", TEST_SA_JSON.as_bytes()).unwrap();
+        store
+            .insert("vertex_sa_json", TEST_SA_JSON.as_bytes())
+            .unwrap();
         assert!(build_classifier(&conn, &store).is_ok());
     }
 
@@ -414,7 +417,9 @@ mod tests {
         let (conn, store, _d) = setup();
         settings::set(&conn, "llm_provider", "gemini_vertex").unwrap();
         settings::set(&conn, "vertex_project_id", "test-project").unwrap();
-        store.insert("vertex_sa_json", TEST_SA_JSON.as_bytes()).unwrap();
+        store
+            .insert("vertex_sa_json", TEST_SA_JSON.as_bytes())
+            .unwrap();
         assert!(build_classifier(&conn, &store).is_ok());
     }
 }

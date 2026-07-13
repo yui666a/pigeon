@@ -171,15 +171,11 @@ pub fn guess_content_type(filename: &str) -> String {
         "zip" => "application/zip",
         "gz" => "application/gzip",
         "doc" => "application/msword",
-        "docx" => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        }
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xls" => "application/vnd.ms-excel",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "ppt" => "application/vnd.ms-powerpoint",
-        "pptx" => {
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        }
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         _ => "application/octet-stream",
     };
     ct.to_string()
@@ -248,7 +244,8 @@ pub fn build_message(mail: &OutgoingMail) -> Result<Message, AppError> {
     // 本文部（プレーンのみ or alternative）を組み立てる
     let body_part = build_body_part(mail);
 
-    let build_err = |e: lettre::error::Error| AppError::Smtp(format!("メッセージ構築に失敗: {}", e));
+    let build_err =
+        |e: lettre::error::Error| AppError::Smtp(format!("メッセージ構築に失敗: {}", e));
 
     if mail.attachments.is_empty() {
         // 添付なし。alternative かプレーン singlepart をそのまま本文に
@@ -509,10 +506,7 @@ mod tests {
     #[test]
     fn test_html_to_plain_collapses_blank_lines() {
         // 複数の空ブロックが連続しても空行は1つに圧縮され前後はtrimされる
-        assert_eq!(
-            html_to_plain("<p>a</p><p></p><p></p><p>b</p>"),
-            "a\n\nb"
-        );
+        assert_eq!(html_to_plain("<p>a</p><p></p><p></p><p>b</p>"), "a\n\nb");
     }
 
     #[test]
@@ -588,10 +582,7 @@ mod tests {
     fn test_build_message_rejects_oversized_attachment() {
         let mut mail = base_mail();
         mail.attachments = vec![attachment("big.bin", MAX_TOTAL_ATTACHMENT_BYTES + 1)];
-        assert!(matches!(
-            build_message(&mail),
-            Err(AppError::Validation(_))
-        ));
+        assert!(matches!(build_message(&mail), Err(AppError::Validation(_))));
     }
 
     #[test]

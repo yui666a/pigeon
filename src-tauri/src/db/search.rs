@@ -153,7 +153,10 @@ mod tests {
     #[test]
     fn test_sanitize_with_special_chars() {
         assert_eq!(sanitize_fts_query("foo-bar"), "\"foo-bar\"");
-        assert_eq!(sanitize_fts_query("user@example.com"), "\"user@example.com\"");
+        assert_eq!(
+            sanitize_fts_query("user@example.com"),
+            "\"user@example.com\""
+        );
     }
 
     #[test]
@@ -267,9 +270,19 @@ mod tests {
             [],
         ).unwrap();
 
-        let mut m1 = make_mail("m1", "<msg1@ex.com>", "SharedKeyword", "2026-04-13T10:00:00");
+        let mut m1 = make_mail(
+            "m1",
+            "<msg1@ex.com>",
+            "SharedKeyword",
+            "2026-04-13T10:00:00",
+        );
         m1.account_id = "acc1".into();
-        let mut m2 = make_mail("m2", "<msg2@ex.com>", "SharedKeyword", "2026-04-13T11:00:00");
+        let mut m2 = make_mail(
+            "m2",
+            "<msg2@ex.com>",
+            "SharedKeyword",
+            "2026-04-13T11:00:00",
+        );
         m2.account_id = "acc2".into();
         mails::insert_mail(&conn, &m1).unwrap();
         mails::insert_mail(&conn, &m2).unwrap();
@@ -282,7 +295,12 @@ mod tests {
     #[test]
     fn test_search_includes_project_info() {
         let conn = setup_db();
-        let m1 = make_mail("m1", "<msg1@ex.com>", "AlphaMail subject", "2026-04-13T10:00:00");
+        let m1 = make_mail(
+            "m1",
+            "<msg1@ex.com>",
+            "AlphaMail subject",
+            "2026-04-13T10:00:00",
+        );
         mails::insert_mail(&conn, &m1).unwrap();
 
         let req = CreateProjectRequest {
@@ -303,7 +321,12 @@ mod tests {
     #[test]
     fn test_search_unclassified_mail_has_no_project() {
         let conn = setup_db();
-        let m1 = make_mail("m1", "<msg1@ex.com>", "OrphanMail text", "2026-04-13T10:00:00");
+        let m1 = make_mail(
+            "m1",
+            "<msg1@ex.com>",
+            "OrphanMail text",
+            "2026-04-13T10:00:00",
+        );
         mails::insert_mail(&conn, &m1).unwrap();
 
         let results = search_mails(&conn, "acc1", "OrphanMail", 50).unwrap();

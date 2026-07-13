@@ -72,7 +72,8 @@ mod tests {
 
     #[test]
     fn test_parse_assign() {
-        let content = r#"{"action": "assign", "project_id": "proj-123", "confidence": 0.85, "reason": "r"}"#;
+        let content =
+            r#"{"action": "assign", "project_id": "proj-123", "confidence": 0.85, "reason": "r"}"#;
         let result = parse_classify_result(content).unwrap();
         assert!(matches!(result.action, ClassifyAction::Assign { .. }));
         if let ClassifyAction::Assign { project_id } = result.action {
@@ -119,24 +120,39 @@ mod tests {
 
     #[test]
     fn test_parse_unknown_action() {
-        assert!(parse_classify_result(r#"{"action": "delete", "confidence": 0.5, "reason": "t"}"#).is_err());
+        assert!(
+            parse_classify_result(r#"{"action": "delete", "confidence": 0.5, "reason": "t"}"#)
+                .is_err()
+        );
     }
 
     #[test]
     fn test_parse_assign_missing_project_id() {
-        assert!(parse_classify_result(r#"{"action": "assign", "confidence": 0.9, "reason": "t"}"#).is_err());
+        assert!(
+            parse_classify_result(r#"{"action": "assign", "confidence": 0.9, "reason": "t"}"#)
+                .is_err()
+        );
     }
 
     #[test]
     fn test_parse_create_missing_fields() {
-        assert!(parse_classify_result(r#"{"action": "create", "confidence": 0.7, "reason": "t"}"#).is_err());
+        assert!(
+            parse_classify_result(r#"{"action": "create", "confidence": 0.7, "reason": "t"}"#)
+                .is_err()
+        );
     }
 
     #[test]
     fn test_parse_confidence_boundaries() {
-        let r0 = parse_classify_result(r#"{"action": "unclassified", "confidence": 0.0, "reason": "t"}"#).unwrap();
+        let r0 = parse_classify_result(
+            r#"{"action": "unclassified", "confidence": 0.0, "reason": "t"}"#,
+        )
+        .unwrap();
         assert!((r0.confidence - 0.0).abs() < f64::EPSILON);
-        let r1 = parse_classify_result(r#"{"action": "unclassified", "confidence": 1.0, "reason": "t"}"#).unwrap();
+        let r1 = parse_classify_result(
+            r#"{"action": "unclassified", "confidence": 1.0, "reason": "t"}"#,
+        )
+        .unwrap();
         assert!((r1.confidence - 1.0).abs() < f64::EPSILON);
     }
 }

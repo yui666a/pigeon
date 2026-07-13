@@ -45,7 +45,10 @@ mod tests {
     #[test]
     fn test_returns_default_when_missing() {
         let conn = setup_db();
-        assert_eq!(get_or_default(&conn, "missing", "fallback").unwrap(), "fallback");
+        assert_eq!(
+            get_or_default(&conn, "missing", "fallback").unwrap(),
+            "fallback"
+        );
     }
 
     #[test]
@@ -56,7 +59,10 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(get_or_default(&conn, "my_key", "default").unwrap(), "my_value");
+        assert_eq!(
+            get_or_default(&conn, "my_key", "default").unwrap(),
+            "my_value"
+        );
     }
 
     #[test]
@@ -100,7 +106,10 @@ mod tests {
     fn test_set_inserts_new_key() {
         let conn = setup_db();
         set(&conn, "llm_provider", "claude").unwrap();
-        assert_eq!(get_or_default(&conn, "llm_provider", "ollama").unwrap(), "claude");
+        assert_eq!(
+            get_or_default(&conn, "llm_provider", "ollama").unwrap(),
+            "claude"
+        );
     }
 
     #[test]
@@ -108,6 +117,9 @@ mod tests {
         let conn = setup_db();
         set(&conn, "llm_provider", "ollama").unwrap();
         set(&conn, "llm_provider", "claude").unwrap();
-        assert_eq!(get_or_default(&conn, "llm_provider", "ollama").unwrap(), "claude");
+        assert_eq!(
+            get_or_default(&conn, "llm_provider", "ollama").unwrap(),
+            "claude"
+        );
     }
 }

@@ -27,8 +27,8 @@ fn live_config() -> Option<(String, String, String, String)> {
     let sa = load_sa_json()?;
     let project = std::env::var("PIGEON_VERTEX_PROJECT").ok()?;
     let location = std::env::var("PIGEON_VERTEX_LOCATION").unwrap_or_else(|_| "global".to_string());
-    let model =
-        std::env::var("PIGEON_VERTEX_GEMINI_MODEL").unwrap_or_else(|_| "gemini-3.5-flash".to_string());
+    let model = std::env::var("PIGEON_VERTEX_GEMINI_MODEL")
+        .unwrap_or_else(|_| "gemini-3.5-flash".to_string());
     Some((sa, project, location, model))
 }
 
