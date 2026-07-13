@@ -18,6 +18,12 @@ use crate::state::{DbState, SecureStoreState};
 
 pub struct PendingClassifications(pub Mutex<HashMap<String, ClassifyResult>>);
 
+impl Default for PendingClassifications {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PendingClassifications {
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
@@ -88,11 +94,7 @@ pub fn approve_classification(
     project_id: String,
 ) -> Result<(), AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
-    Ok(assignments::approve_classification(
-        &conn,
-        &mail_id,
-        &project_id,
-    )?)
+    assignments::approve_classification(&conn, &mail_id, &project_id)
 }
 
 /// Approve a "create new project" suggestion: creates the project and assigns the mail.
@@ -160,7 +162,7 @@ pub fn get_unclassified_mails(
     account_id: String,
 ) -> Result<Vec<Mail>, AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
-    Ok(assignments::get_unclassified_mails(&conn, &account_id)?)
+    assignments::get_unclassified_mails(&conn, &account_id)
 }
 
 /// 未分類メールをスレッド単位で返す（未分類一覧のスレッド表示用）。
@@ -185,18 +187,14 @@ pub fn get_unclassified_threads(
 #[tauri::command]
 pub fn move_mail(db: State<DbState>, mail_id: String, project_id: String) -> Result<(), AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
-    Ok(assignments::move_mail_to_project(
-        &conn,
-        &mail_id,
-        &project_id,
-    )?)
+    assignments::move_mail_to_project(&conn, &mail_id, &project_id)
 }
 
 /// Get all mails assigned to a specific project.
 #[tauri::command]
 pub fn get_mails_by_project(db: State<DbState>, project_id: String) -> Result<Vec<Mail>, AppError> {
     let conn = db.0.lock().map_err(AppError::lock_err)?;
-    Ok(assignments::get_mails_by_project(&conn, &project_id)?)
+    assignments::get_mails_by_project(&conn, &project_id)
 }
 
 #[cfg(test)]

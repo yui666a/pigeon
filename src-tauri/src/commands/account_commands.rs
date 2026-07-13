@@ -68,7 +68,7 @@ pub fn remove_account(app: AppHandle, state: State<DbState>, id: String) -> Resu
     // 削除するアカウントの IDLE 監視を停止する
     idle::stop_watching(&app, &id);
     let conn = state.0.lock().map_err(AppError::lock_err)?;
-    Ok(accounts::delete_account(&conn, &id)?)
+    accounts::delete_account(&conn, &id)
 }
 
 #[cfg(test)]

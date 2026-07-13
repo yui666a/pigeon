@@ -182,12 +182,12 @@ pub struct FetchedMail {
 
 /// FLAGS に \Seen が含まれるか
 pub(crate) fn contains_seen(flags: &[Flag<'_>]) -> bool {
-    flags.iter().any(|f| *f == Flag::Seen)
+    flags.contains(&Flag::Seen)
 }
 
 /// FLAGS に \Flagged が含まれるか
 pub(crate) fn contains_flagged(flags: &[Flag<'_>]) -> bool {
-    flags.iter().any(|f| *f == Flag::Flagged)
+    flags.contains(&Flag::Flagged)
 }
 
 /// FLAGS を DB 保存用の文字列にする（空なら None）
@@ -592,7 +592,7 @@ pub async fn copy_message(
 
 /// フォルダ属性に \Trash (RFC 6154 SPECIAL-USE) が含まれるか
 pub(crate) fn has_trash_attribute(attrs: &[NameAttribute<'_>]) -> bool {
-    attrs.iter().any(|a| *a == NameAttribute::Trash)
+    attrs.contains(&NameAttribute::Trash)
 }
 
 /// LIST 応答から SPECIAL-USE (RFC 6154) の \Trash 属性を持つフォルダを探す。
@@ -682,7 +682,7 @@ pub async fn archive_message_remote(
 
 /// フォルダ属性に \Sent (RFC 6154 SPECIAL-USE) が含まれるか
 pub(crate) fn has_sent_attribute(attrs: &[NameAttribute<'_>]) -> bool {
-    attrs.iter().any(|a| *a == NameAttribute::Sent)
+    attrs.contains(&NameAttribute::Sent)
 }
 
 /// LIST 応答から SPECIAL-USE (RFC 6154) の \Sent 属性を持つフォルダを探す。

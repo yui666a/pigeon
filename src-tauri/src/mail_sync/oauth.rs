@@ -100,6 +100,12 @@ pub struct OAuthStateStore {
     pub pending: Mutex<HashMap<String, PendingOAuth>>,
 }
 
+impl Default for OAuthStateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OAuthStateStore {
     pub fn new() -> Self {
         Self {

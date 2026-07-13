@@ -20,13 +20,13 @@ pub fn create_project(
         description,
         color,
     };
-    Ok(projects::insert_project(&conn, &req)?)
+    projects::insert_project(&conn, &req)
 }
 
 #[tauri::command]
 pub fn get_projects(state: State<DbState>, account_id: String) -> Result<Vec<Project>, AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
-    Ok(projects::list_projects(&conn, &account_id)?)
+    projects::list_projects(&conn, &account_id)
 }
 
 #[tauri::command]
@@ -43,19 +43,19 @@ pub fn update_project(
         description,
         color,
     };
-    Ok(projects::update_project(&conn, &id, &req)?)
+    projects::update_project(&conn, &id, &req)
 }
 
 #[tauri::command]
 pub fn archive_project(state: State<DbState>, id: String) -> Result<(), AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
-    Ok(projects::archive_project(&conn, &id)?)
+    projects::archive_project(&conn, &id)
 }
 
 #[tauri::command]
 pub fn delete_project(state: State<DbState>, id: String) -> Result<(), AppError> {
     let conn = state.0.lock().map_err(AppError::lock_err)?;
-    Ok(projects::delete_project(&conn, &id)?)
+    projects::delete_project(&conn, &id)
 }
 
 /// Merge source project into target: reassign all mails, log corrections, delete source.
@@ -67,7 +67,7 @@ pub fn merge_projects(
     target_id: String,
 ) -> Result<u32, AppError> {
     let mut conn = state.0.lock().map_err(AppError::lock_err)?;
-    Ok(projects::merge_projects(&mut conn, &source_id, &target_id)?)
+    projects::merge_projects(&mut conn, &source_id, &target_id)
 }
 
 #[cfg(test)]
