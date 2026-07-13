@@ -93,13 +93,13 @@ pub fn html_to_plain(html: &str) -> String {
                 .split(|c: char| c.is_whitespace() || c == '/')
                 .next()
                 .unwrap_or("");
-            if name == "br" {
-                out.push('\n');
-            } else if tag_lower.starts_with('/')
-                && matches!(
-                    name,
-                    "p" | "div" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
-                )
+            // <br> とブロック要素の閉じタグはどちらも改行に変換する
+            if name == "br"
+                || (tag_lower.starts_with('/')
+                    && matches!(
+                        name,
+                        "p" | "div" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
+                    ))
             {
                 out.push('\n');
             } else if name == "li" {
