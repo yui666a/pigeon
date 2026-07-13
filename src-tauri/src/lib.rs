@@ -7,6 +7,7 @@ pub mod models;
 pub mod project_context;
 pub mod secure_store;
 pub mod state;
+pub mod threading;
 
 #[cfg(test)]
 pub mod test_helpers;
