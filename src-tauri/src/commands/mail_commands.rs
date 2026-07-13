@@ -3,7 +3,8 @@ use tauri::{AppHandle, Emitter, State};
 use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, DeletePlan};
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
-use crate::mail_sync::{imap_client, mime_parser, oauth};
+use crate::mail_sync::sync_service;
+use crate::mail_sync::{imap_client, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::{Mail, Thread, UnreadCounts};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
@@ -29,20 +30,38 @@ pub async fn sync_account(
     if !sync_locks.try_begin(&account_id) {
         return Ok(0);
     }
-    let result = sync_account_inner(&state, &secure_store.0, &account_id, |done, total| {
-        // 進捗はベストエフォート（emit 失敗で同期は止めない）
-        let _ = app.emit(
-            "sync-progress",
-            SyncProgressEvent {
-                account_id: account_id.clone(),
-                done,
-                total,
-            },
-        );
-    })
-    .await;
+    let result = sync_account_locked(&app, &state, &secure_store.0, &account_id).await;
     sync_locks.finish(&account_id);
     result
+}
+
+/// sync_account のロック取得後の本体。同期のドメインロジックは
+/// mail_sync::sync_service に委譲し、ここでは資格情報解決の注入と
+/// sync-progress イベントの emit のみを行う。
+async fn sync_account_locked(
+    app: &AppHandle,
+    state: &DbState,
+    secure_store: &crate::secure_store::SecureStore,
+    account_id: &str,
+) -> Result<u32, AppError> {
+    let account = state.with_conn(|conn| accounts::get_account(conn, account_id))?;
+    sync_service::sync_account(
+        state,
+        &account,
+        || resolve_imap_credentials(&account, secure_store),
+        |done, total| {
+            // 進捗はベストエフォート（emit 失敗で同期は止めない）
+            let _ = app.emit(
+                "sync-progress",
+                SyncProgressEvent {
+                    account_id: account_id.to_string(),
+                    done,
+                    total,
+                },
+            );
+        },
+    )
+    .await
 }
 
 /// backfill-progress イベントの payload。sync-progress とは別イベントにしている
@@ -80,25 +99,43 @@ pub async fn backfill_account(
             exhausted: false,
         });
     }
-    let result = backfill_account_inner(
-        &state,
-        &secure_store.0,
-        &account_id,
+    let result = backfill_account_locked(&app, &state, &secure_store.0, &account_id, limit).await;
+    sync_locks.finish(&account_id);
+    result
+}
+
+/// backfill_account のロック取得後の本体。バックフィルのドメインロジックは
+/// mail_sync::sync_service に委譲し、ここでは資格情報解決の注入と
+/// backfill-progress イベントの emit、BackfillOutcome への変換のみを行う。
+async fn backfill_account_locked(
+    app: &AppHandle,
+    state: &DbState,
+    secure_store: &crate::secure_store::SecureStore,
+    account_id: &str,
+    limit: u32,
+) -> Result<BackfillOutcome, AppError> {
+    let account = state.with_conn(|conn| accounts::get_account(conn, account_id))?;
+    let result = sync_service::backfill_account(
+        state,
+        &account,
+        || resolve_imap_credentials(&account, secure_store),
         limit,
         |done, total| {
             let _ = app.emit(
                 "backfill-progress",
                 BackfillProgressEvent {
-                    account_id: account_id.clone(),
+                    account_id: account_id.to_string(),
                     done,
                     total,
                 },
             );
         },
     )
-    .await;
-    sync_locks.finish(&account_id);
-    result
+    .await?;
+    Ok(BackfillOutcome {
+        fetched: result.fetched as u32,
+        exhausted: result.exhausted,
+    })
 }
 
 /// Resolve credentials for the given account (IMAP / SMTP 共用).
@@ -157,307 +194,6 @@ pub(crate) async fn resolve_imap_credentials(
             Ok((AuthType::Plain, account.email.clone(), password))
         }
     }
-}
-
-/// フォルダ取り込み時の DB 反映方式。
-/// INBOX は素朴な INSERT OR IGNORE、Sent は message_id マージ（二重行防止・
-/// 送信時ローカル行の uid 確定）を使う。
-#[derive(Clone, Copy)]
-enum MergeStrategy {
-    /// UNIQUE(account, folder, uid) で重複を無視して挿入する
-    InsertOrIgnore,
-    /// message_id で既存行があれば uid を更新、無ければ挿入する（Sent 同期）
-    UpsertByMessageId,
-}
-
-/// 1フォルダ分を差分取得し、logical_folder でローカル DB に取り込む。
-/// server_folder はサーバー上の実フォルダ名（Gmail の Sent 等はロケール依存）、
-/// logical_folder はローカル DB 上の正規化名（"INBOX" / "Sent"）。
-/// 取り込んだ新規件数を返す。進捗コールバックはバッチごとに呼ぶ。
-#[allow(clippy::too_many_arguments)]
-async fn sync_folder_into(
-    state: &DbState,
-    session: &mut imap_client::ImapSession,
-    account_id: &str,
-    server_folder: &str,
-    logical_folder: &str,
-    since_uid: u32,
-    initial_limit: u32,
-    strategy: MergeStrategy,
-    mut on_progress: impl FnMut(usize, usize),
-) -> Result<u32, AppError> {
-    let mut count = 0u32;
-    imap_client::fetch_mails_batched(
-        session,
-        server_folder,
-        since_uid,
-        initial_limit,
-        |batch, progress| {
-            // バッチ単位でロックを取り、挿入してから進捗を通知する
-            state.with_conn(|conn| {
-                for fetched in batch {
-                    if let Some(mail) = mime_parser::parse_mime(
-                        &fetched.body,
-                        account_id,
-                        logical_folder,
-                        fetched.uid,
-                        fetched.is_read,
-                        fetched.is_flagged,
-                        fetched.flags,
-                    ) {
-                        let inserted = match strategy {
-                            MergeStrategy::InsertOrIgnore => mails::insert_mail(conn, &mail)?,
-                            MergeStrategy::UpsertByMessageId => {
-                                mails::upsert_sent_mail(conn, &mail)?
-                            }
-                        };
-                        // 既存行の無視・uid 更新のみは新規取り込みに数えない
-                        if inserted {
-                            count += 1;
-                        }
-                    }
-                }
-                Ok(())
-            })?;
-            on_progress(progress.done, progress.total);
-            Ok(())
-        },
-    )
-    .await?;
-    Ok(count)
-}
-
-/// Sent フォルダをベストエフォートで同期する。
-/// サーバー実フォルダは \Sent SPECIAL-USE で探し、無ければ settings の sent_folder。
-/// ローカルは logical folder "Sent" に正規化し、message_id マージで取り込む
-/// （送信時ローカル行の uid 確定・他クライアント送信の取り込み）。
-/// 失敗は警告ログのみ（INBOX 同期の成功を覆さない）。取り込んだ新規件数を返す。
-async fn sync_sent_folder(
-    state: &DbState,
-    session: &mut imap_client::ImapSession,
-    account_id: &str,
-    initial_limit: u32,
-) -> u32 {
-    // 送信時の推定 uid（uid_confirmed=0）を watermark に含めるとサーバー行が
-    // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）。
-    // 読み出し失敗を watermark=0 に丸めると全件再取得になるため、
-    // この関数のベストエフォート方針に合わせて警告ログを出して同期をスキップする
-    let sent_since =
-        match state.with_conn(|conn| mails::get_max_confirmed_uid(conn, account_id, "Sent")) {
-            Ok(uid) => uid,
-            Err(e) => {
-                eprintln!("[warn] Sent watermark read failed: {}", e);
-                return 0;
-            }
-        };
-
-    let server_folder = match imap_client::find_sent_folder(session).await {
-        Ok(Some(name)) => name,
-        Ok(None) => {
-            match state
-                .with_conn(|conn| crate::db::settings::get_or_default(conn, "sent_folder", "Sent"))
-            {
-                Ok(folder) => folder,
-                Err(e) => {
-                    eprintln!("[warn] sent_folder setting read failed: {}", e);
-                    return 0;
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("[warn] Sent folder discovery failed: {}", e);
-            return 0;
-        }
-    };
-
-    match sync_folder_into(
-        state,
-        session,
-        account_id,
-        &server_folder,
-        "Sent",
-        sent_since,
-        initial_limit,
-        MergeStrategy::UpsertByMessageId,
-        |_, _| {},
-    )
-    .await
-    {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("[warn] Sent folder sync failed: {}", e);
-            0
-        }
-    }
-}
-
-async fn sync_account_inner(
-    state: &DbState,
-    secure_store: &crate::secure_store::SecureStore,
-    account_id: &str,
-    mut on_progress: impl FnMut(usize, usize),
-) -> Result<u32, AppError> {
-    let (account, max_uid, initial_limit) = state.with_conn(|conn| {
-        let account = accounts::get_account(conn, account_id)?;
-        let max_uid = mails::get_max_uid(conn, account_id, "INBOX")?;
-        let initial_limit = crate::db::settings::get_u32_or(conn, "initial_sync_limit", 5000)?;
-        Ok((account, max_uid, initial_limit))
-    })?;
-
-    let (auth_type, username, credential) =
-        resolve_imap_credentials(&account, secure_store).await?;
-
-    let mut session = imap_client::connect(
-        &account.imap_host,
-        account.imap_port,
-        &auth_type,
-        &username,
-        &credential,
-    )
-    .await?;
-
-    let fetch_result = sync_folder_into(
-        state,
-        &mut session,
-        account_id,
-        "INBOX",
-        "INBOX",
-        max_uid,
-        initial_limit,
-        MergeStrategy::InsertOrIgnore,
-        &mut on_progress,
-    )
-    .await;
-    let mut count = *fetch_result.as_ref().unwrap_or(&0);
-
-    // フラグ再同期: 既知メールの既読状態・スター状態をサーバーに合わせる
-    // （他クライアントでの変更の取り込み。設計書「フラグ変更→ローカルDB更新」）。
-    // 取り込み自体は成功しているため、ここの失敗は同期エラーにしない
-    if fetch_result.is_ok() {
-        match imap_client::fetch_flag_map(&mut session, "INBOX").await {
-            Ok(flag_map) => {
-                let update_result = state
-                    .with_conn(|conn| mails::update_flag_state(conn, account_id, "INBOX", &flag_map));
-                if let Err(e) = update_result {
-                    eprintln!("[warn] flag-state DB update failed: {}", e);
-                }
-            }
-            Err(e) => eprintln!("[warn] flag-state resync failed: {}", e),
-        }
-
-        // Sent フォルダの同期（ベストエフォート）。送信時ローカル行の uid 確定と
-        // 他クライアント送信の取り込み。失敗しても INBOX 同期の成功は覆さない
-        count += sync_sent_folder(state, &mut session, account_id, initial_limit).await;
-    }
-
-    if let Err(e) = session.logout().await {
-        eprintln!("[warn] IMAP logout failed: {}", e);
-    }
-    fetch_result?;
-    Ok(count)
-}
-
-/// ローカル最古 UID 未満のメールを、新しい→古いの順に limit 件まで遡って取り込む
-/// （バックフィル）。sync_folder_into と異なり取得方向が逆
-/// （imap_client::fetch_mails_backfill_batched を使う）。Sent は対象外（v1 制限、
-/// 設計書 2026-07-13-mail-backfill-design.md）。
-async fn backfill_folder_into(
-    state: &DbState,
-    session: &mut imap_client::ImapSession,
-    account_id: &str,
-    min_uid_exclusive: u32,
-    limit: u32,
-    mut on_progress: impl FnMut(usize, usize),
-) -> Result<imap_client::BackfillResult, AppError> {
-    let mut fetched = 0u32;
-    let result = imap_client::fetch_mails_backfill_batched(
-        session,
-        "INBOX",
-        min_uid_exclusive,
-        limit,
-        |batch, progress| {
-            state.with_conn(|conn| {
-                for m in batch {
-                    if let Some(mail) = mime_parser::parse_mime(
-                        &m.body,
-                        account_id,
-                        "INBOX",
-                        m.uid,
-                        m.is_read,
-                        m.is_flagged,
-                        m.flags,
-                    ) {
-                        if mails::insert_mail(conn, &mail)? {
-                            fetched += 1;
-                        }
-                    }
-                }
-                Ok(())
-            })?;
-            on_progress(progress.done, progress.total);
-            Ok(())
-        },
-    )
-    .await?;
-    Ok(imap_client::BackfillResult {
-        fetched: fetched as usize,
-        exhausted: result.exhausted,
-    })
-}
-
-async fn backfill_account_inner(
-    state: &DbState,
-    secure_store: &crate::secure_store::SecureStore,
-    account_id: &str,
-    limit: u32,
-    mut on_progress: impl FnMut(usize, usize),
-) -> Result<BackfillOutcome, AppError> {
-    let (account, min_uid) = state.with_conn(|conn| {
-        let account = accounts::get_account(conn, account_id)?;
-        let min_uid = mails::get_min_uid(conn, account_id, "INBOX")?;
-        Ok((account, min_uid))
-    })?;
-
-    // min_uid=0 はローカルにメールが1件もない（通常の初回同期に任せる範囲）。
-    // バックフィルの対象がそもそも存在しないため、接続せずに終える
-    if min_uid == 0 {
-        return Ok(BackfillOutcome {
-            fetched: 0,
-            exhausted: true,
-        });
-    }
-
-    let (auth_type, username, credential) =
-        resolve_imap_credentials(&account, secure_store).await?;
-
-    let mut session = imap_client::connect(
-        &account.imap_host,
-        account.imap_port,
-        &auth_type,
-        &username,
-        &credential,
-    )
-    .await?;
-
-    let result = backfill_folder_into(
-        state,
-        &mut session,
-        account_id,
-        min_uid,
-        limit,
-        &mut on_progress,
-    )
-    .await;
-
-    if let Err(e) = session.logout().await {
-        eprintln!("[warn] IMAP logout failed: {}", e);
-    }
-
-    let result = result?;
-    Ok(BackfillOutcome {
-        fetched: result.fetched as u32,
-        exhausted: result.exhausted,
-    })
 }
 
 /// メールを既読にする。DB は即時更新し、IMAP への \Seen 反映は
@@ -531,7 +267,7 @@ fn load_mail_context(
 /// 削除・アーカイブの共通本体（*_inner）では tokio::sync::OnceCell に包んで
 /// 「必要になった時点で一度だけ解決」を表現する（単体は遅延解決、
 /// bulk は解決済みを事前投入して全メールで使い回す）。
-pub(crate) type ImapCredentials = (AuthType, String, String);
+pub(crate) use crate::mail_sync::sync_service::ImapCredentials;
 
 /// delete_mail の本体。単体（delete_mail）と一括（bulk_delete_mails）の
 /// 両方から呼ばれる。サーバー処理（\Deleted + EXPUNGE）を同期的に実行し、
