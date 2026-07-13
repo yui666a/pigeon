@@ -27,6 +27,9 @@ export function useMailDrag(
       const dy = me.clientY - startPos.current.y;
       if (!isDragging.current && Math.abs(dx) + Math.abs(dy) > DRAG_THRESHOLD) {
         isDragging.current = true;
+        // ドラッグ開始までに生じたテキスト選択を解除する。行には select-none を
+        // 当てているが、閾値超えまでの微小な移動で選択が残る場合があるため
+        window.getSelection()?.removeAllRanges();
         startDrag(mailIds, label);
         updatePosition(me.clientX, me.clientY);
       }

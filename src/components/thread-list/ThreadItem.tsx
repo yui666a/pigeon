@@ -29,7 +29,7 @@ export const ThreadItem = memo(function ThreadItem({
   return (
     <div
       onMouseDown={onMouseDown}
-      className={`flex w-full cursor-pointer items-start gap-2 border-b px-4 py-3 text-left hover:bg-gray-50 ${bgClass}`}
+      className={`flex w-full cursor-pointer select-none items-start gap-2 border-b px-4 py-3 text-left hover:bg-gray-50 ${bgClass}`}
     >
       <input
         type="checkbox"
