@@ -10,4 +10,5 @@ pub mod project_contexts;
 pub mod project_files;
 pub mod projects;
 pub mod search;
+pub mod sent_sync;
 pub mod settings;
