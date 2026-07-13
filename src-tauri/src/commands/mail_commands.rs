@@ -243,8 +243,16 @@ async fn sync_sent_folder(
             Err(_) => return 0,
         };
         // 送信時の推定 uid（uid_confirmed=0）を watermark に含めるとサーバー行が
-        // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）
-        mails::get_max_confirmed_uid(&conn, account_id, "Sent").unwrap_or(0)
+        // スキップされ reconciliation が成立しないため、確定行のみで計算する（C1）。
+        // 読み出し失敗を watermark=0 に丸めると全件再取得になるため、
+        // この関数のベストエフォート方針に合わせて警告ログを出して同期をスキップする
+        match mails::get_max_confirmed_uid(&conn, account_id, "Sent") {
+            Ok(uid) => uid,
+            Err(e) => {
+                eprintln!("[warn] Sent watermark read failed: {}", e);
+                return 0;
+            }
+        }
     };
 
     let server_folder = match imap_client::find_sent_folder(session).await {
@@ -254,7 +262,13 @@ async fn sync_sent_folder(
                 Ok(c) => c,
                 Err(_) => return 0,
             };
-            crate::db::settings::get_or_default(&conn, "sent_folder", "Sent")
+            match crate::db::settings::get_or_default(&conn, "sent_folder", "Sent") {
+                Ok(folder) => folder,
+                Err(e) => {
+                    eprintln!("[warn] sent_folder setting read failed: {}", e);
+                    return 0;
+                }
+            }
         }
         Err(e) => {
             eprintln!("[warn] Sent folder discovery failed: {}", e);
@@ -293,7 +307,7 @@ async fn sync_account_inner(
         let conn = state.0.lock().map_err(AppError::lock_err)?;
         let account = accounts::get_account(&conn, account_id)?;
         let max_uid = mails::get_max_uid(&conn, account_id, "INBOX")?;
-        let initial_limit = crate::db::settings::get_u32_or(&conn, "initial_sync_limit", 5000);
+        let initial_limit = crate::db::settings::get_u32_or(&conn, "initial_sync_limit", 5000)?;
         (account, max_uid, initial_limit)
     };
 
@@ -628,7 +642,7 @@ pub async fn archive_mail(
     let (account, mail, archive_folder) = {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
         let (account, mail) = load_mail_context(&conn, &account_id, &mail_id)?;
-        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive");
+        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive")?;
         (account, mail, archive_folder)
     };
 

@@ -41,16 +41,16 @@ pub fn build_classifier(
     conn: &Connection,
     secure_store: &SecureStore,
 ) -> Result<Box<dyn LlmClassifier>, AppError> {
-    let provider = settings::get_or_default(conn, "llm_provider", "ollama");
+    let provider = settings::get_or_default(conn, "llm_provider", "ollama")?;
     let ollama_endpoint =
-        settings::get_or_default(conn, "ollama_endpoint", "http://localhost:11434");
-    let ollama_model = settings::get_or_default(conn, "ollama_model", "llama3.1:8b");
-    let claude_model = settings::get_or_default(conn, "claude_model", "claude-haiku-4-5");
-    let vertex_project_id = settings::get_or_default(conn, "vertex_project_id", "");
+        settings::get_or_default(conn, "ollama_endpoint", "http://localhost:11434")?;
+    let ollama_model = settings::get_or_default(conn, "ollama_model", "llama3.1:8b")?;
+    let claude_model = settings::get_or_default(conn, "claude_model", "claude-haiku-4-5")?;
+    let vertex_project_id = settings::get_or_default(conn, "vertex_project_id", "")?;
     let vertex_location =
-        settings::get_or_default(conn, "vertex_location", DEFAULT_VERTEX_LOCATION);
-    let vertex_model = settings::get_or_default(conn, "vertex_model", DEFAULT_VERTEX_MODEL);
-    let gemini_model = settings::get_or_default(conn, "gemini_model", DEFAULT_GEMINI_MODEL);
+        settings::get_or_default(conn, "vertex_location", DEFAULT_VERTEX_LOCATION)?;
+    let vertex_model = settings::get_or_default(conn, "vertex_model", DEFAULT_VERTEX_MODEL)?;
+    let gemini_model = settings::get_or_default(conn, "gemini_model", DEFAULT_GEMINI_MODEL)?;
     // 保存済み設定からの構築では、秘密情報は常に SecureStore を参照する（None を渡す）。
     build_classifier_from_params(
         &ClassifierParams {

@@ -141,7 +141,7 @@ pub async fn bulk_archive_mails(
     let (account, archive_folder) = {
         let conn = state.0.lock().map_err(AppError::lock_err)?;
         let account = accounts::get_account(&conn, &account_id)?;
-        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive");
+        let archive_folder = settings::get_or_default(&conn, "archive_folder", "Archive")?;
         (account, archive_folder)
     };
     let (auth_type, username, credential) = resolve_credentials(&account, &secure_store.0).await?;

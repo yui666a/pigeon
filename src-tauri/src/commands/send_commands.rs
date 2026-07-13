@@ -183,7 +183,7 @@ pub async fn send_mail(
             Some(id) => Some(mails::get_mail_by_id(&conn, id)?),
             None => None,
         };
-        let sent_folder = settings::get_or_default(&conn, "sent_folder", "Sent");
+        let sent_folder = settings::get_or_default(&conn, "sent_folder", "Sent")?;
         (account, reply_source, sent_folder)
     };
 

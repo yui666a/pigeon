@@ -75,7 +75,7 @@ pub async fn rescan_project_directory(
     // 送信可否ポリシー適用のためのもので、build_classifier とは独立。
     let cloud = {
         let conn = db.0.lock().map_err(AppError::lock_err)?;
-        crate::db::settings::get_or_default(&conn, "llm_provider", "ollama") == "claude"
+        crate::db::settings::get_or_default(&conn, "llm_provider", "ollama")? == "claude"
     };
     project_context::rescan_project(&db.0, classifier.as_ref(), &project_id, cloud).await
 }
