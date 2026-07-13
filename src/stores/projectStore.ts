@@ -1,7 +1,9 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
 import type { Project } from "../types/project";
-import type { ProjectContext, ProjectDirectory, RescanOutcome } from "../types/directory";
+import type { ProjectContext, ProjectDirectory } from "../types/directory";
+import { projectApi } from "../api/projectApi";
+import { directoryApi } from "../api/directoryApi";
+import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 
 interface ProjectState {
@@ -48,31 +50,31 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   fetchProjects: async (accountId) => {
     set({ loading: true });
     try {
-      const projects = await invoke<Project[]>("get_projects", { accountId });
+      const projects = await projectApi.fetchProjects(accountId);
       set({ projects, loading: false });
       for (const p of projects) {
         void get().fetchDirectory(p.id);
       }
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   createProject: async (accountId, name, description, color) => {
     set({ loading: true });
     try {
-      const project = await invoke<Project>("create_project", {
+      const project = await projectApi.createProject(
         accountId,
         name,
-        description: description ?? null,
-        color: color ?? null,
-      });
+        description,
+        color,
+      );
       await get().fetchProjects(accountId);
       return project;
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       throw e;
     }
   },
@@ -80,12 +82,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   updateProject: async (id, name, description, color) => {
     set({ loading: true });
     try {
-      await invoke("update_project", {
-        id,
-        name: name ?? null,
-        description: description ?? null,
-        color: color ?? null,
-      });
+      await projectApi.updateProject(id, name, description, color);
       const projects = get().projects.map((p) =>
         p.id === id
           ? {
@@ -99,14 +96,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set({ projects, loading: false });
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   archiveProject: async (id) => {
     set({ loading: true });
     try {
-      await invoke("archive_project", { id });
+      await projectApi.archiveProject(id);
       set({
         projects: get().projects.filter((p) => p.id !== id),
         selectedProjectId:
@@ -115,14 +112,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       });
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   deleteProject: async (id) => {
     set({ loading: true });
     try {
-      await invoke("delete_project", { id });
+      await projectApi.deleteProject(id);
       set({
         projects: get().projects.filter((p) => p.id !== id),
         selectedProjectId:
@@ -131,17 +128,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       });
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   mergeProject: async (sourceId, targetId) => {
     set({ loading: true });
     try {
-      const moved = await invoke<number>("merge_projects", {
-        sourceId,
-        targetId,
-      });
+      const moved = await projectApi.mergeProjects(sourceId, targetId);
       set({
         projects: get().projects.filter((p) => p.id !== sourceId),
         selectedProjectId:
@@ -151,7 +145,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       return moved;
     } catch (e) {
       set({ loading: false });
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       throw e;
     }
   },
@@ -165,43 +159,38 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   fetchDirectory: async (projectId) => {
     try {
-      const dir = await invoke<ProjectDirectory | null>("get_project_directory", {
-        projectId,
-      });
+      const dir = await directoryApi.fetchDirectory(projectId);
       set({ directories: { ...get().directories, [projectId]: dir } });
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   linkDirectory: async (projectId, path) => {
     try {
-      const dir = await invoke<ProjectDirectory>("link_project_directory", {
-        projectId,
-        path,
-      });
+      const dir = await directoryApi.linkDirectory(projectId, path);
       set({ directories: { ...get().directories, [projectId]: dir } });
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
       throw e;
     }
   },
 
   unlinkDirectory: async (projectId) => {
     try {
-      await invoke("unlink_project_directory", { projectId });
+      await directoryApi.unlinkDirectory(projectId);
       set({ directories: { ...get().directories, [projectId]: null } });
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   rescanProject: async (projectId) => {
     set({ scanningProjects: { ...get().scanningProjects, [projectId]: true } });
     try {
-      await invoke<RescanOutcome>("rescan_project_directory", { projectId });
+      await directoryApi.rescanDirectory(projectId);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     } finally {
       const { [projectId]: _removed, ...rest } = get().scanningProjects;
       set({ scanningProjects: rest });
@@ -212,21 +201,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   fetchProjectContext: async (projectId) => {
     try {
-      const context = await invoke<ProjectContext | null>("get_project_context", {
-        projectId,
-      });
+      const context = await directoryApi.fetchProjectContext(projectId);
       set({ contexts: { ...get().contexts, [projectId]: context } });
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   setAllowCloudContext: async (projectId, allow) => {
     try {
-      await invoke("set_allow_cloud_context", { projectId, allow });
+      await directoryApi.setAllowCloudContext(projectId, allow);
       await get().fetchProjectContext(projectId);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 }));
