@@ -125,19 +125,19 @@ CREATE TABLE correction_log (
 ### インメモリ状態（Tauri State）
 
 LLMが「新規案件を提案」した場合のユーザー承認待ち状態。DBには永続化しない。
-`classify_unassigned` で複数の `create` 提案が出る場合があるため、`HashMap<mail_id, PendingClassification>` で管理する。
+再分類等で複数の `create` 提案が残る場合があるため、`HashMap<mail_id, ClassifyResult>` で管理する。
 
 ```rust
-struct PendingClassification {
-    result: ClassifyResult,
-    created_at: DateTime<Utc>,
-}
-
-// Tauri State として管理
-struct PendingClassifications(Mutex<HashMap<String, PendingClassification>>);
+// Tauri State として管理（classifier/service.rs）
+struct PendingClassifications(Mutex<HashMap<String, ClassifyResult>>);
 ```
 
-`approve_new_project` / `reject_classification` 実行時に該当エントリを削除する。
+`approve_new_project` / `reject_classification` 実行時に該当エントリを削除する
+（そのほか手動割り当て・スレッド追従など、割り当てが確定する全経路で除去する）。
+
+また、バッチ分類の進行状態（キュー・インデックス・多重実行ガード・キャンセルフラグ）も
+インメモリの Tauri State `ClassifyBatches`（`classifier/service.rs`）で管理する。
+詳細は `2026-07-13-classify-batch-backend-design.md` を参照。
 
 ---
 
@@ -267,8 +267,8 @@ pub struct ClassifyResponse {
 | コマンド | 引数 | 戻り値 | 説明 |
 |---------|------|--------|------|
 | `classify_mail` | mail_id | ClassifyResponse | 1通を分類（手動トリガー） |
-| `classify_unassigned` | account_id | — | 未分類メール全件を分類。進捗は Tauri events で通知 |
-| `cancel_classification` | — | — | 実行中の分類を中止 |
+| `classify_batch` | account_id | ClassifyBatchOutcome | 未分類バッチ分類を開始/再開し、次の停止点（create 提案）か完了まで進む。進捗は Tauri events で通知 |
+| `cancel_classification` | account_id | — | 実行中/承認待ちのバッチ分類を中止 |
 | `approve_classification` | mail_id, project_id | — | 分類結果を承認または修正。project_id がAI提案と異なる場合は割り当て先を変更 |
 | `approve_new_project` | mail_id, project_name, description? | Project | 新規案件提案を承認。案件を作成し、メールを割り当て |
 | `reject_classification` | mail_id | — | 分類結果を破棄（assignments から削除し未分類に戻す） |
@@ -300,29 +300,31 @@ SET project_id = ?1,
 WHERE mail_id = ?2
 ```
 
-#### `classify_unassigned` の進捗通知
+#### `classify_batch` のワークフローと進捗通知
 
-Tauri events でフロントエンドに進捗を通知する。ポーリングは行わない。
+バッチ分類ループはバックエンドの `classifier/service.rs::classify_batch` に置く。
+1 回の invoke で「次の停止点（create 提案）または完了/キャンセル」まで進み、
+`ClassifyBatchOutcome`（completed / paused / cancelled / already_running）を返す。
+create 提案の承認・却下後はフロントが再 invoke して続きから再開する。
+バッチ状態（キュー・インデックス・多重実行ガード）はインメモリの
+`ClassifyBatches`（Tauri State）が保持する。
+
+進捗は Tauri events でフロントエンドに通知する。ポーリングは行わない。
 
 ```rust
-// 進捗イベント
-handle.emit("classify-progress", ClassifyProgress {
-    current: 3,
-    total: 15,
-    mail_id: "...",
-    result: ClassifyResponse { ... },
-})?;
-
-// 完了イベント
-handle.emit("classify-complete", ClassifySummary {
-    total: 15,
-    assigned: 10,
-    needs_review: 3,
-    unclassified: 2,
+// 進捗イベント（sync-progress と同様ベストエフォート）
+handle.emit("classify-progress", ClassifyProgressEvent {
+    account_id: "...",
+    current: 3,   // 処理済み件数
+    total: 15,    // バッチ開始時のキュー長（再開しても不変）
 })?;
 ```
 
-ユーザーが `cancel_classification` を呼ぶと、内部の `AtomicBool` フラグを立ててループを中断する。
+完了イベントは設けない（invoke の戻り値 `Completed` で伝わる）。
+ユーザーが `cancel_classification` を呼ぶと、バッチのキャンセルフラグを立てて
+次のメール処理前にループを中断する（承認待ち停止中ならバッチを即破棄する）。
+
+詳細は `2026-07-13-classify-batch-backend-design.md` を参照。
 
 ### メール取得
 
