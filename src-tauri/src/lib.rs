@@ -54,7 +54,7 @@ pub fn run() {
         .manage(OAuthStateStore::new())
         .manage(SyncLocks::new())
         .manage(IdleWatchers::new())
-        .manage(commands::classify_commands::PendingClassifications::new())
+        .manage(classifier::service::PendingClassifications::new())
         .setup(|app| {
             // Register deep link handler for OAuth callback
             #[cfg(not(target_os = "android"))]

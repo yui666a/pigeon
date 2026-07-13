@@ -98,7 +98,7 @@ pub async fn bulk_archive_mails(
 #[tauri::command]
 pub fn bulk_move_mails(
     state: State<DbState>,
-    pending: State<crate::commands::classify_commands::PendingClassifications>,
+    pending: State<crate::classifier::service::PendingClassifications>,
     mail_ids: Vec<String>,
     project_id: String,
 ) -> Result<BulkResult, AppError> {
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn test_bulk_move_mails_removes_pending_for_succeeded_only() {
         // 割り当てが確定した m1 の Create 提案は除去され、失敗した m2 の提案は残る
-        use crate::commands::classify_commands::PendingClassifications;
+        use crate::classifier::service::PendingClassifications;
         use crate::models::classifier::{ClassifyAction, ClassifyResult};
 
         let conn = setup_db();
