@@ -5,7 +5,11 @@ use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
+/// projects テーブルの1行を Project へ変換する共通マッパー。
+/// カラム順は SELECT 句の
+/// `id, account_id, name, description, color, is_archived, created_at, updated_at`
+/// に一致させること。
+fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: row.get(0)?,
         account_id: row.get(1)?,
@@ -49,7 +53,7 @@ pub fn get_project(conn: &Connection, id: &str) -> Result<Project, AppError> {
         "SELECT id, account_id, name, description, color, is_archived, created_at, updated_at
          FROM projects WHERE id = ?1",
         params![id],
-        map_row,
+        row_to_project,
     )
     .map_err(|_| AppError::ProjectNotFound(id.to_string()))
 }
@@ -62,7 +66,7 @@ pub fn list_projects(conn: &Connection, account_id: &str) -> Result<Vec<Project>
          ORDER BY created_at",
     )?;
     let projects = stmt
-        .query_map(params![account_id], map_row)?
+        .query_map(params![account_id], row_to_project)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(projects)
 }

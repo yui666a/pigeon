@@ -3,7 +3,9 @@ use crate::models::directory::ProjectDirectory;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectDirectory> {
+/// project_directories テーブルの1行を ProjectDirectory へ変換する共通マッパー。
+/// カラム順は `SELECT_COLS` に一致させること。
+fn row_to_directory(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectDirectory> {
     Ok(ProjectDirectory {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -42,7 +44,7 @@ pub fn link_directory(
         .query_row(
             &format!("SELECT {} FROM project_directories WHERE id = ?1", SELECT_COLS),
             params![id],
-            map_row,
+            row_to_directory,
         )
         .map_err(AppError::Database)?;
     tx.commit()?;
@@ -59,7 +61,7 @@ pub fn get_directory_by_project(
             SELECT_COLS
         ),
         params![project_id],
-        map_row,
+        row_to_directory,
     )
     .optional()
     .map_err(AppError::Database)

@@ -2,22 +2,27 @@ use crate::error::AppError;
 use crate::models::directory::ProjectContext;
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// project_contexts テーブルの1行を ProjectContext へ変換する共通マッパー。
+/// カラム順は `SELECT project_id, cached_context, context_hash, inventory_hash,
+/// allow_cloud_context, generated_at` に一致させること。
+fn row_to_project_context(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectContext> {
+    Ok(ProjectContext {
+        project_id: row.get(0)?,
+        cached_context: row.get(1)?,
+        context_hash: row.get(2)?,
+        inventory_hash: row.get(3)?,
+        allow_cloud_context: row.get(4)?,
+        generated_at: row.get(5)?,
+    })
+}
+
 pub fn get_context(conn: &Connection, project_id: &str) -> Result<Option<ProjectContext>, AppError> {
     conn.query_row(
         "SELECT project_id, cached_context, context_hash, inventory_hash,
                 allow_cloud_context, generated_at
          FROM project_contexts WHERE project_id = ?1",
         params![project_id],
-        |row| {
-            Ok(ProjectContext {
-                project_id: row.get(0)?,
-                cached_context: row.get(1)?,
-                context_hash: row.get(2)?,
-                inventory_hash: row.get(3)?,
-                allow_cloud_context: row.get(4)?,
-                generated_at: row.get(5)?,
-            })
-        },
+        row_to_project_context,
     )
     .optional()
     .map_err(AppError::Database)
