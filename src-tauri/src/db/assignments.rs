@@ -2,7 +2,7 @@ use crate::db::mails::{self, row_to_mail, MAIL_COLUMNS_PREFIXED};
 use crate::error::AppError;
 use crate::models::mail::Mail;
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// INSERT OR REPLACE a mail-to-project assignment.
 pub fn assign_mail(
@@ -306,19 +306,23 @@ pub fn move_mail_to_project(
 ///
 /// 戻り値は追従割り当てしたメール数。
 pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize, AppError> {
-    let all_mails = mails::get_all_mails_by_account(conn, account_id)?;
-    let threads = mails::build_threads(&all_mails);
-    // ユーザーが却下したメールは追従の対象外（トゥームストーン）。一度だけ読み出す
+    // 読み出しは3クエリに固定する: 軽量メタ（本文カラムを読まない）・割り当てマップ・除外集合。
+    // 以前は本文込み全メールのロード + メール毎の get_assignment_info 発行（N+1）だった
+    let metas = mails::get_thread_metas_by_account(conn, account_id)?;
+    let thread_mail_ids = mails::group_mail_ids_into_threads(&metas);
+    let assigned = get_assignment_map(conn, account_id)?;
+    // ユーザーが却下したメールは追従の対象外（トゥームストーン）
     let excluded = get_follow_exclusions(conn, account_id)?;
 
+    // 追従の書き込みは1トランザクションに束ねる。本処理は一覧取得のたびに再実行される
+    // 冪等な処理のため部分成功でも次回リカバリはされるが、単一コミットにすることで
+    // INSERT 毎の autocommit を避けられ、途中失敗時に「スレッドの一部だけ追従された」
+    // 中途半端な状態を残さない
+    let tx = conn.unchecked_transaction()?;
     let mut followed = 0;
-    for thread in &threads {
-        let assigned_projects: HashSet<String> = thread
-            .mails
-            .iter()
-            .filter_map(|m| get_assignment_info(conn, &m.id).ok().flatten())
-            .map(|(project_id, _, _)| project_id)
-            .collect();
+    for mail_ids in &thread_mail_ids {
+        let assigned_projects: HashSet<&String> =
+            mail_ids.iter().filter_map(|id| assigned.get(id)).collect();
 
         // ちょうど1件の案件に統一されているスレッドのみ追従する。
         // 0件（誰も割り当てられていない）や複数件（曖昧）は対象外
@@ -330,19 +334,38 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<usize,
             None => continue,
         };
 
-        for mail in &thread.mails {
-            // 却下済み（除外トゥームストーンあり）のメールは黙って再割り当てしない
-            if excluded.contains(&mail.id) {
+        for mail_id in mail_ids {
+            // 却下済み（除外トゥームストーンあり）のメールは黙って再割り当てしない。
+            // 割り当て済みのメールもスキップ（スレッドは互いに素なので先読みマップで判定できる）
+            if excluded.contains(mail_id) || assigned.contains_key(mail_id) {
                 continue;
             }
-            if get_assignment_info(conn, &mail.id)?.is_some() {
-                continue;
-            }
-            assign_mail(conn, &mail.id, &target_project, "ai", None)?;
+            assign_mail(&tx, mail_id, target_project, "ai", None)?;
             followed += 1;
         }
     }
+    tx.commit()?;
     Ok(followed)
+}
+
+/// アカウント配下メールの割り当てを一括で読み出す（mail_id → project_id）。
+/// `auto_follow_threads` がメール毎に `get_assignment_info` を発行する N+1 を
+/// 避けるための先読み用。
+fn get_assignment_map(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<HashMap<String, String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT mpa.mail_id, mpa.project_id
+         FROM mail_project_assignments mpa
+         JOIN mails m ON m.id = mpa.mail_id
+         WHERE m.account_id = ?1",
+    )?;
+    let map = stmt
+        .query_map(params![account_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(map)
 }
 
 /// アカウントに属するメールのうち、スレッド追従から除外されているメールIDの集合を返す。
@@ -1038,6 +1061,46 @@ mod tests {
         let info = get_assignment_info(&conn, "m2").unwrap().unwrap();
         assert_eq!(info.1, "ai");
         assert!(info.2.is_none(), "AI分類の確信度スコアと区別するためNone");
+    }
+
+    #[test]
+    fn test_auto_follow_rolls_back_all_assignments_on_failure() {
+        // 追従の書き込みは1トランザクション。途中で失敗したら、それまでに書き込んだ
+        // 追従割り当てもロールバックされ「一部だけ追従された」状態を残さないこと
+        let conn = setup_db();
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        let mut m1 = make_mail("m1", "acc1", "Re: Test", "2026-04-13T10:00:00");
+        m1.message_id = "<m1@example.com>".into();
+        let mut m2 = make_mail("m2", "acc1", "Re: Test", "2026-04-13T11:00:00");
+        m2.in_reply_to = Some("<m1@example.com>".into());
+        let mut m3 = make_mail("m3", "acc1", "Re: Test", "2026-04-13T12:00:00");
+        m3.in_reply_to = Some("<m1@example.com>".into());
+        insert_mail(&conn, &m1);
+        insert_mail(&conn, &m2);
+        insert_mail(&conn, &m3);
+        assign_mail(&conn, "m1", "proj1", "user", Some(1.0)).unwrap();
+
+        // 失敗注入: スレッド内で最後に書き込まれる m3（date 最新）の INSERT だけ失敗させる。
+        // これにより先行する m2 の INSERT は成功した後に失敗が起きる
+        conn.execute_batch(
+            "CREATE TRIGGER fail_follow_insert BEFORE INSERT ON mail_project_assignments
+             WHEN NEW.mail_id = 'm3'
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+
+        let result = auto_follow_threads(&conn, "acc1");
+        assert!(result.is_err(), "注入した失敗がエラーとして伝播する");
+        assert!(
+            get_assignment_info(&conn, "m2").unwrap().is_none(),
+            "先に書き込まれた m2 の追従もロールバックされる"
+        );
+        assert!(get_assignment_info(&conn, "m3").unwrap().is_none());
+        assert!(
+            get_assignment_info(&conn, "m1").unwrap().is_some(),
+            "既存の割り当ては影響を受けない"
+        );
     }
 
     // --- reject 後のスレッド追従復活防止（トゥームストーン） ---
