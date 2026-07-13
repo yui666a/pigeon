@@ -126,7 +126,7 @@ impl OAuthStateStore {
     pub fn cleanup_expired(&self) {
         let now = current_timestamp();
         let mut map = self.pending.lock().expect("OAuthStateStore lock poisoned");
-        map.retain(|_, v| now - v.created_at < PKCE_TTL_SECS);
+        map.retain(|_, v| !is_pending_expired(v.created_at, now));
     }
 }
 
@@ -335,11 +335,20 @@ pub fn build_token_data(
     })
 }
 
-fn current_timestamp() -> u64 {
+/// UNIXエポックからの経過秒。時計がエポック以前に巻き戻っている異常系でも
+/// panic せず 0 を返す（`unwrap`/`expect` 禁止の規約に従う）。
+pub(crate) fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_secs()
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// PKCE フローの保留エントリが TTL を超過しているか。
+/// 時刻の巻き戻りで `now < created_at` になっても減算アンダーフローで
+/// panic せず「期限内」として扱う。
+pub(crate) fn is_pending_expired(created_at: u64, now: u64) -> bool {
+    now.saturating_sub(created_at) > PKCE_TTL_SECS
 }
 
 pub fn parse_callback_url(url: &str) -> Result<(String, String), AppError> {
@@ -699,5 +708,23 @@ mod tests {
 
         assert!(store.take("old-state").is_none());
         assert!(store.take("new-state").is_some());
+    }
+
+    // --- is_pending_expired ---
+
+    #[test]
+    fn test_is_pending_expired_within_ttl() {
+        assert!(!is_pending_expired(1000, 1000 + PKCE_TTL_SECS));
+    }
+
+    #[test]
+    fn test_is_pending_expired_past_ttl() {
+        assert!(is_pending_expired(1000, 1000 + PKCE_TTL_SECS + 1));
+    }
+
+    #[test]
+    fn test_is_pending_expired_clock_rollback_does_not_panic() {
+        // 時刻の巻き戻りで now < created_at になっても panic せず「期限内」扱い
+        assert!(!is_pending_expired(1000, 500));
     }
 }
