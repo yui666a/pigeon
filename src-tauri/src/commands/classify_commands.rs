@@ -2,12 +2,13 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::classifier::factory::build_classifier;
 use crate::classifier::service::{self, ClassifyBatches, PendingClassifications};
+use crate::context::Ctx;
 use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
 use crate::models::classifier::{ClassifyBatchOutcome, ClassifyResponse};
 use crate::models::mail::Mail;
 use crate::models::project::{CreateProjectRequest, Project};
-use crate::state::{DbState, SecureStoreState};
+use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 // ---------------------------------------------------------------------------
 // Tauri commands
@@ -22,11 +23,14 @@ use crate::state::{DbState, SecureStoreState};
 pub async fn classify_mail(
     db: State<'_, DbState>,
     pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     secure_store: State<'_, SecureStoreState>,
     mail_id: String,
 ) -> Result<ClassifyResponse, AppError> {
-    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
-    service::classify_one(&db.0, classifier.as_ref(), &pending, &mail_id).await
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let classifier = ctx.with_conn(|conn| build_classifier(conn, ctx.secure_store()?))?;
+    service::classify_one(&db.0, classifier.as_ref(), ctx.pending(), &mail_id).await
 }
 
 /// classify-progress イベントの payload
