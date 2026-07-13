@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { LlmProvider, LlmSettings } from "../../types/settings";
+import { settingsApi } from "../../api/settingsApi";
+import type { LlmSettingsPayload } from "../../api/settingsApi";
+import { errorMessage } from "../../api/errors";
 import { useErrorStore } from "../../stores/errorStore";
 import { Modal } from "../common/Modal";
 
@@ -25,10 +27,10 @@ export function LlmSettingsDialog({ onClose }: Props) {
   useEffect(() => {
     void (async () => {
       try {
-        const s = await invoke<LlmSettings>("get_llm_settings");
+        const s = await settingsApi.fetchLlmSettings();
         setSettings(s);
       } catch (e) {
-        useErrorStore.getState().addError(String(e));
+        useErrorStore.getState().addError(errorMessage(e));
       }
     })();
   }, []);
@@ -42,7 +44,7 @@ export function LlmSettingsDialog({ onClose }: Props) {
 
   // set/test で共通のペイロード。秘密情報（APIキー・SA JSON）は新規入力があればそれを、
   // 空ならバックエンドが保存済みの値を使う（＝null を渡す）。
-  const buildPayload = (s: LlmSettings) => ({
+  const buildPayload = (s: LlmSettings): LlmSettingsPayload => ({
     provider: s.provider,
     ollamaEndpoint: s.ollama_endpoint,
     ollamaModel: s.ollama_model,
@@ -58,10 +60,10 @@ export function LlmSettingsDialog({ onClose }: Props) {
   const handleSave = async () => {
     if (!settings) return;
     try {
-      await invoke("set_llm_settings", buildPayload(settings));
+      await settingsApi.setLlmSettings(buildPayload(settings));
       onClose();
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   };
 
@@ -70,10 +72,10 @@ export function LlmSettingsDialog({ onClose }: Props) {
     setTestResult(null);
     try {
       // 保存済み設定ではなく、いま画面で選んでいる設定でテストする。
-      await invoke("test_llm_connection", buildPayload(settings));
+      await settingsApi.testLlmConnection(buildPayload(settings));
       setTestResult("接続成功");
     } catch (e) {
-      setTestResult(`接続失敗: ${String(e)}`);
+      setTestResult(`接続失敗: ${errorMessage(e)}`);
     }
   };
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { Attachment } from "../../types/attachment";
+import { attachmentApi } from "../../api/attachmentApi";
+import { errorMessage } from "../../api/errors";
 import { useErrorStore } from "../../stores/errorStore";
 
 interface AttachmentListProps {
@@ -21,10 +22,10 @@ export function AttachmentList({ mailId }: AttachmentListProps) {
   const loadAttachments = async () => {
     setLoading(true);
     try {
-      const result = await invoke<Attachment[]>("list_attachments", { mailId });
+      const result = await attachmentApi.listAttachments(mailId);
       setAttachments(result);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -34,11 +35,9 @@ export function AttachmentList({ mailId }: AttachmentListProps) {
     try {
       // 保存先の選択はバックエンドがネイティブダイアログで行う
       // （IPC 経由で保存先パスを渡さない。キャンセル時は false が返る）
-      await invoke<boolean>("save_attachment", {
-        attachmentId: attachment.id,
-      });
+      await attachmentApi.saveAttachment(attachment.id);
     } catch (e) {
-      useErrorStore.getState().addError(String(e));
+      useErrorStore.getState().addError(errorMessage(e));
     }
   };
 

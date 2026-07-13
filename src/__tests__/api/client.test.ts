@@ -25,12 +25,12 @@ describe("invokeCommand", () => {
     expect(result).toBe(42);
   });
 
-  it("引数省略時は undefined を渡す", async () => {
+  it("引数省略時はコマンド名のみで invoke を呼ぶ", async () => {
     mockInvoke.mockResolvedValue([]);
 
     await invokeCommand("get_accounts");
 
-    expect(mockInvoke).toHaveBeenCalledWith("get_accounts", undefined);
+    expect(mockInvoke).toHaveBeenCalledWith("get_accounts");
   });
 
   it("失敗時は ApiError に正規化して投げる（メッセージは元の文字列のまま）", async () => {

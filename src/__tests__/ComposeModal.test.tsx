@@ -129,7 +129,10 @@ describe("ComposeModal", () => {
         }),
       );
     });
-    expect(useComposeStore.getState().isOpen).toBe(false);
+    // 送信成功後のモーダルクローズは invoke 解決後のマイクロタスクで行われるため待つ
+    await vi.waitFor(() => {
+      expect(useComposeStore.getState().isOpen).toBe(false);
+    });
   });
 
   it("disables 送信 and shows spinner while sending", () => {

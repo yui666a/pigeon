@@ -13,7 +13,11 @@ export async function invokeCommand<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   try {
-    return await invoke<T>(command, args);
+    // 引数なしのコマンドは invoke にも第2引数を渡さない
+    // （テストの toHaveBeenCalledWith(cmd) 互換のためにも余計な undefined を足さない）
+    return args === undefined
+      ? await invoke<T>(command)
+      : await invoke<T>(command, args);
   } catch (e) {
     throw toApiError(e);
   }
