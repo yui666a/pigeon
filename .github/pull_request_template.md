@@ -27,7 +27,7 @@
 
 ## 関連する設計書
 
-<!-- docs/superpowers/specs/ 配下の関連する設計書へのリンク -->
+<!-- docs/design/ の設計書、docs/adr/ のADRなど、関連ドキュメントへのリンク -->
 
 -
 

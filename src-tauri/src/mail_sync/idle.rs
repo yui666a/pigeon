@@ -3,7 +3,7 @@
 //! 監視タスクは新着の「検知」だけを行い、Tauri イベント `new-mail-detected` を
 //! emit する。実際の取り込みはフロントエンドが受けて既存の sync_account 経路で
 //! 行う（多重実行ガード・UI更新も既存フローに乗る）。
-//! 設計: docs/superpowers/specs/2026-07-12-imap-idle-design.md
+//! 設計: docs/archive/specs/2026-07-12-imap-idle-design.md
 
 use std::future::Future;
 use std::time::Duration;

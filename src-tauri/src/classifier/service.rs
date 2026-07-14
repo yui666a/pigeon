@@ -5,7 +5,7 @@
 //! Tauri 非依存（State/AppHandle を受けない）で提供する。
 //! commands 層は分類器の構築とこの関数の呼び出しに徹する。
 //!
-//! 確信度ポリシー（設計: docs/superpowers/specs/2026-04-13-phase2-ai-classification-design.md）
+//! 確信度ポリシー（設計: docs/design/2026-04-13-phase2-ai-classification-design.md）
 //! はこのモジュールに集約する。
 
 use std::collections::HashMap;

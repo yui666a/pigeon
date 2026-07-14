@@ -16,7 +16,7 @@ import type {
  * ループの本体はバックエンド（classify_batch）にあり、ここは
  * 「1 invoke → create 提案で停止したら承認/却下 → 再 invoke で再開」の
  * 薄い制御と進捗イベントの反映だけを持つ
- * （設計: docs/superpowers/specs/2026-07-13-classify-batch-backend-design.md）。
+ * （設計: docs/archive/specs/2026-07-13-classify-batch-backend-design.md）。
  */
 interface ClassifyState {
   classifying: boolean;

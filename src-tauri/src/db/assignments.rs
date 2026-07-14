@@ -303,7 +303,7 @@ pub fn move_mail_to_project(
 ///
 /// 判定は `mails::build_threads` と同じロジック（In-Reply-To/References + 件名フォールバック）
 /// をアカウント全フォルダのメールに対して適用する。設計:
-/// docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md
+/// docs/archive/specs/2026-07-13-thread-follow-classify-design.md
 ///
 /// `assigned_by` は "ai"、`confidence` は None を使う（AIの意味的分類ではなく構造的な
 /// 推論のため、確信度スコアを持たないことで区別する）。ユーザーの訂正判断を経由しない

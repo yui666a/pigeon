@@ -1,5 +1,5 @@
 //! 添付ファイルのオンデマンド取得・保存コマンド。
-//! 設計: docs/superpowers/specs/2026-07-12-attachment-download-design.md
+//! 設計: docs/archive/specs/2026-07-12-attachment-download-design.md
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

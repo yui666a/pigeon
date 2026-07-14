@@ -1,6 +1,6 @@
 //! メール送信 command。
 //! 検証 → メッセージ構築 → SMTP送信 → Sentフォルダ保存 → ローカルDB挿入。
-//! 設計: docs/superpowers/specs/2026-07-12-mail-send-design.md
+//! 設計: docs/archive/specs/2026-07-12-mail-send-design.md
 
 use serde::Deserialize;
 use tauri::State;

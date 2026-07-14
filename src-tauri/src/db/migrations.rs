@@ -327,7 +327,7 @@ fn migrate_v7(conn: &Connection) -> Result<(), AppError> {
 
 fn migrate_v8(conn: &Connection) -> Result<(), AppError> {
     // 添付ファイル（オンデマンド取得・ローカルキャッシュ）
-    // 詳細: docs/superpowers/specs/2026-07-12-attachment-download-design.md
+    // 詳細: docs/archive/specs/2026-07-12-attachment-download-design.md
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS attachments (
@@ -358,7 +358,7 @@ fn migrate_v9(conn: &Connection) -> Result<(), AppError> {
 
 fn migrate_v10(conn: &Connection) -> Result<(), AppError> {
     // uid がサーバー実 UID として確定しているか（Sent 同期の watermark 用）。
-    // 詳細: docs/superpowers/specs/2026-07-12-sent-sync-uidplus-design.md
+    // 詳細: docs/archive/specs/2026-07-12-sent-sync-uidplus-design.md
     //
     // 既定は 1（確定）。INBOX 等サーバーから取得した行の uid はサーバー実 UID なので確定。
     // 一方、送信時にローカル保存する Sent 行の uid は get_max_uid+1 の推定値であり未確定。
@@ -374,7 +374,7 @@ fn migrate_v10(conn: &Connection) -> Result<(), AppError> {
 
 fn migrate_v12(conn: &Connection) -> Result<(), AppError> {
     // ローカル下書き保存（v1: IMAP Drafts同期は将来）
-    // 詳細: docs/superpowers/specs/2026-07-12-draft-save-design.md
+    // 詳細: docs/archive/specs/2026-07-12-draft-save-design.md
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS drafts (
@@ -397,7 +397,7 @@ fn migrate_v12(conn: &Connection) -> Result<(), AppError> {
 
 fn migrate_v13(conn: &Connection) -> Result<(), AppError> {
     // インライン画像（cid:）の本文内表示。Content-ID を持つ添付を判別するためのカラム
-    // 詳細: docs/superpowers/specs/2026-07-13-inline-cid-images-design.md
+    // 詳細: docs/archive/specs/2026-07-13-inline-cid-images-design.md
     conn.execute_batch(
         "
         ALTER TABLE attachments ADD COLUMN content_id TEXT;
@@ -411,7 +411,7 @@ fn migrate_v14(conn: &Connection) -> Result<(), AppError> {
     // スレッド追従の除外トゥームストーン。ユーザーが分類を却下したメールを記録し、
     // auto_follow_threads がスレッド追従で黙って再割り当てするのを防ぐ。
     // メール削除時は ON DELETE CASCADE で自動的に消える。
-    // 詳細: docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md
+    // 詳細: docs/archive/specs/2026-07-13-thread-follow-classify-design.md
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS follow_exclusions (

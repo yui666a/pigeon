@@ -1,5 +1,5 @@
 //! `drafts` テーブルのCRUD。
-//! 設計: docs/superpowers/specs/2026-07-12-draft-save-design.md
+//! 設計: docs/archive/specs/2026-07-12-draft-save-design.md
 
 use crate::error::AppError;
 use crate::models::draft::Draft;

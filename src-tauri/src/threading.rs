@@ -4,7 +4,7 @@
 //! メール集合をスレッドへ分割する純粋なアルゴリズムを提供する。
 //! 永続化（mails テーブルの読み書き）は `db::mails` が担い、本モジュールは
 //! rusqlite に依存しない。設計:
-//! docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md
+//! docs/archive/specs/2026-07-13-thread-follow-classify-design.md
 //! 「判定ロジックの重複実装はしない」。
 
 use crate::models::mail::{Mail, Thread};

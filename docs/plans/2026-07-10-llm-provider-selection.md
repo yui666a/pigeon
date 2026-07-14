@@ -1515,7 +1515,7 @@ git commit -m "feat(ui): サイドバーにLLM設定ボタンを追加"
 ## Task 12: 全体検証と設計書ステータス更新
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md`（ステータスを実装済みに）
+- Modify: `docs/design/2026-07-10-llm-provider-selection-design.md`（ステータスを実装済みに）
 
 - [ ] **Step 1: Rust 全テスト＋clippy**
 
@@ -1529,12 +1529,12 @@ Expected: 全緑
 
 - [ ] **Step 3: 設計書のステータス更新**
 
-`docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md` のステータス行を `承認済み（実装前）` → `実装済み（Ollama + Claude）` に更新。
+`docs/design/2026-07-10-llm-provider-selection-design.md` のステータス行を `承認済み（実装前）` → `実装済み（Ollama + Claude）` に更新。
 
 - [ ] **Step 4: コミット**
 
 ```bash
-git add docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md
+git add docs/design/2026-07-10-llm-provider-selection-design.md
 git commit -m "docs(specs): LLMプロバイダ選択の設計書ステータスを実装済みに更新"
 ```
 ```
