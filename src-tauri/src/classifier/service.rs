@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 
-use crate::classifier::LlmClassifier;
+use crate::classifier::{factory, LlmClassifier};
 use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
 use crate::models::classifier::{
@@ -254,7 +254,12 @@ pub async fn classify_one(
     let (mail_summary, project_summaries, corrections) = {
         let conn = db.lock().map_err(AppError::lock_err)?;
         let mail = mails::get_mail_by_id(&conn, mail_id)?;
-        let project_summaries = projects::build_project_summaries(&conn, &mail.account_id, false)?;
+        // クラウドプロバイダ設定時は allow_cloud_context 許可済み案件のみ
+        // cached_context を注入する（スペック§5不変条件2）。判定は呼び出し元に
+        // 任せず、LLM へ送る入力を組むこの場所で強制する
+        let for_cloud = factory::is_cloud_provider_configured(&conn)?;
+        let project_summaries =
+            projects::build_project_summaries(&conn, &mail.account_id, for_cloud)?;
         let corrections =
             assignments::get_recent_corrections(&conn, &mail.account_id, CORRECTION_HISTORY_LIMIT)?;
         (
@@ -531,6 +536,109 @@ mod tests {
         assert!(matches!(res.result.action, ClassifyAction::Unclassified));
         assert!(assigned_mail_ids(&db, &proj.id).is_empty());
         assert!(!pending.contains("m1").unwrap());
+    }
+
+    // --- classify_one: クラウド送信境界（allow_cloud_context の適用） ---
+
+    /// 受け取った user_prompt を記録するスタブ（送信境界のテスト用）。
+    struct CapturingLlm {
+        result: ClassifyResult,
+        prompts: Mutex<Vec<String>>,
+    }
+
+    impl CapturingLlm {
+        fn returning(result: ClassifyResult) -> Self {
+            Self {
+                result,
+                prompts: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn captured_prompt(&self) -> String {
+            self.prompts.lock().unwrap().join("\n")
+        }
+    }
+
+    #[async_trait]
+    impl TextGenerator for CapturingLlm {
+        async fn generate_text(
+            &self,
+            _system_prompt: &str,
+            user_prompt: &str,
+        ) -> Result<String, AppError> {
+            self.prompts.lock().unwrap().push(user_prompt.to_string());
+            serde_json::to_string(&self.result).map_err(|e| AppError::Classifier(e.to_string()))
+        }
+    }
+
+    #[async_trait]
+    impl LlmClassifier for CapturingLlm {
+        async fn health_check(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    const SECRET_CONTEXT: &str = "社外秘-案件ディレクトリ由来コンテキスト";
+
+    /// メール1通・案件1件（cached_context 付き）と llm_provider 設定を仕込む。
+    fn setup_context_boundary(
+        db: &Mutex<Connection>,
+        provider: &str,
+        allow_cloud: bool,
+    ) -> Project {
+        let conn = db.lock().unwrap();
+        insert_test_mail(&conn, "m1", "Subject");
+        let proj = insert_project(&conn, "Proj");
+        crate::db::project_contexts::upsert_generated(&conn, &proj.id, SECRET_CONTEXT, "h", "i")
+            .unwrap();
+        crate::db::project_contexts::set_allow_cloud_context(&conn, &proj.id, allow_cloud).unwrap();
+        crate::db::settings::set(&conn, "llm_provider", provider).unwrap();
+        proj
+    }
+
+    #[tokio::test]
+    async fn test_classify_one_cloud_provider_excludes_unallowed_context_from_prompt() {
+        // クラウドプロバイダ設定では、allow_cloud_context=false の案件の
+        // cached_context をプロンプトに含めない（スペック§5不変条件2）
+        for provider in ["claude", "claude_vertex", "gemini_vertex"] {
+            let db = Mutex::new(setup_db());
+            let pending = PendingClassifications::new();
+            setup_context_boundary(&db, provider, false);
+            let llm = CapturingLlm::returning(unclassified_result());
+
+            classify_one(&db, &llm, &pending, "m1").await.unwrap();
+
+            assert!(
+                !llm.captured_prompt().contains(SECRET_CONTEXT),
+                "{provider}: 未許可の案件コンテキストがクラウド向けプロンプトに漏れている"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_classify_one_cloud_provider_includes_allowed_context() {
+        // allow_cloud_context=true の案件はクラウドでもコンテキストを注入する
+        let db = Mutex::new(setup_db());
+        let pending = PendingClassifications::new();
+        setup_context_boundary(&db, "claude", true);
+        let llm = CapturingLlm::returning(unclassified_result());
+
+        classify_one(&db, &llm, &pending, "m1").await.unwrap();
+
+        assert!(llm.captured_prompt().contains(SECRET_CONTEXT));
+    }
+
+    #[tokio::test]
+    async fn test_classify_one_local_provider_includes_all_context() {
+        // ローカル（Ollama）は許可設定に関わらず全コンテキストを注入する（従来挙動）
+        let db = Mutex::new(setup_db());
+        let pending = PendingClassifications::new();
+        setup_context_boundary(&db, "ollama", false);
+        let llm = CapturingLlm::returning(unclassified_result());
+
+        classify_one(&db, &llm, &pending, "m1").await.unwrap();
+
+        assert!(llm.captured_prompt().contains(SECRET_CONTEXT));
     }
 
     #[tokio::test]

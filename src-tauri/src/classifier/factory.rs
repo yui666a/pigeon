@@ -35,6 +35,23 @@ pub struct ClassifierParams<'a> {
     pub gemini_model: &'a str,
 }
 
+/// クラウド送信になるプロバイダかどうかの唯一の判定点。
+///
+/// `allow_cloud_context` 等の送信可否ポリシーを適用するか（= cloud フラグ）は
+/// 必ずこの関数で判定する。プロバイダ名は `build_classifier_from_params` の
+/// match と対で保守すること。未知のプロバイダはクラウド扱い（誤ってローカル
+/// 扱いにして未許可コンテキストを送るより、送らない側に倒すフェイルセーフ）。
+pub fn is_cloud_provider(provider: &str) -> bool {
+    provider != "ollama"
+}
+
+/// 保存済み設定（`llm_provider`）からクラウド送信可否を判定する。
+/// 分類・rescan・起動時スキャンの全経路がこれを使う。
+pub fn is_cloud_provider_configured(conn: &Connection) -> Result<bool, AppError> {
+    let provider = settings::get_or_default(conn, "llm_provider", "ollama")?;
+    Ok(is_cloud_provider(&provider))
+}
+
 /// 保存済み設定からプロバイダを判定し、対応する Classifier を構築する。
 /// フォールバックはしない（設定と実挙動を一致させるため）。
 pub fn build_classifier(
@@ -168,6 +185,46 @@ mod tests {
         let (conn, store, _d) = setup();
         // llm_provider 未設定 → ollama として構築でき、エラーにならない
         assert!(build_classifier(&conn, &store).is_ok());
+    }
+
+    // --- is_cloud_provider: クラウド送信可否ポリシーの唯一の判定点 ---
+
+    #[test]
+    fn test_is_cloud_provider_ollama_is_local() {
+        assert!(!is_cloud_provider("ollama"));
+    }
+
+    #[test]
+    fn test_is_cloud_provider_cloud_providers_are_cloud() {
+        // Anthropic 直 API だけでなく Vertex 系もクラウド送信
+        assert!(is_cloud_provider("claude"));
+        assert!(is_cloud_provider("claude_vertex"));
+        assert!(is_cloud_provider("gemini_vertex"));
+    }
+
+    #[test]
+    fn test_is_cloud_provider_unknown_is_cloud() {
+        // 未知のプロバイダはクラウド扱い（フェイルセーフ: 誤ってローカル扱いに
+        // して未許可コンテキストを送るより、送らない側に倒す）
+        assert!(is_cloud_provider("openai"));
+    }
+
+    #[test]
+    fn test_is_cloud_provider_configured_reads_settings() {
+        let (conn, _store, _d) = setup();
+        // デフォルト（ollama）はローカル
+        assert!(!is_cloud_provider_configured(&conn).unwrap());
+
+        for provider in ["claude", "claude_vertex", "gemini_vertex"] {
+            settings::set(&conn, "llm_provider", provider).unwrap();
+            assert!(
+                is_cloud_provider_configured(&conn).unwrap(),
+                "{provider} はクラウド判定になること"
+            );
+        }
+
+        settings::set(&conn, "llm_provider", "ollama").unwrap();
+        assert!(!is_cloud_provider_configured(&conn).unwrap());
     }
 
     #[test]
