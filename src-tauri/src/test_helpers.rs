@@ -64,6 +64,36 @@ pub fn make_mail(id: &str, message_id: &str, subject: &str, date: &str) -> Mail 
 ///
 /// Creates a mail with the given `id` and `subject`, using defaults for
 /// everything else, and inserts it into the database.
+/// テスト用の GCP サービスアカウント JSON を返す（プロセス内で1度だけ生成）。
+///
+/// 秘密鍵はテスト実行時に動的生成する使い捨てで、実在の GCP プロジェクトには
+/// 紐づかない。PEM 形式の鍵ブロックをリポジトリにコミットしない
+/// （シークレットスキャナ誤検知・悪しき前例化の防止）。
+/// **本物のサービスアカウント鍵をテストに埋め込まないこと。**
+pub fn test_sa_json() -> &'static str {
+    use std::sync::OnceLock;
+    static SA_JSON: OnceLock<String> = OnceLock::new();
+    SA_JSON.get_or_init(|| {
+        use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+        let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+            .expect("test RSA key generation failed");
+        let pem = key
+            .to_pkcs8_pem(LineEnding::LF)
+            .expect("test key PEM encoding failed")
+            .to_string();
+        serde_json::json!({
+            "type": "service_account",
+            "project_id": "test-project",
+            "private_key_id": "testkeyid",
+            "private_key": pem,
+            "client_email": "test@test-project.iam.gserviceaccount.com",
+            "client_id": "123456789",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        .to_string()
+    })
+}
+
 pub fn insert_test_mail(conn: &Connection, id: &str, subject: &str) {
     let mail = make_mail(
         id,

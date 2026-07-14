@@ -153,7 +153,7 @@ mod tests {
     use super::*;
 
     fn make_classifier(location: &str) -> ClaudeVertexClassifier {
-        let sa_json = include_str!("test_sa.json");
+        let sa_json = crate::test_helpers::test_sa_json();
         ClaudeVertexClassifier::new(
             sa_json,
             "pigeon-mail-xxxxxx",

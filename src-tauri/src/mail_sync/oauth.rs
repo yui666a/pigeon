@@ -113,20 +113,22 @@ impl OAuthStateStore {
         }
     }
 
-    pub fn store(&self, state: String, pending: PendingOAuth) {
-        let mut map = self.pending.lock().expect("OAuthStateStore lock poisoned");
+    pub fn store(&self, state: String, pending: PendingOAuth) -> Result<(), AppError> {
+        let mut map = self.pending.lock().map_err(AppError::lock_err)?;
         map.insert(state, pending);
+        Ok(())
     }
 
-    pub fn take(&self, state: &str) -> Option<PendingOAuth> {
-        let mut map = self.pending.lock().expect("OAuthStateStore lock poisoned");
-        map.remove(state)
+    pub fn take(&self, state: &str) -> Result<Option<PendingOAuth>, AppError> {
+        let mut map = self.pending.lock().map_err(AppError::lock_err)?;
+        Ok(map.remove(state))
     }
 
-    pub fn cleanup_expired(&self) {
+    pub fn cleanup_expired(&self) -> Result<(), AppError> {
         let now = current_timestamp();
-        let mut map = self.pending.lock().expect("OAuthStateStore lock poisoned");
+        let mut map = self.pending.lock().map_err(AppError::lock_err)?;
         map.retain(|_, v| !is_pending_expired(v.created_at, now));
+        Ok(())
     }
 }
 
@@ -670,15 +672,15 @@ mod tests {
             created_at: current_timestamp(),
         };
 
-        store.store("state-1".into(), pending);
+        store.store("state-1".into(), pending).unwrap();
 
         // Take removes it
-        let taken = store.take("state-1");
+        let taken = store.take("state-1").unwrap();
         assert!(taken.is_some());
         assert_eq!(taken.unwrap().account_id, "acc-123");
 
         // Second take returns None
-        let taken_again = store.take("state-1");
+        let taken_again = store.take("state-1").unwrap();
         assert!(taken_again.is_none());
     }
 
@@ -693,7 +695,7 @@ mod tests {
             redirect_uri: "http://127.0.0.1:34567/oauth/callback".into(),
             created_at: current_timestamp() - PKCE_TTL_SECS - 60,
         };
-        store.store("old-state".into(), expired);
+        store.store("old-state".into(), expired).unwrap();
 
         // Insert a fresh entry
         let fresh = PendingOAuth {
@@ -702,12 +704,39 @@ mod tests {
             redirect_uri: "http://127.0.0.1:34568/oauth/callback".into(),
             created_at: current_timestamp(),
         };
-        store.store("new-state".into(), fresh);
+        store.store("new-state".into(), fresh).unwrap();
 
-        store.cleanup_expired();
+        store.cleanup_expired().unwrap();
 
-        assert!(store.take("old-state").is_none());
-        assert!(store.take("new-state").is_some());
+        assert!(store.take("old-state").unwrap().is_none());
+        assert!(store.take("new-state").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_oauth_state_store_poisoned_lock_errors_instead_of_panicking() {
+        // 規約「テスト以外で expect 禁止」: ロック毒化時に panic ではなく
+        // AppError を返すこと（他モジュールの AppError::lock_err と同じ様式）
+        let store = std::sync::Arc::new(OAuthStateStore::new());
+        let clone = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = clone.pending.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+
+        assert!(store.take("any").is_err());
+        assert!(store.cleanup_expired().is_err());
+        assert!(store
+            .store(
+                "s".into(),
+                PendingOAuth {
+                    account_id: "a".into(),
+                    code_verifier: "v".into(),
+                    redirect_uri: "r".into(),
+                    created_at: 0,
+                }
+            )
+            .is_err());
     }
 
     // --- is_pending_expired ---

@@ -48,6 +48,7 @@ Gmailアカウントの追加には、自分のGoogle Cloudプロジェクトで
 
 ```bash
 cp .env.sample .env
+chmod 600 .env  # 所有者のみ読書き可にする
 ```
 
 ```dotenv
@@ -55,7 +56,9 @@ PIGEON_GOOGLE_CLIENT_ID_DESKTOP=xxxx.apps.googleusercontent.com
 PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP=GOCSPX-xxxx
 ```
 
-> `.env` はコミット禁止です（`.gitignore` 済み）。トークンはOSキーチェーンに保存され、SQLiteには平文保存されません。
+> `.env` は各自ローカルで作成し、コミット禁止です（`.gitignore` 済み）。トークンはOSキーチェーンに保存され、SQLiteには平文保存されません。
+>
+> デスクトップアプリの OAuth クライアントシークレットは公開クライアント扱いで厳密な秘密ではない（本来の防御は PKCE）が、漏洩するとレート悪用・なりすまし同意画面のリスクがあるため秘密として扱う。将来的にはシークレットレス（PKCE のみ）の構成への移行を検討する。
 
 ## 5. 起動と初期設定
 

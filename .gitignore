@@ -9,9 +9,10 @@ dist/
 # Tauri
 src-tauri/gen/
 
-# 環境変数
+# 環境変数（シークレットを含まないテンプレートのみコミット可）
 .env
 .env.*
+!.env.sample
 
 # 秘密情報（GCP サービスアカウント JSON 等・絶対にコミットしない）
 secrets/
