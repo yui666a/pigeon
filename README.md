@@ -77,3 +77,6 @@ pigeon/
 - [docs/adr/](docs/adr/) — 横断的・恒久的なアーキテクチャ意思決定記録（LLM抽象化、クラウド送信境界、機密情報保管、AI-Nativeアーキ、メール同期規約）
 - [docs/design/](docs/design/) — 現役の設計書（本体設計は `2026-04-12-pigeon-design.md`）
 - [docs/archive/](docs/archive/) — 実装完了済みの設計書・計画（歴史的資料）
+- [CONTRIBUTING.md](CONTRIBUTING.md) — 開発への参加方法
+- [SECURITY.md](SECURITY.md) — 脆弱性の報告方法とセキュリティ設計方針
+- [LICENSE](LICENSE) — MIT License
