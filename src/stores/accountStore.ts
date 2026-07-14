@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Account, CreateAccountRequest, OAuthStatus } from "../types/account";
 import { accountApi } from "../api/accountApi";
 import { errorMessage } from "../api/errors";
+import { isOAuthCallbackUrl } from "../utils/oauthCallback";
 import { useErrorStore } from "./errorStore";
 
 interface AccountState {
@@ -114,7 +115,9 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       const urls = event.payload;
       if (urls.length > 0) {
         const url = urls[0];
-        if (url.includes("oauth/callback")) {
+        // 部分文字列一致だと https://evil.example/oauth/callback も通るため、
+        // スキーム・パスを厳密検証する
+        if (isOAuthCallbackUrl(url)) {
           get().handleOAuthCallback(url);
         }
       }
