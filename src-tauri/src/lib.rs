@@ -17,7 +17,6 @@ pub mod test_helpers;
 use db::migrations;
 use mail_sync::oauth::OAuthStateStore;
 use rusqlite::Connection;
-use sha2::{Digest, Sha256};
 use state::DbState;
 use state::IdleWatchers;
 use state::SecureStoreState;
@@ -40,12 +39,27 @@ pub fn run() {
         .expect("Failed to enable foreign keys");
     migrations::run_migrations(&conn).expect("Failed to run migrations");
 
-    // Derive a key for SecureStore from a fixed app-specific salt
-    // In production, this would use OS keychain. For now, derive from app identifier.
-    let key = Sha256::digest(b"com.haiso666.pigeon-secure-store-key");
+    // SecureStore のマスター鍵はデバイス固有の乱数を OS キーチェーンに保管する
+    // （ADR 0003）。旧固定鍵のスナップショットは開いた時点で新鍵へ再暗号化する。
+    let key_backend = secure_store::default_master_key_backend(&data_dir);
+    let key = secure_store::resolve_master_key(key_backend.as_ref())
+        .expect("Failed to resolve SecureStore master key");
     let stronghold_path = data_dir.join("pigeon.stronghold");
-    let secure_store = secure_store::SecureStore::new(stronghold_path, &key)
-        .expect("Failed to initialize SecureStore");
+    let (secure_store, migration) =
+        secure_store::SecureStore::open_with_migration(stronghold_path, &key)
+            .expect("Failed to initialize SecureStore");
+    match &migration {
+        secure_store::MasterKeyMigration::MigratedFromLegacy => {
+            eprintln!("[info] secure store: 旧固定鍵のスナップショットを新しいマスター鍵で再暗号化しました");
+        }
+        secure_store::MasterKeyMigration::UnreadableBackedUp { backup } => {
+            eprintln!(
+                "[warn] secure store: 既存スナップショットを復号できなかったため {} に退避しました。アカウントの再認証が必要です",
+                backup.display()
+            );
+        }
+        _ => {}
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
