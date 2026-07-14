@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod driver;
+pub mod gate;
 pub mod registry;
 pub mod risk;
 pub mod traits;
