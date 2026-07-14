@@ -182,9 +182,13 @@ describe("ComposeModal", () => {
   });
 
   it("adds picked attachments and lists them with size", async () => {
-    mockOpen.mockResolvedValue(["/tmp/report.pdf"]);
+    // 添付の選択は Rust 側のネイティブダイアログ（pick_attachment_files）で行い、
+    // 選択済みパスだけが送信時に許可される
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "stat_file") return Promise.resolve(2048);
+      if (cmd === "pick_attachment_files")
+        return Promise.resolve([
+          { path: "/tmp/report.pdf", name: "report.pdf", size: 2048 },
+        ]);
       return Promise.resolve(undefined);
     });
     useComposeStore.setState({ isOpen: true });
