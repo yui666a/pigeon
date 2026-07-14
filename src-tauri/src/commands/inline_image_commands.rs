@@ -23,12 +23,27 @@ pub struct InlineImage {
     pub data_uri: String,
 }
 
+/// data URI に埋め込んでよい画像 MIME の許可リスト。
+///
+/// `mime_type` はメールの MIME ヘッダ由来（攻撃者制御）のため、そのまま
+/// data URI へ埋め込まない。`image/svg+xml` はスクリプトを内包できるため
+/// 許可しない（`<img>` 文脈では実行されないが、許可タグ拡張時の事故を防ぐ）。
+fn is_allowed_inline_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/avif"
+    )
+}
+
 /// キャッシュ済み添付から content_id を持つものだけを data URI に変換する純関数
 fn to_inline_images(attachments: &[Attachment]) -> Vec<InlineImage> {
     attachments
         .iter()
         .filter_map(|a| {
             let content_id = a.content_id.clone()?;
+            if !is_allowed_inline_image_mime(&a.mime_type) {
+                return None;
+            }
             let path = a.file_path.as_deref()?;
             let data = std::fs::read(path).ok()?;
             Some(InlineImage {
@@ -111,6 +126,31 @@ mod tests {
         // content_id はあるがキャッシュファイルが存在しない場合は除外される
         let images = to_inline_images(&attachments);
         assert!(images.is_empty());
+    }
+
+    #[test]
+    fn test_to_inline_images_rejects_non_image_mime() {
+        // メールMIMEヘッダ由来（攻撃者制御）の mime_type をそのまま data URI に
+        // 埋め込まない。画像の許可リスト外は cid 解決しない
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("evil");
+        std::fs::write(&path, b"<script>alert(1)</script>").unwrap();
+
+        for mime in ["text/html", "application/xhtml+xml", "image/svg+xml", ""] {
+            let attachments = vec![Attachment {
+                id: "a1".into(),
+                mail_id: "m1".into(),
+                filename: "evil".into(),
+                mime_type: mime.into(),
+                size: Some(1),
+                file_path: Some(path.to_string_lossy().to_string()),
+                content_id: Some("evil@example.com".into()),
+            }];
+            assert!(
+                to_inline_images(&attachments).is_empty(),
+                "mime {mime:?} は cid 解決しない"
+            );
+        }
     }
 
     #[test]

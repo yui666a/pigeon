@@ -1,12 +1,38 @@
 import { useEffect, useState } from "react";
-import DOMPurify from "dompurify";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Mail } from "../../types/mail";
 import { attachmentApi } from "../../api/attachmentApi";
 import { hasCidReferences, replaceCidReferences } from "../../utils/inlineImages";
+import { sanitizeMailHtml } from "../../utils/sanitizeMailHtml";
 import { AttachmentList } from "./AttachmentList";
 
 interface MailBodyProps {
   mail: Mail;
+}
+
+/** メール本文由来のリンクで Webview を遷移させないための許可スキーム */
+const ALLOWED_LINK_PROTOCOLS = ["http:", "https:", "mailto:"];
+
+/**
+ * 本文内リンクのクリックを捕捉し、http(s)/mailto のみ外部ブラウザで開く。
+ * アドレスバーの無いネイティブ窓が本文起因でフィッシングサイトへ遷移するのを防ぐ。
+ * カスタムスキーム（自アプリの deep-link を含む）と相対URLは開かない。
+ */
+function handleBodyLinkClick(e: React.MouseEvent<HTMLDivElement>) {
+  const anchor = (e.target as Element | null)?.closest?.("a");
+  if (!anchor) return;
+  e.preventDefault();
+  const href = anchor.getAttribute("href");
+  if (!href) return;
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return;
+  }
+  if (ALLOWED_LINK_PROTOCOLS.includes(url.protocol)) {
+    void openUrl(href);
+  }
 }
 
 export function MailBody({ mail }: MailBodyProps) {
@@ -38,7 +64,8 @@ export function MailBody({ mail }: MailBodyProps) {
       {resolvedHtml ? (
         <div
           className="prose max-w-none text-sm"
-          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(resolvedHtml) }}
+          onClickCapture={handleBodyLinkClick}
+          dangerouslySetInnerHTML={{ __html: sanitizeMailHtml(resolvedHtml) }}
         />
       ) : (
         <pre className="whitespace-pre-wrap text-sm">{mail.body_text}</pre>
