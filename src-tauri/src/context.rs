@@ -4,16 +4,18 @@ use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::error::AppError;
 use crate::secure_store::SecureStore;
 use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::usecase::{AuditSink, Driver, NoOpAuditSink};
 
 /// 全 driver（commands / 将来の MCP・agent）が共有する借用コンテキスト。
-/// Tauri が所有する各 managed State への参照を束ねる。
-/// この段階では依存アクセサのみを提供し、Risk ゲート等は Phase 4-4 で載せる。
+/// Tauri が所有する各 managed State への参照を束ね、driver 情報と監査シンクを持つ。
+/// Risk ゲートの骨格は Phase 4-2、ゲート本体（承認キュー）と監査永続化は Phase 4-4。
 pub struct Ctx<'a> {
     db: &'a DbState,
     secure_store: Option<&'a SecureStore>,
     pending: &'a PendingClassifications,
     batches: &'a ClassifyBatches,
     sync_locks: &'a SyncLocks,
+    driver: Driver,
 }
 
 impl<'a> Ctx<'a> {
@@ -30,6 +32,7 @@ impl<'a> Ctx<'a> {
             pending,
             batches,
             sync_locks,
+            driver: Driver::Ui,
         }
     }
 
@@ -46,6 +49,7 @@ impl<'a> Ctx<'a> {
             pending,
             batches,
             sync_locks,
+            driver: Driver::Ui,
         }
     }
 
@@ -83,6 +87,18 @@ impl<'a> Ctx<'a> {
 
     pub fn sync_locks(&self) -> &SyncLocks {
         self.sync_locks
+    }
+
+    /// この Ctx を構築した driver（ゲートの判定材料）。
+    pub fn driver(&self) -> Driver {
+        self.driver
+    }
+
+    /// 監査シンク。4-2 は NoOp 固定（read 系は監査対象外）。
+    /// SQLite シンクへの差し替えは Phase 4-4。
+    pub fn audit(&self) -> &dyn AuditSink {
+        const SINK: &NoOpAuditSink = &NoOpAuditSink;
+        SINK
     }
 }
 
@@ -125,5 +141,22 @@ mod tests {
         assert!(ctx.sync_locks().try_begin("acc1"));
         // 同じ基盤 State を指しているので、二重開始は拒否される
         assert!(!ctx.sync_locks().try_begin("acc1"));
+    }
+
+    #[test]
+    fn test_driver_defaults_to_ui() {
+        let (db, pending, batches, locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
+        assert_eq!(ctx.driver(), crate::usecase::Driver::Ui);
+    }
+
+    #[test]
+    fn test_audit_sink_is_available() {
+        use crate::usecase::{AuditEntry, Risk};
+        let (db, pending, batches, locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
+        // NoOp なので record しても panic しない（返り値が &dyn AuditSink であることの確認）
+        ctx.audit()
+            .record(AuditEntry::new("x", Risk::Read, ctx.driver()));
     }
 }
