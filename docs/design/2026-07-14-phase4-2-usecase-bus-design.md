@@ -2,7 +2,7 @@
 
 作成日: 2026-07-14
 ステータス: 設計合意済み（実装計画は別途）
-親設計: docs/superpowers/specs/2026-07-14-ai-native-mcp-architecture-design.md
+親設計: docs/design/2026-07-14-ai-native-mcp-architecture-design.md
 前提: Phase 4-1（Ctx 導入）完了・main マージ済み（HEAD cf61661）
 
 ## 目的とスコープ
