@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// ローカル下書き（v1: IMAP Draftsフォルダとの同期は将来）。
-/// 詳細: docs/superpowers/specs/2026-07-12-draft-save-design.md
+/// 詳細: docs/archive/specs/2026-07-12-draft-save-design.md
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Draft {
     pub id: String,

@@ -63,11 +63,17 @@ pigeon/
 │       ├── classifier/     # LLM抽象レイヤー（Ollama / Claude / Vertex）
 │       ├── db/             # SQLite スキーマ・CRUD・FTS5
 │       └── models/         # 共有データ型
-└── docs/superpowers/       # 設計書（specs/）・実装計画（plans/）
+└── docs/
+    ├── adr/                # アーキテクチャ意思決定記録（ADR）
+    ├── design/            # 現役の設計書（本体設計・進行中フェーズ）
+    ├── plans/             # 現役の実装計画（未完のもの）
+    └── archive/           # 実装完了で役目を終えた設計書・計画
 ```
 
 ## 📚 ドキュメント
 
 - [SETUP.md](SETUP.md) — インストールと初期設定
 - [FEATURES.md](FEATURES.md) — 機能一覧と使い方
-- [docs/superpowers/specs/](docs/superpowers/specs/) — 各機能の設計書（本体設計は `2026-04-12-pigeon-design.md`）
+- [docs/adr/](docs/adr/) — 横断的・恒久的なアーキテクチャ意思決定記録（LLM抽象化、クラウド送信境界、機密情報保管、AI-Nativeアーキ、メール同期規約）
+- [docs/design/](docs/design/) — 現役の設計書（本体設計は `2026-04-12-pigeon-design.md`）
+- [docs/archive/](docs/archive/) — 実装完了済みの設計書・計画（歴史的資料）

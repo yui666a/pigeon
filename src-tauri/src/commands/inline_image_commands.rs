@@ -1,7 +1,7 @@
 //! インライン画像（cid:）の本文内表示のためのデータ供給コマンド。
 //! 添付ダウンロード（attachment_commands.rs）のオンデマンド取得＋キャッシュ経路を
 //! そのまま流用し、content_id を持つ添付だけを data URI にして返す。
-//! 設計: docs/superpowers/specs/2026-07-13-inline-cid-images-design.md
+//! 設計: docs/archive/specs/2026-07-13-inline-cid-images-design.md
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Serialize;

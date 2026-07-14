@@ -3,7 +3,7 @@
 //! 送信時にローカル保存した Sent 行（仮 uid・uid_confirmed=0）と、サーバーの
 //! Sent フォルダから同期した行（実 uid）を message_id で突き合わせ、二重行を
 //! 作らずに uid を後追い確定する。設計書:
-//! docs/superpowers/specs/2026-07-12-sent-sync-uidplus-design.md
+//! docs/archive/specs/2026-07-12-sent-sync-uidplus-design.md
 //!
 //! 純粋な永続化 CRUD（insert/select/delete）は `db::mails` に置き、本モジュールは
 //! 「どの行を残すか・いつスキップするか」という業務判断を担う。

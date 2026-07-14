@@ -184,7 +184,7 @@ pub fn get_unclassified_mails(
 /// 取得の前にスレッド追従の自動分類（`auto_follow_threads`）を行う。
 /// 同一スレッドの既存メールが単一の案件に割り当て済みなら、後から届いた返信等の
 /// 未分類メールをその案件へ自動追従させる。一覧を開くたびに再計算する
-/// （設計: docs/superpowers/specs/2026-07-13-thread-follow-classify-design.md）
+/// （設計: docs/archive/specs/2026-07-13-thread-follow-classify-design.md）
 #[tauri::command]
 pub fn get_unclassified_threads(
     db: State<DbState>,

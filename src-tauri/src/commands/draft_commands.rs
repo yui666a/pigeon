@@ -1,5 +1,5 @@
 //! 下書き保存 command。
-//! 設計: docs/superpowers/specs/2026-07-12-draft-save-design.md
+//! 設計: docs/archive/specs/2026-07-12-draft-save-design.md
 
 use serde::Deserialize;
 use tauri::State;
