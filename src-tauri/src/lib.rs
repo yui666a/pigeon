@@ -9,6 +9,7 @@ pub mod project_context;
 pub mod secure_store;
 pub mod state;
 pub mod threading;
+pub mod usecase;
 
 #[cfg(test)]
 pub mod test_helpers;
