@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod cases;
 pub mod dispatch;
 pub mod driver;
 pub mod gate;
