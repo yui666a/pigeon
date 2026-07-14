@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod dispatch;
 pub mod driver;
 pub mod gate;
 pub mod registry;
@@ -6,6 +7,7 @@ pub mod risk;
 pub mod traits;
 
 pub use audit::{AuditEntry, AuditSink, InMemoryAuditSink, NoOpAuditSink};
+pub use dispatch::dispatch;
 pub use driver::Driver;
 pub use registry::Registry;
 pub use risk::Risk;
