@@ -1,13 +1,14 @@
 use tauri::State;
 
-use crate::commands::mail_commands;
-use crate::db::{accounts, settings};
+use crate::classifier::service::{ClassifyBatches, PendingClassifications};
+use crate::context::Ctx;
 use crate::error::AppError;
-use crate::state::{DbState, SecureStoreState};
+use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::usecase::{dispatch, Registry};
 
 /// 一括操作の結果。1件の失敗で残りを止めないため、成功/失敗を積み上げて返す
 /// （設計書 2026-07-13-bulk-actions-design.md「部分失敗の扱い」）。
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BulkResult {
     pub succeeded: Vec<String>,
     /// (mail_id, エラーメッセージ) の組
@@ -30,91 +31,79 @@ impl BulkResult {
     }
 }
 
-/// 複数メールを一括削除する。処理本体は単体の delete_mail と共通
-/// （mail_commands::delete_mail_inner）。1件ずつサーバー処理→ローカルDB削除の
-/// 順で実行し、失敗したメールはスキップして残りを継続する。
-/// 資格情報はコマンド開始時に一度だけ解決して全メールで使い回す
-/// （解決失敗は部分失敗ではなく全体エラー）。
+/// 複数メールを一括削除する。dispatch バス経由（1件でもサーバー削除を伴えば
+/// Sensitive）。処理本体は BulkDeleteMailsUseCase（usecase/cases/mailbox.rs）。
 #[tauri::command]
 pub async fn bulk_delete_mails(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_ids: Vec<String>,
 ) -> Result<BulkResult, AppError> {
-    let account = state.with_conn(|conn| accounts::get_account(conn, &account_id))?;
-    let creds = tokio::sync::OnceCell::new_with(Some(
-        mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?,
-    ));
-
-    let mut result = BulkResult::new();
-    for mail_id in mail_ids {
-        let outcome =
-            mail_commands::delete_mail_inner(&state, &secure_store.0, &account, &creds, &mail_id)
-                .await;
-        result.push(mail_id, outcome);
-    }
-    Ok(result)
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "bulk_delete_mails",
+        serde_json::json!({ "account_id": account_id, "mail_ids": mail_ids }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected bulk output: {e}")))
 }
 
-/// 複数メールを一括アーカイブする。処理本体は単体の archive_mail と共通
-/// （mail_commands::archive_mail_inner。Google: DeleteOnly / Other:
-/// CopyThenDelete / Sent: LocalOnly）。
+/// 複数メールを一括アーカイブする。dispatch バス経由（1件でもサーバー反映を
+/// 伴えば Sensitive）。処理本体は BulkArchiveMailsUseCase。
 #[tauri::command]
 pub async fn bulk_archive_mails(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_ids: Vec<String>,
 ) -> Result<BulkResult, AppError> {
-    let (account, archive_folder) = state.with_conn(|conn| {
-        let account = accounts::get_account(conn, &account_id)?;
-        let archive_folder = settings::get_or_default(conn, "archive_folder", "Archive")?;
-        Ok((account, archive_folder))
-    })?;
-    let creds = tokio::sync::OnceCell::new_with(Some(
-        mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?,
-    ));
-
-    let mut result = BulkResult::new();
-    for mail_id in mail_ids {
-        let outcome = mail_commands::archive_mail_inner(
-            &state,
-            &secure_store.0,
-            &account,
-            &archive_folder,
-            &creds,
-            &mail_id,
-        )
-        .await;
-        result.push(mail_id, outcome);
-    }
-    Ok(result)
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "bulk_archive_mails",
+        serde_json::json!({ "account_id": account_id, "mail_ids": mail_ids }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected bulk output: {e}")))
 }
 
-/// 複数メールを一括で案件へ割り当てる。IMAP 通信を伴わないため同期関数のまま。
-/// 単体の `move_mail` と同じ本体（`move_mail_inner`）を1件ずつ再利用するため、
-/// 保留中の分類提案（`PendingClassifications`）の掃除も同じ挙動になる。
+/// 複数メールを一括で案件へ割り当てる。dispatch バス経由（Reversible + 監査）。
+/// 処理本体は BulkMoveMailsUseCase（usecase/cases/assign.rs）。
 #[tauri::command]
-pub fn bulk_move_mails(
-    state: State<DbState>,
-    pending: State<crate::classifier::service::PendingClassifications>,
+pub async fn bulk_move_mails(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     mail_ids: Vec<String>,
     project_id: String,
 ) -> Result<BulkResult, AppError> {
-    state.with_conn(|conn| {
-        let mut result = BulkResult::new();
-        for mail_id in mail_ids {
-            let outcome = crate::commands::classify_commands::move_mail_inner(
-                conn,
-                &pending,
-                &mail_id,
-                &project_id,
-            );
-            result.push(mail_id, outcome);
-        }
-        Ok(result)
-    })
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "bulk_move_mails",
+        serde_json::json!({ "mail_ids": mail_ids, "project_id": project_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected bulk output: {e}")))
 }
 
 #[cfg(test)]

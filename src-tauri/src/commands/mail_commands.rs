@@ -1,7 +1,11 @@
 use tauri::{AppHandle, Emitter, State};
 
+use crate::classifier::service::{ClassifyBatches, PendingClassifications};
+use crate::context::Ctx;
+use crate::usecase::{dispatch, Registry};
+
 use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, DeletePlan};
-use crate::db::{accounts, mails, settings};
+use crate::db::{accounts, mails};
 use crate::error::AppError;
 use crate::mail_sync::sync_service;
 use crate::mail_sync::{imap_client, oauth};
@@ -201,12 +205,24 @@ pub(crate) async fn resolve_imap_credentials(
 /// サーバー側の状態は次回同期のフラグ再同期で収束する）。
 #[tauri::command]
 pub async fn mark_read(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    mark_read_service(&state, &secure_store.0, &account_id, &mail_id).await
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    dispatch(
+        &registry,
+        "mark_read",
+        serde_json::json!({ "account_id": account_id, "mail_id": mail_id }),
+        &ctx,
+    )
+    .await?;
+    Ok(())
 }
 
 /// mark_read の本体（Ctx 非依存な service 関数。use case と command が共用）。
@@ -351,18 +367,27 @@ pub(crate) async fn delete_mail_inner(
     Ok(())
 }
 
-/// メールを削除する（単体）。
+/// メールを削除する（単体）。dispatch バス経由（プラン依存 Risk + 監査）。
 #[tauri::command]
 pub async fn delete_mail(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let account = state.with_conn(|conn| accounts::get_account(conn, &account_id))?;
-    // 資格情報は遅延解決（Sent の削除はローカルのみで IMAP 認証が不要）
-    let creds = tokio::sync::OnceCell::new();
-    delete_mail_inner(&state, &secure_store.0, &account, &creds, &mail_id).await
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    dispatch(
+        &registry,
+        "delete_mail",
+        serde_json::json!({ "account_id": account_id, "mail_id": mail_id }),
+        &ctx,
+    )
+    .await?;
+    Ok(())
 }
 
 /// archive_mail の本体。単体（archive_mail）と一括（bulk_archive_mails）の
@@ -404,30 +429,27 @@ pub(crate) async fn archive_mail_inner(
     state.with_conn(|conn| mails::update_folder(conn, mail_id, "Archive"))
 }
 
-/// メールをアーカイブする（単体）。
+/// メールをアーカイブする（単体）。dispatch バス経由（プラン依存 Risk + 監査）。
 #[tauri::command]
 pub async fn archive_mail(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let (account, archive_folder) = state.with_conn(|conn| {
-        let account = accounts::get_account(conn, &account_id)?;
-        let archive_folder = settings::get_or_default(conn, "archive_folder", "Archive")?;
-        Ok((account, archive_folder))
-    })?;
-    // 資格情報は遅延解決（Sent のアーカイブはローカルのみで IMAP 認証が不要）
-    let creds = tokio::sync::OnceCell::new();
-    archive_mail_inner(
-        &state,
-        &secure_store.0,
-        &account,
-        &archive_folder,
-        &creds,
-        &mail_id,
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    dispatch(
+        &registry,
+        "archive_mail",
+        serde_json::json!({ "account_id": account_id, "mail_id": mail_id }),
+        &ctx,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 /// メールをアーカイブ解除する（folder を 'INBOX' に戻す）。
@@ -435,12 +457,25 @@ pub async fn archive_mail(
 /// おらずサーバー上のメールを特定できないため、サーバー反映は行わない
 /// （設計書「アーカイブ解除」参照。サーバー側はアーカイブ済みのまま残る）。
 #[tauri::command]
-pub fn unarchive_mail(
-    state: State<DbState>,
+pub async fn unarchive_mail(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    state.with_conn(|conn| unarchive_mail_inner(conn, &account_id, &mail_id))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    dispatch(
+        &registry,
+        "unarchive_mail",
+        serde_json::json!({ "account_id": account_id, "mail_id": mail_id }),
+        &ctx,
+    )
+    .await?;
+    Ok(())
 }
 
 pub(crate) fn unarchive_mail_inner(

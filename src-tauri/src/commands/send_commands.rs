@@ -14,7 +14,7 @@ use crate::models::account::{Account, AccountProvider};
 use crate::models::mail::Mail;
 use crate::state::{ApprovedAttachments, DbState, SecureStoreState};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMailRequest {
     pub account_id: String,
     pub to: Vec<String>,
@@ -238,13 +238,23 @@ pub(crate) fn persist_sent_local_best_effort(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_mail(
+    registry: State<'_, crate::usecase::Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
     approved: State<'_, ApprovedAttachments>,
+    pending: State<'_, crate::classifier::service::PendingClassifications>,
+    batches: State<'_, crate::classifier::service::ClassifyBatches>,
+    sync_locks: State<'_, crate::state::SyncLocks>,
     req: SendMailRequest,
 ) -> Result<(), AppError> {
-    send_mail_service(&state, &secure_store.0, &approved, req).await
+    let ctx = crate::context::Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks)
+        .with_approved_attachments(&approved);
+    let input = serde_json::to_value(&req)
+        .map_err(|e| AppError::Validation(format!("failed to serialize send request: {e}")))?;
+    crate::usecase::dispatch(&registry, "send_mail", input, &ctx).await?;
+    Ok(())
 }
 
 /// send_mail の本体（Ctx 非依存な service 関数。use case と command が共用）。

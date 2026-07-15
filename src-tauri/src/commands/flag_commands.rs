@@ -1,21 +1,37 @@
 use tauri::State;
 
+use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::commands::mail_commands::{push_flag_remote, resolve_imap_credentials, RemoteFlagOp};
 use crate::commands::mail_policy::is_local_only_folder;
+use crate::context::Ctx;
 use crate::db::{accounts, mails};
 use crate::error::AppError;
-use crate::state::{DbState, SecureStoreState};
+use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::usecase::{dispatch, Registry};
 
-/// メールのスター/フラグ（\Flagged）を設定する。
+/// メールのスター/フラグ（\Flagged）を設定する。dispatch バス経由（ADR 0004 D1）。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn set_flagged(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_id: String,
     flagged: bool,
 ) -> Result<(), AppError> {
-    set_flagged_service(&state, &secure_store.0, &account_id, &mail_id, flagged).await
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    dispatch(
+        &registry,
+        "set_flagged",
+        serde_json::json!({ "account_id": account_id, "mail_id": mail_id, "flagged": flagged }),
+        &ctx,
+    )
+    .await?;
+    Ok(())
 }
 
 /// set_flagged の本体（Ctx 非依存な service 関数。use case と command が共用）。
@@ -65,15 +81,27 @@ pub(crate) async fn set_flagged_service(
     Ok(())
 }
 
-/// メールを未読に戻す。
+/// メールを未読に戻す。dispatch バス経由。
 #[tauri::command]
 pub async fn mark_unread(
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    mark_unread_service(&state, &secure_store.0, &account_id, &mail_id).await
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    dispatch(
+        &registry,
+        "mark_unread",
+        serde_json::json!({ "account_id": account_id, "mail_id": mail_id }),
+        &ctx,
+    )
+    .await?;
+    Ok(())
 }
 
 /// mark_unread の本体（Ctx 非依存な service 関数。use case と command が共用）。

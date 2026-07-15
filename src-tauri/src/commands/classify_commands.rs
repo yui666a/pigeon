@@ -209,14 +209,27 @@ fn get_unclassified_threads_inner(
 }
 
 /// Move a mail to a different project (used by D&D and context menu).
+/// dispatch バス経由（Reversible + 監査）。
 #[tauri::command]
-pub fn move_mail(
-    db: State<DbState>,
-    pending: State<PendingClassifications>,
+pub async fn move_mail(
+    registry: State<'_, crate::usecase::Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, crate::state::SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, crate::state::SyncLocks>,
     mail_id: String,
     project_id: String,
 ) -> Result<(), AppError> {
-    db.with_conn(|conn| move_mail_inner(conn, &pending, &mail_id, &project_id))
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    crate::usecase::dispatch(
+        &registry,
+        "move_mail",
+        serde_json::json!({ "mail_id": mail_id, "project_id": project_id }),
+        &ctx,
+    )
+    .await?;
+    Ok(())
 }
 
 /// `move_mail` の本体。`bulk_move_mails` からも1件ずつ再利用される。
