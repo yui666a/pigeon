@@ -61,11 +61,19 @@ pub fn run() {
         _ => {}
     }
 
+    // UseCase レジストリ（dispatch バスの能力セット）。全 driver がここを共有する
+    let registry = {
+        let mut reg = usecase::Registry::new();
+        usecase::cases::search::register_read_cases(&mut reg);
+        reg
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .manage(registry)
         .manage(DbState(Mutex::new(conn)))
         .manage(SecureStoreState(secure_store))
         .manage(OAuthStateStore::new())

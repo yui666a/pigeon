@@ -6,11 +6,11 @@ use crate::usecase::{gate, AuditEntry, Registry, Risk};
 
 /// 単一の chokepoint。3 driver すべてがこの 1 関数を通る（特権的な裏口なし）。
 /// lookup → risk 判定 → ゲート → 監査 → 実行 のパイプライン。
-pub fn dispatch(
+pub async fn dispatch(
     registry: &Registry,
     name: &str,
     input: Value,
-    ctx: &Ctx,
+    ctx: &Ctx<'_>,
 ) -> Result<Value, AppError> {
     let uc = registry
         .lookup(name)
@@ -25,7 +25,7 @@ pub fn dispatch(
             .record(AuditEntry::new(name, risk, ctx.driver()));
     }
 
-    uc.run_json(input, ctx)
+    uc.run_json(input, ctx).await
 }
 
 #[cfg(test)]
@@ -52,6 +52,7 @@ mod tests {
         echoed: String,
     }
     struct EchoUseCase;
+    #[async_trait::async_trait]
     impl UseCase for EchoUseCase {
         type Input = EchoInput;
         type Output = EchoOutput;
@@ -61,7 +62,7 @@ mod tests {
         fn risk(&self, _input: &Self::Input) -> Risk {
             Risk::Read
         }
-        fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
+        async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
             Ok(EchoOutput { echoed: input.text })
         }
     }
@@ -72,6 +73,7 @@ mod tests {
     #[derive(Serialize)]
     struct NoOutput {}
     struct DangerUseCase;
+    #[async_trait::async_trait]
     impl UseCase for DangerUseCase {
         type Input = NoInput;
         type Output = NoOutput;
@@ -81,7 +83,7 @@ mod tests {
         fn risk(&self, _input: &Self::Input) -> Risk {
             Risk::Reversible
         }
-        fn run(&self, _input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
+        async fn run(&self, _input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
             Ok(NoOutput {})
         }
     }
@@ -102,34 +104,38 @@ mod tests {
         reg
     }
 
-    #[test]
-    fn test_dispatch_read_usecase_succeeds() {
+    #[tokio::test]
+    async fn test_dispatch_read_usecase_succeeds() {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let reg = build_registry();
 
         let out = dispatch(&reg, "echo", json!({ "text": "hi" }), &ctx)
+            .await
             .expect("read use case should dispatch");
         assert_eq!(out, json!({ "echoed": "hi" }));
     }
 
-    #[test]
-    fn test_dispatch_unknown_name_errors() {
+    #[tokio::test]
+    async fn test_dispatch_unknown_name_errors() {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let reg = build_registry();
 
-        let err = dispatch(&reg, "nope", json!({}), &ctx).expect_err("unknown name should error");
+        let err = dispatch(&reg, "nope", json!({}), &ctx)
+            .await
+            .expect_err("unknown name should error");
         assert!(matches!(err, AppError::Validation(_)));
     }
 
-    #[test]
-    fn test_dispatch_reversible_is_gated() {
+    #[tokio::test]
+    async fn test_dispatch_reversible_is_gated() {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let reg = build_registry();
 
         let err = dispatch(&reg, "danger", json!({}), &ctx)
+            .await
             .expect_err("Reversible should be gated in 4-2");
         assert!(matches!(err, AppError::Validation(_)));
     }

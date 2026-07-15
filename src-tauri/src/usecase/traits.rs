@@ -7,9 +7,12 @@ use crate::error::AppError;
 use crate::usecase::Risk;
 
 /// 実装者が書く型安全な use case。関連型で Input/Output を型付けする。
-/// `run` は同期（async 対応は Phase 4-5）。
-pub trait UseCase {
-    type Input: DeserializeOwned;
+/// `run` は async（Sensitive 抽出で IMAP/SMTP を伴う use case が載るため。
+/// ADR 0004 の 4-5 前倒し）。同期処理はそのまま await なしで書けばよい。
+/// Send + Sync は Tauri の managed State（レジストリ経由の dyn 共有）に載せるための境界。
+#[async_trait::async_trait]
+pub trait UseCase: Send + Sync {
+    type Input: DeserializeOwned + Send;
     type Output: Serialize;
 
     fn name(&self) -> &'static str;
@@ -18,17 +21,19 @@ pub trait UseCase {
     /// 多くの use case は input を無視して固定 Risk を返す。
     fn risk(&self, input: &Self::Input) -> Risk;
 
-    fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError>;
+    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError>;
 }
 
 /// dyn 化のための消去層。`serde_json::Value` 境界で叩ける。
 /// 実装は下のブランケットで `UseCase` から自動導出される（手書き不要）。
-pub trait ErasedUseCase {
+#[async_trait::async_trait]
+pub trait ErasedUseCase: Send + Sync {
     fn name(&self) -> &str;
     fn risk_json(&self, input: &Value) -> Result<Risk, AppError>;
-    fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError>;
+    async fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError>;
 }
 
+#[async_trait::async_trait]
 impl<T: UseCase> ErasedUseCase for T {
     fn name(&self) -> &str {
         UseCase::name(self)
@@ -41,11 +46,11 @@ impl<T: UseCase> ErasedUseCase for T {
         Ok(self.risk(&typed))
     }
 
-    fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError> {
+    async fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError> {
         let typed: T::Input = serde_json::from_value(input).map_err(|e| {
             AppError::Validation(format!("invalid input for {}: {e}", UseCase::name(self)))
         })?;
-        let output = self.run(typed, ctx)?;
+        let output = self.run(typed, ctx).await?;
         serde_json::to_value(output)
             .map_err(|e| AppError::Validation(format!("failed to serialize output: {e}")))
     }
@@ -77,6 +82,7 @@ mod tests {
 
     struct EchoUseCase;
 
+    #[async_trait::async_trait]
     impl UseCase for EchoUseCase {
         type Input = EchoInput;
         type Output = EchoOutput;
@@ -89,7 +95,29 @@ mod tests {
             Risk::Read
         }
 
-        fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
+        async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
+            Ok(EchoOutput { echoed: input.text })
+        }
+    }
+
+    /// run 内で実際に await する use case（async 化の回帰テスト用）。
+    struct AsyncEchoUseCase;
+
+    #[async_trait::async_trait]
+    impl UseCase for AsyncEchoUseCase {
+        type Input = EchoInput;
+        type Output = EchoOutput;
+
+        fn name(&self) -> &'static str {
+            "async_echo"
+        }
+
+        fn risk(&self, _input: &Self::Input) -> Risk {
+            Risk::Read
+        }
+
+        async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
+            tokio::task::yield_now().await;
             Ok(EchoOutput { echoed: input.text })
         }
     }
@@ -103,16 +131,31 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_erased_run_json_roundtrips() {
+    #[tokio::test]
+    async fn test_erased_run_json_roundtrips() {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let uc = EchoUseCase;
 
         let out = uc
             .run_json(json!({ "text": "hi" }), &ctx)
+            .await
             .expect("run_json should succeed");
         assert_eq!(out, json!({ "echoed": "hi" }));
+    }
+
+    #[tokio::test]
+    async fn test_erased_run_json_supports_awaiting_usecases() {
+        // run 内で await する use case も消去層経由で動く（async 化の主目的）
+        let (db, pending, batches, locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
+        let uc = AsyncEchoUseCase;
+
+        let out = uc
+            .run_json(json!({ "text": "later" }), &ctx)
+            .await
+            .expect("async run_json should succeed");
+        assert_eq!(out, json!({ "echoed": "later" }));
     }
 
     #[test]
@@ -130,8 +173,8 @@ mod tests {
         assert_eq!(risk, Risk::Read);
     }
 
-    #[test]
-    fn test_erased_run_json_rejects_bad_input() {
+    #[tokio::test]
+    async fn test_erased_run_json_rejects_bad_input() {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let uc = EchoUseCase;
@@ -139,6 +182,7 @@ mod tests {
         // text フィールドが無い → deserialize 失敗 → AppError::Validation
         let err = uc
             .run_json(json!({ "wrong": "field" }), &ctx)
+            .await
             .expect_err("should reject invalid input");
         assert!(matches!(err, AppError::Validation(_)));
     }

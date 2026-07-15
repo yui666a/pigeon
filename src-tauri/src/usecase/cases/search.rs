@@ -16,6 +16,7 @@ pub struct SearchMailsInput {
 /// 全文検索の read 系 UseCase（バスに載せる最初の実例）。
 pub struct SearchMailsUseCase;
 
+#[async_trait::async_trait]
 impl UseCase for SearchMailsUseCase {
     type Input = SearchMailsInput;
     type Output = Vec<SearchResult>;
@@ -28,7 +29,7 @@ impl UseCase for SearchMailsUseCase {
         Risk::Read
     }
 
-    fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
+    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
         ctx.with_conn(|conn| search::search_mails(conn, &input.account_id, &input.query, 100))
     }
 }
@@ -72,8 +73,8 @@ mod tests {
         assert_eq!(uc.name(), "search_mails");
     }
 
-    #[test]
-    fn test_search_via_dispatch_matches_direct_query() {
+    #[tokio::test]
+    async fn test_search_via_dispatch_matches_direct_query() {
         let (db, pending, batches, locks) = build_states();
         // setup_db 済み。件名に "Report" を含むメールを1件入れる
         {
@@ -91,6 +92,7 @@ mod tests {
             json!({ "account_id": "acc1", "query": "Report" }),
             &ctx,
         )
+        .await
         .expect("search should dispatch");
 
         // 出力は Vec<SearchResult> の JSON。1件ヒットする
@@ -99,8 +101,8 @@ mod tests {
         assert_eq!(arr[0]["mail"]["id"], "m1");
     }
 
-    #[test]
-    fn test_search_via_dispatch_empty_query_returns_empty() {
+    #[tokio::test]
+    async fn test_search_via_dispatch_empty_query_returns_empty() {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let mut reg = Registry::new();
@@ -112,6 +114,7 @@ mod tests {
             json!({ "account_id": "acc1", "query": "" }),
             &ctx,
         )
+        .await
         .expect("empty query should dispatch");
         assert_eq!(out, json!([]));
     }
