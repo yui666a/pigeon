@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Mail } from "../../types/mail";
 import { attachmentApi } from "../../api/attachmentApi";
+import { remoteImageApi } from "../../api/remoteImageApi";
+import { errorMessage } from "../../api/errors";
+import { useErrorStore } from "../../stores/errorStore";
 import { hasCidReferences, replaceCidReferences } from "../../utils/inlineImages";
+import {
+  extractExternalImageUrls,
+  replaceExternalImageUrls,
+  type FetchedExternalImage,
+} from "../../utils/externalImages";
 import { sanitizeMailHtml } from "../../utils/sanitizeMailHtml";
 import { buildMailFrameSrcdoc } from "../../utils/buildMailFrameSrcdoc";
 import { resolveOpenableUrl } from "../../utils/mailLinkPolicy";
@@ -52,6 +60,14 @@ export function MailBody({ mail }: MailBodyProps) {
   const [resolvedHtml, setResolvedHtml] = useState(bodyHtml);
   const [frameHeight, setFrameHeight] = useState(0);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  // 外部画像はユーザーの明示操作でのみ取得する（C9）。永続化はしない:
+  // メールを開き直すと再び遮断状態に戻る（設計書 2026-07-15-external-image-optin-design.md）
+  const [externalImages, setExternalImages] = useState<FetchedExternalImage[] | null>(null);
+  const [loadingImages, setLoadingImages] = useState(false);
+
+  useEffect(() => {
+    setExternalImages(null);
+  }, [mail.id]);
 
   useEffect(() => {
     setResolvedHtml(bodyHtml);
@@ -73,6 +89,27 @@ export function MailBody({ mail }: MailBodyProps) {
     };
   }, [mail.id, mail.has_attachments, bodyHtml]);
 
+  const externalUrls = useMemo(
+    () => (resolvedHtml ? extractExternalImageUrls(resolvedHtml) : []),
+    [resolvedHtml],
+  );
+
+  const displayHtml = useMemo(() => {
+    if (!resolvedHtml || !externalImages) return resolvedHtml;
+    return replaceExternalImageUrls(resolvedHtml, externalImages);
+  }, [resolvedHtml, externalImages]);
+
+  const showExternalImages = async () => {
+    setLoadingImages(true);
+    try {
+      setExternalImages(await remoteImageApi.fetchExternalImages(externalUrls));
+    } catch (e) {
+      useErrorStore.getState().addError(errorMessage(e));
+    } finally {
+      setLoadingImages(false);
+    }
+  };
+
   const wireFrame = useCallback(() => {
     if (frameRef.current) {
       wireFrameDocument(frameRef.current, setFrameHeight);
@@ -83,18 +120,33 @@ export function MailBody({ mail }: MailBodyProps) {
   // srcdoc をロードしないため、マウント直後の about:blank 文書にも配線しておく
   useEffect(() => {
     wireFrame();
-  }, [wireFrame, resolvedHtml]);
+  }, [wireFrame, displayHtml]);
 
   return (
     <div className="selectable flex-1 overflow-y-auto px-6 py-4">
-      {resolvedHtml ? (
+      {externalUrls.length > 0 && externalImages === null && (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+          <span>
+            外部画像 {externalUrls.length} 件をブロックしました（表示すると開封が送信者に通知されます）
+          </span>
+          <button
+            type="button"
+            onClick={() => void showExternalImages()}
+            disabled={loadingImages}
+            className="shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-xs hover:bg-gray-100 disabled:opacity-50"
+          >
+            {loadingImages ? "取得中…" : "画像を表示"}
+          </button>
+        </div>
+      )}
+      {displayHtml ? (
         <iframe
           ref={frameRef}
           title="メール本文"
           // 本文HTMLはアプリ本体と別の閉じた文書に隔離する（DOMPurifyバイパス時に
           // Tauri IPCへ到達させない第3層防御）。allow-scripts は決して付けない
           sandbox="allow-same-origin"
-          srcDoc={buildMailFrameSrcdoc(sanitizeMailHtml(resolvedHtml))}
+          srcDoc={buildMailFrameSrcdoc(sanitizeMailHtml(displayHtml))}
           onLoad={wireFrame}
           className="w-full border-0"
           style={{ height: frameHeight > 0 ? `${frameHeight}px` : "60vh" }}

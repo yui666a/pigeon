@@ -10,6 +10,7 @@ pub mod inline_image_commands;
 pub mod mail_commands;
 pub mod mail_policy;
 pub mod project_commands;
+pub mod remote_image_commands;
 pub mod search_commands;
 pub mod send_commands;
 pub mod settings_commands;

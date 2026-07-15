@@ -210,6 +210,71 @@ describe("MailBody", () => {
     });
   });
 
+  // --- 外部画像の表示オプトイン（C9） ---
+  // 既定では外部画像は遮断（サニタイズ+CSP）。ユーザーの明示操作でのみ
+  // Rust経由で取得し data URI 化して表示する
+
+  describe("外部画像オプトイン", () => {
+    const htmlWithRemote = '<p>本文</p><img src="https://ex.com/a.png">';
+
+    it("外部画像を含む本文では「画像を表示」ボタンを出す", () => {
+      render(<MailBody mail={makeMail({ body_html: htmlWithRemote })} />);
+      expect(
+        screen.getByRole("button", { name: /画像を表示/ }),
+      ).toBeInTheDocument();
+    });
+
+    it("外部画像がない本文ではボタンを出さない", () => {
+      render(<MailBody mail={makeMail({ body_html: "<p>本文だけ</p>" })} />);
+      expect(
+        screen.queryByRole("button", { name: /画像を表示/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("テキスト本文のみのメールではボタンを出さない", () => {
+      render(<MailBody mail={makeMail()} />);
+      expect(
+        screen.queryByRole("button", { name: /画像を表示/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("クリックでfetch_external_imagesを呼び、取得画像をdata URIで表示する", async () => {
+      mockInvoke.mockResolvedValueOnce([
+        { url: "https://ex.com/a.png", data_uri: "data:image/png;base64,BBBB" },
+      ]);
+      const { container } = render(
+        <MailBody mail={makeMail({ body_html: htmlWithRemote })} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /画像を表示/ }));
+
+      await waitFor(() => {
+        expect(
+          container.querySelector("iframe")?.getAttribute("srcdoc"),
+        ).toContain("data:image/png;base64,BBBB");
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("fetch_external_images", {
+        urls: ["https://ex.com/a.png"],
+      });
+      // 表示後はボタンが消える
+      expect(
+        screen.queryByRole("button", { name: /画像を表示/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("取得失敗時もクラッシュせずボタンが残る（再試行可能）", async () => {
+      mockInvoke.mockRejectedValueOnce(new Error("network error"));
+      render(<MailBody mail={makeMail({ body_html: htmlWithRemote })} />);
+      const button = screen.getByRole("button", { name: /画像を表示/ });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /画像を表示/ }),
+        ).toBeEnabled();
+      });
+    });
+  });
+
   it("get_inline_imagesが失敗しても本文表示は壊れない", async () => {
     mockInvoke.mockRejectedValueOnce(new Error("network error"));
     const { container } = render(

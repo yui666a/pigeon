@@ -196,6 +196,7 @@ pub fn run() {
             commands::attachment_commands::list_attachments,
             commands::attachment_commands::save_attachment,
             commands::inline_image_commands::get_inline_images,
+            commands::remote_image_commands::fetch_external_images,
             commands::account_commands::create_account,
             commands::account_commands::get_accounts,
             commands::account_commands::remove_account,
