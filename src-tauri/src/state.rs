@@ -63,6 +63,36 @@ impl SyncLocks {
     }
 }
 
+/// 送信添付として許可されたファイルパスの集合。
+///
+/// 添付は `pick_attachment_files`（ネイティブダイアログ）で選択されたパスのみを
+/// 許可し、`send_mail` はこの集合に無いパスを読み取らない。フロントエンドが
+/// XSS 等で侵害されても、任意の絶対パス（SSH 鍵等）を添付として外部送出する
+/// 経路を塞ぐ（`attachment_commands.rs` が保存先をダイアログ限定にしたのと
+/// 同じ防御思想）。プロセス内メモリのためアプリ再起動で消える（下書きは
+/// 添付パスを永続化しないため問題にならない）。
+#[derive(Default)]
+pub struct ApprovedAttachments(Mutex<HashSet<String>>);
+
+impl ApprovedAttachments {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// ダイアログで選択されたパスを許可リストへ登録する。
+    pub fn approve(&self, paths: impl IntoIterator<Item = String>) -> Result<(), AppError> {
+        let mut set = self.0.lock().map_err(AppError::lock_err)?;
+        set.extend(paths);
+        Ok(())
+    }
+
+    /// パスが許可済みか。
+    pub fn contains(&self, path: &str) -> Result<bool, AppError> {
+        let set = self.0.lock().map_err(AppError::lock_err)?;
+        Ok(set.contains(path))
+    }
+}
+
 /// アカウント毎の IMAP IDLE 監視タスク（mail_sync::idle）の管理。
 /// 開始（insert）・停止（stop）を account_id 単位で行う。
 /// 起動時・アカウント追加・OAuth 完了時に開始し、アカウント削除時に停止する

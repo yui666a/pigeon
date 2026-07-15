@@ -17,6 +17,14 @@ pub(crate) type ImapSession = Session<TlsStream<Compat<TcpStream>>>;
 // 既読化されてしまう（2026-07-13 に実際に発生した不具合）。
 pub(crate) const FETCH_ITEMS_SYNC: &str = "(UID FLAGS BODY.PEEK[])";
 pub(crate) const FETCH_ITEMS_RAW: &str = "(UID BODY.PEEK[])";
+/// サイズガード用の軽量 FETCH（本文なし）。
+pub(crate) const FETCH_ITEMS_SIZE: &str = "(UID RFC822.SIZE)";
+/// 上限超過メール用のヘッダのみ FETCH。
+pub(crate) const FETCH_ITEMS_HEADER: &str = "(UID FLAGS BODY.PEEK[HEADER])";
+
+/// 1通あたりの本文全量取得の上限（バイト）。悪意ある送信者の巨大メールによる
+/// resource exhaustion（メモリ枯渇・DB肥大）対策。超過分はヘッダのみ保存する。
+pub(crate) const MAX_MAIL_FETCH_BYTES: u32 = 25 * 1024 * 1024;
 
 pub async fn connect(
     host: &str,
@@ -162,6 +170,96 @@ pub(crate) fn uid_set(batch: &[u32]) -> String {
         .join(",")
 }
 
+/// (uid, RFC822.SIZE) の一覧を、全量取得してよい UID と上限超の UID に分ける。
+/// サイズ不明（サーバーが RFC822.SIZE を返さない）は同期を止めないよう
+/// 全量取得側に倒す。
+pub(crate) fn partition_by_size(
+    uid_sizes: &[(u32, Option<u32>)],
+    max_bytes: u32,
+) -> (Vec<u32>, Vec<u32>) {
+    let mut small = Vec::new();
+    let mut oversized = Vec::new();
+    for (uid, size) in uid_sizes {
+        match size {
+            Some(s) if *s > max_bytes => oversized.push(*uid),
+            _ => small.push(*uid),
+        }
+    }
+    (small, oversized)
+}
+
+/// バッチの本文をサイズガード付きで FETCH する。
+/// 先に RFC822.SIZE のみを軽量取得し、`MAX_MAIL_FETCH_BYTES` 超のメールは
+/// 本文全量ではなくヘッダのみ取得する（件名・送信者は一覧に出るが本文は空）。
+async fn fetch_batch_with_size_guard(
+    session: &mut ImapSession,
+    batch: &[u32],
+) -> Result<Vec<FetchedMail>, AppError> {
+    let size_messages: Vec<_> = session
+        .uid_fetch(&uid_set(batch), FETCH_ITEMS_SIZE)
+        .await
+        .map_err(|e| AppError::Imap(format!("Size fetch failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("Size stream failed: {}", e)))?;
+    let uid_sizes: Vec<(u32, Option<u32>)> = size_messages
+        .iter()
+        .filter_map(|m| m.uid.map(|uid| (uid, m.size)))
+        .collect();
+    let (small, oversized) = partition_by_size(&uid_sizes, MAX_MAIL_FETCH_BYTES);
+
+    let mut mails = Vec::with_capacity(uid_sizes.len());
+    if !small.is_empty() {
+        let messages: Vec<_> = session
+            .uid_fetch(&uid_set(&small), FETCH_ITEMS_SYNC)
+            .await
+            .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("Batch stream failed: {}", e)))?;
+        for msg in &messages {
+            if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
+                let flags: Vec<Flag<'_>> = msg.flags().collect();
+                mails.push(FetchedMail {
+                    uid,
+                    is_read: contains_seen(&flags),
+                    is_flagged: contains_flagged(&flags),
+                    flags: flags_to_string(&flags),
+                    body: body.to_vec(),
+                });
+            }
+        }
+    }
+    if !oversized.is_empty() {
+        eprintln!(
+            "[warn] sync: {}件のメールがサイズ上限（{}MB）を超えるためヘッダのみ取得します: uids={:?}",
+            oversized.len(),
+            MAX_MAIL_FETCH_BYTES / (1024 * 1024),
+            oversized
+        );
+        let messages: Vec<_> = session
+            .uid_fetch(&uid_set(&oversized), FETCH_ITEMS_HEADER)
+            .await
+            .map_err(|e| AppError::Imap(format!("Header fetch failed: {}", e)))?
+            .try_collect()
+            .await
+            .map_err(|e| AppError::Imap(format!("Header stream failed: {}", e)))?;
+        for msg in &messages {
+            if let (Some(uid), Some(header)) = (msg.uid, msg.header()) {
+                let flags: Vec<Flag<'_>> = msg.flags().collect();
+                mails.push(FetchedMail {
+                    uid,
+                    is_read: contains_seen(&flags),
+                    is_flagged: contains_flagged(&flags),
+                    flags: flags_to_string(&flags),
+                    body: header.to_vec(),
+                });
+            }
+        }
+    }
+    Ok(mails)
+}
+
 /// 同期の進捗（on_batch コールバックに渡す）
 pub struct SyncProgress {
     pub done: usize,
@@ -265,29 +363,8 @@ pub async fn fetch_mails_batched(
 
     let mut done = 0usize;
     for batch in batches {
-        let messages: Vec<_> = session
-            .uid_fetch(&uid_set(&batch), FETCH_ITEMS_SYNC)
-            .await
-            .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
-            .try_collect()
-            .await
-            .map_err(|e| AppError::Imap(format!("Batch stream failed: {}", e)))?;
-
-        let mut mails = Vec::with_capacity(messages.len());
-        for msg in &messages {
-            if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
-                if uid > since_uid {
-                    let flags: Vec<Flag<'_>> = msg.flags().collect();
-                    mails.push(FetchedMail {
-                        uid,
-                        is_read: contains_seen(&flags),
-                        is_flagged: contains_flagged(&flags),
-                        flags: flags_to_string(&flags),
-                        body: body.to_vec(),
-                    });
-                }
-            }
-        }
+        let mut mails = fetch_batch_with_size_guard(session, &batch).await?;
+        mails.retain(|m| m.uid > since_uid);
         done += batch.len();
         on_batch(mails, SyncProgress { done, total })?;
     }
@@ -347,29 +424,8 @@ pub async fn fetch_mails_backfill_batched(
     let mut done = 0usize;
     let mut fetched = 0usize;
     for batch in batches {
-        let messages: Vec<_> = session
-            .uid_fetch(&uid_set(&batch), FETCH_ITEMS_SYNC)
-            .await
-            .map_err(|e| AppError::Imap(format!("Batch fetch failed: {}", e)))?
-            .try_collect()
-            .await
-            .map_err(|e| AppError::Imap(format!("Batch stream failed: {}", e)))?;
-
-        let mut mails = Vec::with_capacity(messages.len());
-        for msg in &messages {
-            if let (Some(uid), Some(body)) = (msg.uid, msg.body()) {
-                if uid < min_uid_exclusive {
-                    let flags: Vec<Flag<'_>> = msg.flags().collect();
-                    mails.push(FetchedMail {
-                        uid,
-                        is_read: contains_seen(&flags),
-                        is_flagged: contains_flagged(&flags),
-                        flags: flags_to_string(&flags),
-                        body: body.to_vec(),
-                    });
-                }
-            }
-        }
+        let mut mails = fetch_batch_with_size_guard(session, &batch).await?;
+        mails.retain(|m| m.uid < min_uid_exclusive);
         done += batch.len();
         fetched += mails.len();
         on_batch(mails, SyncProgress { done, total })?;
@@ -738,6 +794,30 @@ mod tests {
             response,
             "user=user@gmail.com\x01auth=Bearer ya29.token\x01\x01"
         );
+    }
+
+    // --- partition_by_size: 受信サイズ上限（DoS対策） ---
+
+    #[test]
+    fn test_partition_by_size_splits_oversized() {
+        let uid_sizes = vec![
+            (1, Some(1024)),
+            (2, Some(MAX_MAIL_FETCH_BYTES)),
+            (3, Some(MAX_MAIL_FETCH_BYTES + 1)),
+        ];
+        let (small, oversized) = partition_by_size(&uid_sizes, MAX_MAIL_FETCH_BYTES);
+        assert_eq!(small, vec![1, 2], "上限ちょうどは全量取得する");
+        assert_eq!(oversized, vec![3], "上限超はヘッダのみ取得に回す");
+    }
+
+    #[test]
+    fn test_partition_by_size_unknown_size_treated_as_small() {
+        // RFC822.SIZE を返さないサーバーでも同期が止まらないよう、
+        // サイズ不明は全量取得側に倒す
+        let uid_sizes = vec![(1, None)];
+        let (small, oversized) = partition_by_size(&uid_sizes, MAX_MAIL_FETCH_BYTES);
+        assert_eq!(small, vec![1]);
+        assert!(oversized.is_empty());
     }
 
     #[test]

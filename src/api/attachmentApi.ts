@@ -1,6 +1,13 @@
 import { invokeCommand } from "./client";
 import type { Attachment, InlineImage } from "../types/attachment";
 
+/** pick_attachment_files が返す選択結果（送信許可リスト登録済み） */
+export interface PickedAttachment {
+  path: string;
+  name: string;
+  size: number;
+}
+
 /** 添付ファイル系 Tauri commands の型付きラッパ */
 export const attachmentApi = {
   listAttachments: (mailId: string) =>
@@ -14,6 +21,11 @@ export const attachmentApi = {
   fetchInlineImages: (mailId: string) =>
     invokeCommand<InlineImage[]>("get_inline_images", { mailId }),
 
-  /** 添付候補ファイルのサイズを返す（plugin-fs 非依存で Rust に委ねる） */
-  statFile: (path: string) => invokeCommand<number>("stat_file", { path }),
+  /**
+   * 添付ファイルをネイティブダイアログで選択する。選択されたパスのみが
+   * バックエンドの送信許可リストに登録される（任意パス読み取りの防止）。
+   * キャンセル時は空配列
+   */
+  pickAttachmentFiles: () =>
+    invokeCommand<PickedAttachment[]>("pick_attachment_files"),
 };

@@ -2,8 +2,9 @@
 //! 検証 → メッセージ構築 → SMTP送信 → Sentフォルダ保存 → ローカルDB挿入。
 //! 設計: docs/archive/specs/2026-07-12-mail-send-design.md
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
@@ -11,7 +12,7 @@ use crate::mail_sync::smtp_client::{OutgoingAttachment, OutgoingMail};
 use crate::mail_sync::{imap_client, smtp_client};
 use crate::models::account::{Account, AccountProvider};
 use crate::models::mail::Mail;
-use crate::state::{DbState, SecureStoreState};
+use crate::state::{ApprovedAttachments, DbState, SecureStoreState};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SendMailRequest {
@@ -36,15 +37,77 @@ pub struct SendMailRequest {
     pub attachments: Vec<String>,
 }
 
-/// 添付候補ファイルのサイズ（バイト）を返す。
-/// フロントは合計サイズの表示・超過警告に使う（送信時の上限検証は Rust の
-/// build_message が担う二重防御。設計書 2026-07-13-rich-compose-design.md）。
-/// plugin-fs を導入せず、既存の「パスを Rust へ渡す」方式に揃えた command
+/// `pick_attachment_files` が返す選択結果（表示名とサイズ込み）。
+#[derive(Debug, Clone, Serialize)]
+pub struct PickedAttachment {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+}
+
+/// 添付ファイルをネイティブダイアログで選択させ、選択されたパスを
+/// 送信許可リスト（`ApprovedAttachments`）へ登録して返す。
+///
+/// フロントから生パスを受け取る旧方式（`stat_file` + JS ダイアログ）は、
+/// レンダラ侵害時に任意ファイルを添付・送出できたため、選択と許可の両方を
+/// Rust 側で完結させる。キャンセル時は空リストを返す
 #[tauri::command]
-pub fn stat_file(path: String) -> Result<u64, AppError> {
-    std::fs::metadata(&path)
-        .map(|m| m.len())
-        .map_err(|e| AppError::FileIo(format!("ファイル情報の取得に失敗 {}: {}", path, e)))
+pub async fn pick_attachment_files(
+    app: tauri::AppHandle,
+    approved: State<'_, ApprovedAttachments>,
+) -> Result<Vec<PickedAttachment>, AppError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_files(move |files| {
+        let _ = tx.send(files);
+    });
+    let files = rx
+        .await
+        .map_err(|_| AppError::FileIo("添付ファイル選択ダイアログが中断されました".into()))?;
+    let Some(files) = files else {
+        return Ok(Vec::new());
+    };
+
+    let mut picked = Vec::with_capacity(files.len());
+    for file in files {
+        let path = file
+            .into_path()
+            .map_err(|e| AppError::FileIo(format!("選択パスの解決に失敗: {}", e)))?;
+        let size = std::fs::metadata(&path).map(|m| m.len()).map_err(|e| {
+            AppError::FileIo(format!(
+                "ファイル情報の取得に失敗 {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment")
+            .to_string();
+        picked.push(PickedAttachment {
+            path: path.to_string_lossy().to_string(),
+            name,
+            size,
+        });
+    }
+    approved.approve(picked.iter().map(|p| p.path.clone()))?;
+    Ok(picked)
+}
+
+/// 送信リクエストの添付パスがすべて許可リスト（ダイアログ選択済み）にあるか検証する。
+pub(crate) fn ensure_paths_approved(
+    approved: &ApprovedAttachments,
+    paths: &[String],
+) -> Result<(), AppError> {
+    for path in paths {
+        if !approved.contains(path)? {
+            return Err(AppError::FileIo(format!(
+                "添付が許可されていないパスです（ファイル選択ダイアログから選び直してください）: {}",
+                path
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// 返信元メールから (In-Reply-To, References) を導出する
@@ -178,8 +241,12 @@ pub(crate) fn persist_sent_local_best_effort(
 pub async fn send_mail(
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    approved: State<'_, ApprovedAttachments>,
     req: SendMailRequest,
 ) -> Result<(), AppError> {
+    // 添付はダイアログ選択済み（許可リスト登録済み）のパスのみ読み取る
+    ensure_paths_approved(&approved, &req.attachments)?;
+
     // 1. アカウントと返信元メールを取得
     let (account, reply_source, sent_folder) = state.with_conn(|conn| {
         let account = accounts::get_account(conn, &req.account_id)?;
@@ -378,20 +445,28 @@ mod tests {
     }
 
     #[test]
-    fn test_stat_file_returns_size() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("f.bin");
-        std::fs::write(&path, b"12345").unwrap();
-        let size = stat_file(path.to_string_lossy().to_string()).unwrap();
-        assert_eq!(size, 5);
+    fn test_ensure_paths_approved_accepts_registered() {
+        // ダイアログ選択（pick_attachment_files）で登録済みのパスは送信できる
+        let approved = crate::state::ApprovedAttachments::new();
+        approved.approve(["/tmp/report.pdf".to_string()]).unwrap();
+        assert!(ensure_paths_approved(&approved, &["/tmp/report.pdf".into()]).is_ok());
     }
 
     #[test]
-    fn test_stat_file_missing_errors() {
-        assert!(matches!(
-            stat_file("/nonexistent/path/x.bin".into()),
-            Err(AppError::FileIo(_))
-        ));
+    fn test_ensure_paths_approved_rejects_unregistered() {
+        // フロントが侵害されて任意パスを渡してきても、ダイアログで選択されていない
+        // パス（/etc/passwd 等）は読み取らない
+        let approved = crate::state::ApprovedAttachments::new();
+        approved.approve(["/tmp/report.pdf".to_string()]).unwrap();
+        let result =
+            ensure_paths_approved(&approved, &["/tmp/report.pdf".into(), "/etc/passwd".into()]);
+        assert!(matches!(result, Err(AppError::FileIo(_))));
+    }
+
+    #[test]
+    fn test_ensure_paths_approved_empty_attachments_ok() {
+        let approved = crate::state::ApprovedAttachments::new();
+        assert!(ensure_paths_approved(&approved, &[]).is_ok());
     }
 
     #[test]

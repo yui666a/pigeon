@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { attachmentApi } from "../../api/attachmentApi";
 import { errorMessage } from "../../api/errors";
 import { useComposeStore } from "../../stores/composeStore";
@@ -49,22 +48,10 @@ export function ComposeModal() {
 
   const pickAttachments = async () => {
     try {
-      const selected = await open({ multiple: true });
-      if (!selected) return;
-      const paths = Array.isArray(selected) ? selected : [selected];
-      const files = await Promise.all(
-        paths.map(async (path) => {
-          const name = path.split(/[/\\]/).pop() ?? path;
-          let size = 0;
-          try {
-            // サイズ取得は Rust の stat_file に委ねる（plugin-fs 非依存）
-            size = await attachmentApi.statFile(path);
-          } catch {
-            size = 0;
-          }
-          return { path, name, size };
-        }),
-      );
+      // 選択はRust側のネイティブダイアログで行う。選択されたパスだけが
+      // 送信許可リストに登録される（フロントから生パスを渡さない）
+      const files = await attachmentApi.pickAttachmentFiles();
+      if (files.length === 0) return;
       addAttachments(files);
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));

@@ -69,6 +69,7 @@ pub fn run() {
         .manage(DbState(Mutex::new(conn)))
         .manage(SecureStoreState(secure_store))
         .manage(OAuthStateStore::new())
+        .manage(state::ApprovedAttachments::new())
         .manage(SyncLocks::new())
         .manage(IdleWatchers::new())
         .manage(classifier::service::PendingClassifications::new())
@@ -227,7 +228,7 @@ pub fn run() {
             commands::classify_commands::get_mails_by_project,
             commands::search_commands::search_mails,
             commands::send_commands::send_mail,
-            commands::send_commands::stat_file,
+            commands::send_commands::pick_attachment_files,
             commands::draft_commands::save_draft,
             commands::draft_commands::get_drafts,
             commands::draft_commands::delete_draft,
