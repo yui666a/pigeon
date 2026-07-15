@@ -287,16 +287,62 @@ pub async fn classify_one(
     })
 }
 
+/// LLM が提案する新規案件名の最大文字数。
+const PROPOSED_NAME_MAX_CHARS: usize = 100;
+/// LLM が提案する新規案件説明の最大文字数。
+const PROPOSED_DESCRIPTION_MAX_CHARS: usize = 300;
+
+/// LLM 出力の案件名/説明から制御文字を除去し長さを制限する
+/// （プロンプト再注入・端末/表示汚染対策）。
+fn sanitize_proposed_text(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// LLM が返した project_id が、当該メールのアカウント配下に実在するか。
+/// LLM 出力は信頼できない（幻覚・プロンプトインジェクションで操作可能）ため、
+/// 割り当て前にアプリ層で検証する。DB トリガー（trg_mpa_account_check）は
+/// アカウント境界のみ担保し、エラーも不透明なため、ここで先に弾く。
+fn is_assignable_project(
+    conn: &Connection,
+    mail_id: &str,
+    project_id: &str,
+) -> Result<bool, AppError> {
+    let mail = mails::get_mail_by_id(conn, mail_id)?;
+    match projects::get_project(conn, project_id) {
+        Ok(project) => Ok(project.account_id == mail.account_id),
+        Err(AppError::ProjectNotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// 未分類応答を組み立てる（却下した候補と理由を reason に残す）。
+fn unclassified_with_reason(reason: String, confidence: f64) -> ClassifyResult {
+    ClassifyResult {
+        action: ClassifyAction::Unclassified,
+        confidence,
+        reason,
+    }
+}
+
 /// 分類結果を確定・保留・未分類に振り分ける（確信度ポリシーの本体）。
 /// 呼び出し元へ返す（＝フロントに見せる）結果を返す。
 ///
-/// - Assign（確信度 >= `CONFIDENCE_UNCERTAIN`）: 割り当てを確定し、過去の分類で
-///   残った Create 提案があれば除去する
+/// - Assign（確信度 >= `CONFIDENCE_UNCERTAIN`）: project_id の帰属を検証の上で
+///   割り当てを確定し、過去の分類で残った Create 提案があれば除去する。
+///   存在しない/他アカウントの project_id は Unclassified に正規化する
 /// - Assign（確信度 < `CONFIDENCE_UNCERTAIN`）: 永続化しない（設計書 §確信度による
 ///   初期状態: INSERT しない）。DB に存在しない割り当てを「assign」として
 ///   フロントに見せると承認時に割り当て不在で不整合になるため、応答も
 ///   Unclassified に正規化する（却下した候補は理由に残す）
-/// - Create: 確信度によらず提案として保留キューに積む（ユーザー承認待ち）
+/// - Create: 案件名/説明をサニタイズし、確信度によらず提案として保留キューに
+///   積む（ユーザー承認待ち）。サニタイズ後に名前が空なら不成立として
+///   Unclassified に正規化する
 /// - Unclassified: 何も永続化しない
 pub fn apply_result(
     conn: &Connection,
@@ -306,21 +352,49 @@ pub fn apply_result(
 ) -> Result<ClassifyResult, AppError> {
     match result.action {
         ClassifyAction::Assign { ref project_id } if result.confidence >= CONFIDENCE_UNCERTAIN => {
+            if !is_assignable_project(conn, mail_id, project_id)? {
+                return Ok(unclassified_with_reason(
+                    format!(
+                        "候補の案件 {project_id} がこのアカウントに存在しないため未分類のままにします。{}",
+                        result.reason
+                    ),
+                    result.confidence,
+                ));
+            }
             assignments::assign_mail(conn, mail_id, project_id, "ai", Some(result.confidence))?;
             pending.remove(mail_id)?;
             Ok(result)
         }
-        ClassifyAction::Assign { ref project_id } => Ok(ClassifyResult {
-            reason: format!(
+        ClassifyAction::Assign { ref project_id } => Ok(unclassified_with_reason(
+            format!(
                 "確信度 {:.2} が閾値 {CONFIDENCE_UNCERTAIN} 未満のため未分類のままにします（候補: {project_id}）。{}",
                 result.confidence, result.reason
             ),
-            action: ClassifyAction::Unclassified,
-            confidence: result.confidence,
-        }),
-        ClassifyAction::Create { .. } => {
-            pending.insert(mail_id.to_string(), result.clone())?;
-            Ok(result)
+            result.confidence,
+        )),
+        ClassifyAction::Create {
+            ref project_name,
+            ref description,
+        } => {
+            let name = sanitize_proposed_text(project_name, PROPOSED_NAME_MAX_CHARS);
+            if name.is_empty() {
+                return Ok(unclassified_with_reason(
+                    format!("提案された案件名が不正なため未分類のままにします。{}", result.reason),
+                    result.confidence,
+                ));
+            }
+            let sanitized = ClassifyResult {
+                action: ClassifyAction::Create {
+                    project_name: name,
+                    description: sanitize_proposed_text(
+                        description,
+                        PROPOSED_DESCRIPTION_MAX_CHARS,
+                    ),
+                },
+                ..result
+            };
+            pending.insert(mail_id.to_string(), sanitized.clone())?;
+            Ok(sanitized)
         }
         ClassifyAction::Unclassified => Ok(result),
     }
@@ -670,6 +744,115 @@ mod tests {
             assigned_mail_ids(&db, &proj.id).is_empty(),
             "ヘルスチェック失敗時は何も永続化しない"
         );
+    }
+
+    // --- apply_result: project_id の帰属検証（LLM出力は信頼しない） ---
+
+    #[test]
+    fn test_apply_result_nonexistent_project_normalized_to_unclassified() {
+        // LLM が幻覚で返した存在しない project_id は割り当てず Unclassified に正規化
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+
+        let res =
+            apply_result(&conn, &pending, "m1", assign_result("ghost-project", 0.95)).unwrap();
+
+        assert!(matches!(res.action, ClassifyAction::Unclassified));
+        assert!(
+            res.reason.contains("ghost-project"),
+            "却下した候補を理由に残す"
+        );
+    }
+
+    #[test]
+    fn test_apply_result_cross_account_project_normalized_to_unclassified() {
+        // 同一DB内の他アカウントの案件へは割り当てない（DBトリガーの不透明な
+        // エラーではなく、アプリ層で Unclassified に正規化する）
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        let req = CreateProjectRequest {
+            account_id: "acc2".into(),
+            name: "他人の案件".into(),
+            description: None,
+            color: None,
+        };
+        let other = projects::insert_project(&conn, &req).unwrap();
+
+        let res = apply_result(&conn, &pending, "m1", assign_result(&other.id, 0.95)).unwrap();
+
+        assert!(matches!(res.action, ClassifyAction::Unclassified));
+        assert!(
+            assignments::get_mails_by_project(&conn, &other.id)
+                .unwrap()
+                .is_empty(),
+            "他アカウントの案件には割り当てない"
+        );
+    }
+
+    // --- apply_result: 新規案件提案のサニタイズ ---
+
+    #[test]
+    fn test_apply_result_create_strips_control_chars_and_truncates() {
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        let long_name = format!("注入\u{7}\u{1b}[2J{}", "あ".repeat(300));
+        let result = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: long_name,
+                description: format!("desc\u{0}{}", "い".repeat(1000)),
+            },
+            confidence: 0.8,
+            reason: "r".into(),
+        };
+
+        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+
+        match res.action {
+            ClassifyAction::Create {
+                project_name,
+                description,
+            } => {
+                assert!(
+                    !project_name.chars().any(|c| c.is_control()),
+                    "制御文字を除去"
+                );
+                assert!(project_name.chars().count() <= 100, "案件名は100文字まで");
+                assert!(project_name.starts_with("注入"));
+                assert!(!description.chars().any(|c| c.is_control()));
+                assert!(description.chars().count() <= 300, "説明は300文字まで");
+            }
+            other => panic!("expected Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_result_create_empty_name_normalized_to_unclassified() {
+        // 制御文字だけの案件名は提案として成立しない
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        let result = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: "\u{7}\u{1b} ".into(),
+                description: "d".into(),
+            },
+            confidence: 0.8,
+            reason: "r".into(),
+        };
+
+        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+
+        assert!(matches!(res.action, ClassifyAction::Unclassified));
+        assert!(!pending.contains("m1").unwrap(), "不成立の提案は積まない");
     }
 
     // --- apply_result: 確信度ゲートの単体挙動 ---
