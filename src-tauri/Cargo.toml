@@ -46,6 +46,8 @@ zeroize = "1"
 dotenvy = "0.15"
 async-trait = "0.1"
 gcp_auth = "0.12.7"
+# OAuth id_token の JWKS 署名検証（RS256）
+jsonwebtoken = "9"
 
 # SecureStore マスター鍵の OS キーチェーン保管（ADR 0003）。
 # Linux はネイティブバックエンドがビルド依存（libdbus）や非永続（keyutils）の

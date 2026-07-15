@@ -199,41 +199,30 @@ pub struct TokenResponse {
 #[derive(Debug, Deserialize)]
 struct IdTokenClaims {
     email: Option<String>,
-    aud: Option<String>,
-    iss: Option<String>,
-    exp: Option<i64>,
 }
 
 /// Google の id_token の正当な発行者。
 const GOOGLE_ISSUERS: [&str; 2] = ["accounts.google.com", "https://accounts.google.com"];
 
-/// id_token のクレームを検証する（aud=自クライアント / iss=Google / exp 未失効）。
-///
-/// この email はアカウント識別子・重複判定・IMAP ログイン username に使われる
-/// ため、トークン交換応答をそのまま信用せず最低限のクレーム検証を行う。
-/// TLS 直通信で取得している前提の多層防御であり、JWKS による署名検証は
-/// 将来課題（`jsonwebtoken` 導入時に置き換える）。
-fn validate_id_token_claims(
-    claims: &IdTokenClaims,
-    expected_aud: &str,
-    now: i64,
-) -> Result<(), AppError> {
-    match claims.aud.as_deref() {
-        Some(aud) if aud == expected_aud => {}
-        Some(_) => return Err(AppError::OAuth("ID token aud mismatch".into())),
-        None => return Err(AppError::OAuth("ID token missing aud claim".into())),
+/// Google の JWKS（id_token 署名検証用の公開鍵一覧）のエンドポイント。
+pub const GOOGLE_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
+
+/// Google の JWKS を取得する。OAuth コールバック処理のたびに取得する
+/// （認証は低頻度の操作であり、鍵ローテーション追従を優先してキャッシュしない）。
+pub async fn fetch_google_jwks() -> Result<String, AppError> {
+    let response = reqwest::get(GOOGLE_JWKS_URL)
+        .await
+        .map_err(|e| AppError::HttpRequest(format!("JWKS fetch failed: {}", e)))?;
+    if !response.status().is_success() {
+        return Err(AppError::OAuth(format!(
+            "JWKS fetch failed ({})",
+            response.status()
+        )));
     }
-    match claims.iss.as_deref() {
-        Some(iss) if GOOGLE_ISSUERS.contains(&iss) => {}
-        Some(_) => return Err(AppError::OAuth("ID token iss is not Google".into())),
-        None => return Err(AppError::OAuth("ID token missing iss claim".into())),
-    }
-    match claims.exp {
-        Some(exp) if exp > now => {}
-        Some(_) => return Err(AppError::OAuth("ID token is expired".into())),
-        None => return Err(AppError::OAuth("ID token missing exp claim".into())),
-    }
-    Ok(())
+    response
+        .text()
+        .await
+        .map_err(|e| AppError::OAuth(format!("Failed to read JWKS response: {}", e)))
 }
 
 pub async fn exchange_code(
@@ -311,34 +300,37 @@ pub async fn refresh_token(
         .map_err(|e| AppError::OAuth(format!("Failed to parse refresh response: {}", e)))
 }
 
-/// id_token から email クレームを取り出す。取り出す前に aud/iss/exp を検証する
-/// （`expected_aud` は自クライアントの client_id）。
-pub fn decode_id_token_email(id_token: &str, expected_aud: &str) -> Result<String, AppError> {
-    // JWT format: header.payload.signature
-    let parts: Vec<&str> = id_token.split('.').collect();
-    if parts.len() != 3 {
-        return Err(AppError::OAuth("Invalid ID token format".into()));
-    }
+/// id_token を検証して email クレームを返す。
+///
+/// JWKS（`jwks_json`）による RS256 署名検証に加え、aud（自 client_id）・
+/// iss（Google 発行）・exp（未失効）を検証する。この email はアカウント識別子・
+/// 重複判定・IMAP ログイン username に使われるため、トークン交換応答を
+/// 無検証で信用しない。
+pub fn verify_id_token_email(
+    id_token: &str,
+    expected_aud: &str,
+    jwks_json: &str,
+) -> Result<String, AppError> {
+    let header = jsonwebtoken::decode_header(id_token)
+        .map_err(|e| AppError::OAuth(format!("Invalid ID token header: {}", e)))?;
+    let kid = header
+        .kid
+        .ok_or_else(|| AppError::OAuth("ID token missing kid".into()))?;
+    let jwks: jsonwebtoken::jwk::JwkSet = serde_json::from_str(jwks_json)
+        .map_err(|e| AppError::OAuth(format!("Invalid JWKS: {}", e)))?;
+    let jwk = jwks
+        .find(&kid)
+        .ok_or_else(|| AppError::OAuth(format!("No JWKS key found for kid {kid}")))?;
+    let key = jsonwebtoken::DecodingKey::from_jwk(jwk)
+        .map_err(|e| AppError::OAuth(format!("Invalid JWKS key: {}", e)))?;
 
-    let payload_bytes = URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .or_else(|_| {
-            // Try with standard base64 padding
-            let padded = match parts[1].len() % 4 {
-                2 => format!("{}==", parts[1]),
-                3 => format!("{}=", parts[1]),
-                _ => parts[1].to_string(),
-            };
-            URL_SAFE_NO_PAD.decode(&padded)
-        })
-        .map_err(|e| AppError::OAuth(format!("Failed to decode ID token payload: {}", e)))?;
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.set_audience(&[expected_aud]);
+    validation.set_issuer(&GOOGLE_ISSUERS);
 
-    let claims: IdTokenClaims = serde_json::from_slice(&payload_bytes)
-        .map_err(|e| AppError::OAuth(format!("Failed to parse ID token claims: {}", e)))?;
-
-    validate_id_token_claims(&claims, expected_aud, current_timestamp() as i64)?;
-
-    claims
+    let data = jsonwebtoken::decode::<IdTokenClaims>(id_token, &key, &validation)
+        .map_err(|e| AppError::OAuth(format!("ID token verification failed: {}", e)))?;
+    data.claims
         .email
         .ok_or_else(|| AppError::OAuth("No email claim in ID token".into()))
 }
@@ -566,13 +558,51 @@ mod tests {
     }
 
     const TEST_AUD: &str = "test-client-id.apps.googleusercontent.com";
+    const TEST_KID: &str = "test-kid-1";
 
-    /// クレームJSONから検証用の未署名JWTを組み立てる。
-    fn make_id_token(payload_json: &str) -> String {
-        let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"RS256\",\"typ\":\"JWT\"}");
-        let payload = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
-        let signature = URL_SAFE_NO_PAD.encode(b"fake-signature");
-        format!("{}.{}.{}", header, payload, signature)
+    /// テスト用の署名鍵一式（RSA 鍵ペア・署名用 EncodingKey・公開鍵の JWKS）。
+    struct TestSigner {
+        encoding_key: jsonwebtoken::EncodingKey,
+        jwks_json: String,
+    }
+
+    fn test_signer() -> &'static TestSigner {
+        use std::sync::OnceLock;
+        static SIGNER: OnceLock<TestSigner> = OnceLock::new();
+        SIGNER.get_or_init(|| build_signer(TEST_KID))
+    }
+
+    /// 指定 kid の鍵ペアを生成し、署名鍵と JWKS を組み立てる。
+    fn build_signer(kid: &str) -> TestSigner {
+        use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+        use rsa::traits::PublicKeyParts;
+        let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+        let pem = key.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
+        let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+        let public = key.to_public_key();
+        let jwks_json = serde_json::json!({
+            "keys": [{
+                "kty": "RSA",
+                "alg": "RS256",
+                "use": "sig",
+                "kid": kid,
+                "n": URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+                "e": URL_SAFE_NO_PAD.encode(public.e().to_bytes_be()),
+            }]
+        })
+        .to_string();
+        TestSigner {
+            encoding_key,
+            jwks_json,
+        }
+    }
+
+    /// クレームJSONをテスト鍵で RS256 署名した id_token を組み立てる。
+    fn make_signed_id_token(payload_json: &str) -> String {
+        let claims: serde_json::Value = serde_json::from_str(payload_json).unwrap();
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(TEST_KID.to_string());
+        jsonwebtoken::encode(&header, &claims, &test_signer().encoding_key).unwrap()
     }
 
     /// 有効なクレーム一式（exp は十分未来）。
@@ -583,70 +613,112 @@ mod tests {
         )
     }
 
+    fn verify(id_token: &str, aud: &str) -> Result<String, AppError> {
+        verify_id_token_email(id_token, aud, &test_signer().jwks_json)
+    }
+
     #[test]
-    fn test_decode_id_token_email() {
-        let id_token = make_id_token(&valid_claims_json());
-        let email = decode_id_token_email(&id_token, TEST_AUD).unwrap();
+    fn test_verify_id_token_email() {
+        let id_token = make_signed_id_token(&valid_claims_json());
+        let email = verify(&id_token, TEST_AUD).unwrap();
         assert_eq!(email, "user@gmail.com");
     }
 
     #[test]
-    fn test_decode_id_token_accepts_bare_iss() {
+    fn test_verify_id_token_accepts_bare_iss() {
         // Google の iss は "accounts.google.com"（スキーム無し）の場合もある
         let exp = current_timestamp() + 3600;
-        let id_token = make_id_token(&format!(
+        let id_token = make_signed_id_token(&format!(
             "{{\"email\":\"user@gmail.com\",\"aud\":\"{TEST_AUD}\",\"iss\":\"accounts.google.com\",\"exp\":{exp}}}"
         ));
-        assert!(decode_id_token_email(&id_token, TEST_AUD).is_ok());
+        assert!(verify(&id_token, TEST_AUD).is_ok());
     }
 
     #[test]
-    fn test_decode_id_token_rejects_wrong_aud() {
+    fn test_verify_id_token_rejects_tampered_payload() {
+        // 署名後にペイロードを改ざんしたトークンは拒否する（署名検証の本体）
+        let id_token = make_signed_id_token(&valid_claims_json());
+        let parts: Vec<&str> = id_token.split('.').collect();
+        let forged_payload = URL_SAFE_NO_PAD
+            .encode(valid_claims_json().replace("user@gmail.com", "attacker@evil.example"));
+        let tampered = format!("{}.{}.{}", parts[0], forged_payload, parts[2]);
+        assert!(verify(&tampered, TEST_AUD).is_err());
+    }
+
+    #[test]
+    fn test_verify_id_token_rejects_wrong_key() {
+        // JWKS に無い別鍵で署名されたトークンは拒否する
+        let other = build_signer(TEST_KID);
+        let claims: serde_json::Value = serde_json::from_str(&valid_claims_json()).unwrap();
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(TEST_KID.to_string());
+        let id_token = jsonwebtoken::encode(&header, &claims, &other.encoding_key).unwrap();
+        assert!(verify(&id_token, TEST_AUD).is_err());
+    }
+
+    #[test]
+    fn test_verify_id_token_rejects_unknown_kid() {
+        // JWKS に見つからない kid のトークンは拒否する
+        let claims: serde_json::Value = serde_json::from_str(&valid_claims_json()).unwrap();
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("unknown-kid".to_string());
+        let id_token = jsonwebtoken::encode(&header, &claims, &test_signer().encoding_key).unwrap();
+        assert!(verify(&id_token, TEST_AUD).is_err());
+    }
+
+    #[test]
+    fn test_verify_id_token_rejects_unsigned_none_alg() {
+        // alg=none の未署名トークンは拒否する
+        let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"none\",\"typ\":\"JWT\"}");
+        let payload = URL_SAFE_NO_PAD.encode(valid_claims_json());
+        let id_token = format!("{}.{}.", header, payload);
+        assert!(verify(&id_token, TEST_AUD).is_err());
+    }
+
+    #[test]
+    fn test_verify_id_token_rejects_wrong_aud() {
         // 他クライアント向けに発行されたトークンを受け入れない
-        let id_token = make_id_token(&valid_claims_json());
-        let result = decode_id_token_email(&id_token, "other-client-id");
-        assert!(result.is_err());
+        let id_token = make_signed_id_token(&valid_claims_json());
+        assert!(verify(&id_token, "other-client-id").is_err());
     }
 
     #[test]
-    fn test_decode_id_token_rejects_wrong_iss() {
+    fn test_verify_id_token_rejects_wrong_iss() {
         let exp = current_timestamp() + 3600;
-        let id_token = make_id_token(&format!(
+        let id_token = make_signed_id_token(&format!(
             "{{\"email\":\"user@gmail.com\",\"aud\":\"{TEST_AUD}\",\"iss\":\"https://evil.example\",\"exp\":{exp}}}"
         ));
-        assert!(decode_id_token_email(&id_token, TEST_AUD).is_err());
+        assert!(verify(&id_token, TEST_AUD).is_err());
     }
 
     #[test]
-    fn test_decode_id_token_rejects_expired() {
-        let exp = current_timestamp() - 60;
-        let id_token = make_id_token(&format!(
+    fn test_verify_id_token_rejects_expired() {
+        let exp = current_timestamp() - 120;
+        let id_token = make_signed_id_token(&format!(
             "{{\"email\":\"user@gmail.com\",\"aud\":\"{TEST_AUD}\",\"iss\":\"https://accounts.google.com\",\"exp\":{exp}}}"
         ));
-        assert!(decode_id_token_email(&id_token, TEST_AUD).is_err());
+        assert!(verify(&id_token, TEST_AUD).is_err());
     }
 
     #[test]
-    fn test_decode_id_token_rejects_missing_claims() {
+    fn test_verify_id_token_rejects_missing_claims() {
         // aud/iss/exp のいずれかが欠けたトークンは検証不能として拒否
-        let id_token = make_id_token("{\"email\":\"user@gmail.com\",\"sub\":\"12345\"}");
-        assert!(decode_id_token_email(&id_token, TEST_AUD).is_err());
+        let id_token = make_signed_id_token("{\"email\":\"user@gmail.com\",\"sub\":\"12345\"}");
+        assert!(verify(&id_token, TEST_AUD).is_err());
     }
 
     #[test]
-    fn test_decode_id_token_no_email() {
+    fn test_verify_id_token_no_email() {
         let exp = current_timestamp() + 3600;
-        let id_token = make_id_token(&format!(
+        let id_token = make_signed_id_token(&format!(
             "{{\"sub\":\"12345\",\"aud\":\"{TEST_AUD}\",\"iss\":\"https://accounts.google.com\",\"exp\":{exp}}}"
         ));
-        let result = decode_id_token_email(&id_token, TEST_AUD);
-        assert!(result.is_err());
+        assert!(verify(&id_token, TEST_AUD).is_err());
     }
 
     #[test]
-    fn test_decode_id_token_invalid_format() {
-        let result = decode_id_token_email("not-a-jwt", TEST_AUD);
-        assert!(result.is_err());
+    fn test_verify_id_token_invalid_format() {
+        assert!(verify("not-a-jwt", TEST_AUD).is_err());
     }
 
     #[test]

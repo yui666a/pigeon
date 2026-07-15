@@ -199,9 +199,12 @@ async fn handle_oauth_callback_inner(
     // Exchange authorization code for tokens
     let token_response = oauth::exchange_code(&config, &code, &pending.code_verifier).await?;
 
-    // Extract email from ID token
+    // Extract email from ID token (JWKS で署名検証してから取り出す)
     let email = match &token_response.id_token {
-        Some(id_token) => oauth::decode_id_token_email(id_token, &config.client_id)?,
+        Some(id_token) => {
+            let jwks = oauth::fetch_google_jwks().await?;
+            oauth::verify_id_token_email(id_token, &config.client_id, &jwks)?
+        }
         None => return Err(AppError::OAuth("No ID token in response".into())),
     };
 
