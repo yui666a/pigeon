@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::error::AppError;
 use crate::secure_store::SecureStore;
-use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::state::{ApprovedAttachments, DbState, SecureStoreState, SyncLocks};
 use crate::usecase::{AuditSink, Driver, NoOpAuditSink};
 
 /// 全 driver（commands / 将来の MCP・agent）が共有する借用コンテキスト。
@@ -12,6 +12,7 @@ use crate::usecase::{AuditSink, Driver, NoOpAuditSink};
 pub struct Ctx<'a> {
     db: &'a DbState,
     secure_store: Option<&'a SecureStore>,
+    approved_attachments: Option<&'a ApprovedAttachments>,
     pending: &'a PendingClassifications,
     batches: &'a ClassifyBatches,
     sync_locks: &'a SyncLocks,
@@ -29,11 +30,26 @@ impl<'a> Ctx<'a> {
         Self {
             db,
             secure_store: Some(&secure_store.0),
+            approved_attachments: None,
             pending,
             batches,
             sync_locks,
             driver: Driver::Ui,
         }
+    }
+
+    /// 添付の送信許可リストを持たせる（send_mail use case 用のビルダー）。
+    pub fn with_approved_attachments(mut self, approved: &'a ApprovedAttachments) -> Self {
+        self.approved_attachments = Some(approved);
+        self
+    }
+
+    /// テスト用: 実 SecureStore（tempfile 上の Stronghold）を注入する。
+    /// local-only 分岐の use case テストは参照を取るだけで実体には触れない。
+    #[cfg(test)]
+    pub fn with_secure_store(mut self, store: &'a SecureStore) -> Self {
+        self.secure_store = Some(store);
+        self
     }
 
     #[cfg(test)]
@@ -46,6 +62,7 @@ impl<'a> Ctx<'a> {
         Self {
             db,
             secure_store: None,
+            approved_attachments: None,
             pending,
             batches,
             sync_locks,
@@ -74,6 +91,19 @@ impl<'a> Ctx<'a> {
     pub fn secure_store(&self) -> Result<&SecureStore, AppError> {
         self.secure_store.ok_or_else(|| {
             AppError::Validation("secure store not configured in this context".into())
+        })
+    }
+
+    /// DbState への参照。`with_conn` で足りない、
+    /// 接続ロックを跨いで await する service 関数（delete/archive 等）に渡す。
+    pub fn db(&self) -> &DbState {
+        self.db
+    }
+
+    /// 添付の送信許可リスト。send_mail use case のみが要求する。
+    pub fn approved_attachments(&self) -> Result<&ApprovedAttachments, AppError> {
+        self.approved_attachments.ok_or_else(|| {
+            AppError::Validation("approved attachments not configured in this context".into())
         })
     }
 

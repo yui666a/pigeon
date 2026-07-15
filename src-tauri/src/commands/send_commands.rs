@@ -244,8 +244,18 @@ pub async fn send_mail(
     approved: State<'_, ApprovedAttachments>,
     req: SendMailRequest,
 ) -> Result<(), AppError> {
+    send_mail_service(&state, &secure_store.0, &approved, req).await
+}
+
+/// send_mail の本体（Ctx 非依存な service 関数。use case と command が共用）。
+pub(crate) async fn send_mail_service(
+    state: &DbState,
+    secure_store: &crate::secure_store::SecureStore,
+    approved: &ApprovedAttachments,
+    req: SendMailRequest,
+) -> Result<(), AppError> {
     // 添付はダイアログ選択済み（許可リスト登録済み）のパスのみ読み取る
-    ensure_paths_approved(&approved, &req.attachments)?;
+    ensure_paths_approved(approved, &req.attachments)?;
 
     // 1. アカウントと返信元メールを取得
     let (account, reply_source, sent_folder) = state.with_conn(|conn| {
@@ -273,7 +283,7 @@ pub async fn send_mail(
 
     // 3. 認証情報の解決（IMAPと共通。OAuthリフレッシュ込み）
     let (auth_type, username, credential) =
-        crate::commands::mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?;
+        crate::commands::mail_commands::resolve_imap_credentials(&account, secure_store).await?;
 
     // 4. SMTP送信
     smtp_client::send(

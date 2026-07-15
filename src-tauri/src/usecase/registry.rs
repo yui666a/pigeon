@@ -63,8 +63,8 @@ mod tests {
             "echo"
         }
 
-        fn risk(&self, _input: &Self::Input) -> Risk {
-            Risk::Read
+        fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+            Ok(Risk::Read)
         }
 
         async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {

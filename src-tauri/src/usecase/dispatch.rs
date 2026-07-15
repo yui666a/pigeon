@@ -16,7 +16,7 @@ pub async fn dispatch(
         .lookup(name)
         .ok_or_else(|| AppError::Validation(format!("unknown use case: {name}")))?;
 
-    let risk = uc.risk_json(&input)?;
+    let risk = uc.risk_json(&input, ctx)?;
     gate::check(risk, ctx.driver())?;
 
     // 4-2 では Read のみ載るため実質未発火。記録の実体（SQLite）は 4-4。
@@ -59,8 +59,8 @@ mod tests {
         fn name(&self) -> &'static str {
             "echo"
         }
-        fn risk(&self, _input: &Self::Input) -> Risk {
-            Risk::Read
+        fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+            Ok(Risk::Read)
         }
         async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
             Ok(EchoOutput { echoed: input.text })
@@ -80,8 +80,8 @@ mod tests {
         fn name(&self) -> &'static str {
             "danger"
         }
-        fn risk(&self, _input: &Self::Input) -> Risk {
-            Risk::Reversible
+        fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+            Ok(Risk::Reversible)
         }
         async fn run(&self, _input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
             Ok(NoOutput {})

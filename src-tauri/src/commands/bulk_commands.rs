@@ -15,14 +15,14 @@ pub struct BulkResult {
 }
 
 impl BulkResult {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             succeeded: Vec::new(),
             failed: Vec::new(),
         }
     }
 
-    fn push(&mut self, mail_id: String, result: Result<(), AppError>) {
+    pub(crate) fn push(&mut self, mail_id: String, result: Result<(), AppError>) {
         match result {
             Ok(()) => self.succeeded.push(mail_id),
             Err(e) => self.failed.push((mail_id, e.to_string())),

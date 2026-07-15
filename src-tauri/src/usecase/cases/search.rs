@@ -25,8 +25,8 @@ impl UseCase for SearchMailsUseCase {
         "search_mails"
     }
 
-    fn risk(&self, _input: &Self::Input) -> Risk {
-        Risk::Read
+    fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+        Ok(Risk::Read)
     }
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
@@ -64,12 +64,14 @@ mod tests {
 
     #[test]
     fn test_search_usecase_declares_read_risk() {
+        let (db, pending, batches, locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let uc = SearchMailsUseCase;
         let input = SearchMailsInput {
             account_id: "acc1".into(),
             query: "hello".into(),
         };
-        assert_eq!(uc.risk(&input), Risk::Read);
+        assert_eq!(uc.risk(&input, &ctx).unwrap(), Risk::Read);
         assert_eq!(uc.name(), "search_mails");
     }
 

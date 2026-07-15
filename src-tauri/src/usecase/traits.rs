@@ -17,9 +17,10 @@ pub trait UseCase: Send + Sync {
 
     fn name(&self) -> &'static str;
 
-    /// 実効 Risk。input を参照できる（archive のプラン依存 Risk 等）。
-    /// 多くの use case は input を無視して固定 Risk を返す。
-    fn risk(&self, input: &Self::Input) -> Risk;
+    /// 実効 Risk。input と ctx を参照できる（archive のプラン依存 Risk は
+    /// mail_policy の実効プランを DB から引いて決まる。ADR 0004 D3）。
+    /// 固定 Risk の use case は input / ctx を無視して定数を返す。
+    fn risk(&self, input: &Self::Input, ctx: &Ctx) -> Result<Risk, AppError>;
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError>;
 }
@@ -29,7 +30,7 @@ pub trait UseCase: Send + Sync {
 #[async_trait::async_trait]
 pub trait ErasedUseCase: Send + Sync {
     fn name(&self) -> &str;
-    fn risk_json(&self, input: &Value) -> Result<Risk, AppError>;
+    fn risk_json(&self, input: &Value, ctx: &Ctx) -> Result<Risk, AppError>;
     async fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError>;
 }
 
@@ -39,11 +40,11 @@ impl<T: UseCase> ErasedUseCase for T {
         UseCase::name(self)
     }
 
-    fn risk_json(&self, input: &Value) -> Result<Risk, AppError> {
+    fn risk_json(&self, input: &Value, ctx: &Ctx) -> Result<Risk, AppError> {
         let typed: T::Input = serde_json::from_value(input.clone()).map_err(|e| {
             AppError::Validation(format!("invalid input for {}: {e}", UseCase::name(self)))
         })?;
-        Ok(self.risk(&typed))
+        self.risk(&typed, ctx)
     }
 
     async fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError> {
@@ -91,8 +92,8 @@ mod tests {
             "echo"
         }
 
-        fn risk(&self, _input: &Self::Input) -> Risk {
-            Risk::Read
+        fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+            Ok(Risk::Read)
         }
 
         async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
@@ -112,8 +113,8 @@ mod tests {
             "async_echo"
         }
 
-        fn risk(&self, _input: &Self::Input) -> Risk {
-            Risk::Read
+        fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+            Ok(Risk::Read)
         }
 
         async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
@@ -166,9 +167,11 @@ mod tests {
 
     #[test]
     fn test_erased_risk_json_reads_input() {
+        let (db, pending, batches, locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         let uc = EchoUseCase;
         let risk = uc
-            .risk_json(&json!({ "text": "hi" }))
+            .risk_json(&json!({ "text": "hi" }), &ctx)
             .expect("risk_json should parse input");
         assert_eq!(risk, Risk::Read);
     }
