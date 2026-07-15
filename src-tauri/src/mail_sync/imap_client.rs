@@ -518,6 +518,22 @@ pub async fn store_flagged(
 
 /// UID 指定で元メール（RFC822 全文）を1通取得する。
 /// 添付ファイルのオンデマンド取得（attachment-download 設計）で使用する。
+/// 添付オンデマンド取得（fetch_mail_raw）で許容する1通の最大サイズ。
+/// 同期の `MAX_MAIL_FETCH_BYTES`（25MB）より緩いのは、大きな添付は正当な
+/// 利用であり、こちらはユーザー起点の単発取得（一括取り込みではない）のため。
+pub(crate) const MAX_RAW_FETCH_BYTES: u32 = 100 * 1024 * 1024;
+
+/// RFC822.SIZE が上限を超えるメールの全量取得を拒否する（メモリ枯渇の防止）。
+/// サイズ不明（サーバーが返さない）は取得を止めない。
+fn ensure_raw_fetch_size(uid: u32, size: Option<u32>) -> Result<(), AppError> {
+    match size {
+        Some(s) if s > MAX_RAW_FETCH_BYTES => Err(AppError::Imap(format!(
+            "メール (uid={uid}) のサイズ {s} bytes が上限 {MAX_RAW_FETCH_BYTES} bytes を超えるため取得を中止しました"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 pub async fn fetch_mail_raw(
     session: &mut ImapSession,
     folder: &str,
@@ -527,6 +543,20 @@ pub async fn fetch_mail_raw(
         .select(folder)
         .await
         .map_err(|e| AppError::Imap(format!("Select folder failed: {}", e)))?;
+
+    // 全量取得の前にサイズだけを軽量取得して上限を検査する
+    let size_messages: Vec<_> = session
+        .uid_fetch(uid.to_string(), FETCH_ITEMS_SIZE)
+        .await
+        .map_err(|e| AppError::Imap(format!("Size fetch failed: {}", e)))?
+        .try_collect()
+        .await
+        .map_err(|e| AppError::Imap(format!("Size stream failed: {}", e)))?;
+    let size = size_messages
+        .iter()
+        .find(|m| m.uid == Some(uid))
+        .and_then(|m| m.size);
+    ensure_raw_fetch_size(uid, size)?;
 
     let messages: Vec<_> = session
         .uid_fetch(uid.to_string(), FETCH_ITEMS_RAW)
@@ -794,6 +824,21 @@ mod tests {
             response,
             "user=user@gmail.com\x01auth=Bearer ya29.token\x01\x01"
         );
+    }
+
+    // --- ensure_raw_fetch_size: 添付オンデマンド取得のサイズ上限 ---
+
+    #[test]
+    fn test_ensure_raw_fetch_size_rejects_oversized() {
+        let result = ensure_raw_fetch_size(1, Some(MAX_RAW_FETCH_BYTES + 1));
+        assert!(matches!(result, Err(AppError::Imap(_))));
+    }
+
+    #[test]
+    fn test_ensure_raw_fetch_size_allows_at_limit_and_unknown() {
+        // 上限ちょうどは許可。RFC822.SIZE を返さないサーバーでも取得を止めない
+        assert!(ensure_raw_fetch_size(1, Some(MAX_RAW_FETCH_BYTES)).is_ok());
+        assert!(ensure_raw_fetch_size(1, None).is_ok());
     }
 
     // --- partition_by_size: 受信サイズ上限（DoS対策） ---
