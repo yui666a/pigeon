@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  # main マージごとにリリース経路(macOSビルド)が壊れていないことを検証する
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build DMG (${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            asset: Pigeon_aarch64.dmg
+          - target: x86_64-apple-darwin
+            asset: Pigeon_x86_64.dmg
+    env:
+      # job レベル if では secrets を参照できないため、step レベル if 用に真偽値へ変換する
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # latest だと pnpm のメジャー更新で挙動が変わり CI が壊れるため固定(test.yml と同じ)
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      # 署名なしビルド。Secrets 登録後は下の signed ステップに切り替わる。
+      # 空の APPLE_* 環境変数を渡すと Tauri が署名を試みて失敗しうるため、
+      # env を渡さないステップとして分離している
+      - name: Build DMG (unsigned)
+        if: env.HAS_APPLE_CERT != 'true'
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Build DMG (signed & notarized)
+        if: env.HAS_APPLE_CERT == 'true'
+        run: pnpm tauri build --target ${{ matrix.target }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # releases/latest/download/ の固定URLで参照できるよう、バージョンを含まない名前に統一する
+      - name: Rename DMG to stable asset name
+        run: |
+          DMG_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/dmg"
+          DMG=$(ls "$DMG_DIR"/*.dmg)
+          mv "$DMG" "$DMG_DIR/${{ matrix.asset }}"
+
+      - name: Upload build artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${{ matrix.asset }}
+          retention-days: 7
