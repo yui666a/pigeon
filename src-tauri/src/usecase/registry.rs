@@ -54,6 +54,7 @@ mod tests {
 
     struct EchoUseCase;
 
+    #[async_trait::async_trait]
     impl UseCase for EchoUseCase {
         type Input = EchoInput;
         type Output = EchoOutput;
@@ -66,7 +67,7 @@ mod tests {
             Risk::Read
         }
 
-        fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
+        async fn run(&self, input: Self::Input, _ctx: &Ctx) -> Result<Self::Output, AppError> {
             Ok(EchoOutput { echoed: input.text })
         }
     }
