@@ -168,6 +168,8 @@ const MIGRATIONS: &[Migration] = &[
     (12, migrate_v12),
     (13, migrate_v13),
     (14, migrate_v14),
+    (15, migrate_v15),
+    (16, migrate_v16),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -422,11 +424,51 @@ fn migrate_v14(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+fn migrate_v15(conn: &Connection) -> Result<(), AppError> {
+    // Reversible/Sensitive 操作の監査ログ（ADR 0004 Phase 4-4）。
+    // dispatch バスが実行前に記録する。input_summary は値を切り詰めた要約で、
+    // 完全な入力は保存しない（本文等の重複保存を避ける）。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            use_case TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            driver TEXT NOT NULL,
+            input_summary TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v16(conn: &Connection) -> Result<(), AppError> {
+    // Sensitive 操作の承認キュー（ADR 0004 Phase 4-4）。
+    // 非 UI driver（MCP / Agent）の Sensitive 操作はここに積まれて保留される。
+    // input_json は承認時の再実行に必要な完全な入力（Phase 5-2 で UI から消費）。
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS approval_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            use_case TEXT NOT NULL,
+            input_json TEXT NOT NULL,
+            driver TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'approved', 'rejected')),
+            decided_ts TEXT
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// v15 相当の失敗するマイグレーション: 一部のスキーマ変更
+    /// v17 相当の失敗するマイグレーション: 一部のスキーマ変更
     /// （ALTER TABLE ADD COLUMN = 非冪等）を適用した後に失敗する。
     /// 途中失敗時の原子性（ロールバック）検証用。
     fn migrate_broken_partial(conn: &Connection) -> Result<(), AppError> {
@@ -466,7 +508,7 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((15, migrate_broken_partial));
+        with_broken.push((17, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -479,7 +521,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            14,
+            16,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -490,17 +532,17 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((15, migrate_broken_partial));
+        with_broken.push((17, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((15, migrate_fixed));
+        with_fixed.push((17, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 15);
+        assert_eq!(schema_version(&conn), 17);
     }
 
     #[test]
@@ -508,21 +550,21 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((15, migrate_broken_partial));
+        with_broken.push((17, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v14）はコミット済みのまま
+        // 成功済みバージョン（v1〜v16）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            14,
+            16,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 14);
+        assert_eq!(schema_version(&conn), 16);
     }
 
     #[test]
@@ -635,7 +677,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -842,7 +884,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -868,7 +910,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -1045,7 +1087,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -1247,7 +1289,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -1341,7 +1383,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -1457,7 +1499,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -1582,7 +1624,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]
@@ -1602,7 +1644,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(version, 16);
     }
 
     #[test]

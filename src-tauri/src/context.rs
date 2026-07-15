@@ -4,11 +4,10 @@ use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::error::AppError;
 use crate::secure_store::SecureStore;
 use crate::state::{ApprovedAttachments, DbState, SecureStoreState, SyncLocks};
-use crate::usecase::{AuditSink, Driver, NoOpAuditSink};
+use crate::usecase::{AuditSink, Driver, SqliteAuditSink};
 
 /// 全 driver（commands / 将来の MCP・agent）が共有する借用コンテキスト。
 /// Tauri が所有する各 managed State への参照を束ね、driver 情報と監査シンクを持つ。
-/// Risk ゲートの骨格は Phase 4-2、ゲート本体（承認キュー）と監査永続化は Phase 4-4。
 pub struct Ctx<'a> {
     db: &'a DbState,
     secure_store: Option<&'a SecureStore>,
@@ -17,6 +16,8 @@ pub struct Ctx<'a> {
     batches: &'a ClassifyBatches,
     sync_locks: &'a SyncLocks,
     driver: Driver,
+    /// None なら既定の SqliteAuditSink（audit() 参照）。テストで差し替える。
+    audit: Option<&'a dyn AuditSink>,
 }
 
 impl<'a> Ctx<'a> {
@@ -35,6 +36,7 @@ impl<'a> Ctx<'a> {
             batches,
             sync_locks,
             driver: Driver::Ui,
+            audit: None,
         }
     }
 
@@ -67,7 +69,23 @@ impl<'a> Ctx<'a> {
             batches,
             sync_locks,
             driver: Driver::Ui,
+            audit: None,
         }
+    }
+
+    /// テスト用: driver を差し替える（MCP / Agent 経路のゲート検証用。
+    /// 本番の非 UI driver 構築は Phase 5）。
+    #[cfg(test)]
+    pub fn with_driver(mut self, driver: Driver) -> Self {
+        self.driver = driver;
+        self
+    }
+
+    /// テスト用: 監査シンクを差し替える（InMemoryAuditSink での検証用）。
+    #[cfg(test)]
+    pub fn with_audit_sink(mut self, sink: &'a dyn AuditSink) -> Self {
+        self.audit = Some(sink);
+        self
     }
 
     /// DB 接続を借りてクロージャを実行する（`DbState::with_conn` へ委譲）。
@@ -124,11 +142,10 @@ impl<'a> Ctx<'a> {
         self.driver
     }
 
-    /// 監査シンク。4-2 は NoOp 固定（read 系は監査対象外）。
-    /// SQLite シンクへの差し替えは Phase 4-4。
+    /// 監査シンク。既定は SQLite 永続化（audit_log テーブル）。
     pub fn audit(&self) -> &dyn AuditSink {
-        const SINK: &NoOpAuditSink = &NoOpAuditSink;
-        SINK
+        const DEFAULT: &SqliteAuditSink = &SqliteAuditSink;
+        self.audit.unwrap_or(DEFAULT)
     }
 }
 
@@ -181,12 +198,23 @@ mod tests {
     }
 
     #[test]
-    fn test_audit_sink_is_available() {
+    fn test_default_audit_sink_persists_to_sqlite() {
         use crate::usecase::{AuditEntry, Risk};
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
-        // NoOp なので record しても panic しない（返り値が &dyn AuditSink であることの確認）
-        ctx.audit()
-            .record(AuditEntry::new("x", Risk::Read, ctx.driver()));
+        // 既定シンクは SqliteAuditSink（audit_log テーブルへ書く）
+        ctx.with_conn(|conn| {
+            ctx.audit().record(
+                conn,
+                &AuditEntry::new("x", Risk::Reversible, ctx.driver(), &serde_json::json!({})),
+            );
+            Ok(())
+        })
+        .unwrap();
+        let rows = ctx
+            .with_conn(|conn| crate::db::audit_log::list_recent(conn, 10))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].use_case, "x");
     }
 }

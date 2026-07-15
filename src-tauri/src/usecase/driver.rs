@@ -9,6 +9,17 @@ pub enum Driver {
     Agent,
 }
 
+impl Driver {
+    /// 監査ログ・承認キューの永続表現（小文字固定）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Driver::Ui => "ui",
+            Driver::Mcp => "mcp",
+            Driver::Agent => "agent",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

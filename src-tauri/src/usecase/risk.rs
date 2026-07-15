@@ -9,6 +9,17 @@ pub enum Risk {
     Sensitive,
 }
 
+impl Risk {
+    /// 監査ログ等の永続表現（小文字固定）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Risk::Read => "read",
+            Risk::Reversible => "reversible",
+            Risk::Sensitive => "sensitive",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

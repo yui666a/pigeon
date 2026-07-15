@@ -1,4 +1,6 @@
 pub mod accounts;
+pub mod approval_queue;
+pub mod audit_log;
 pub mod assignments;
 pub mod attachments;
 pub mod cloud_rules;
