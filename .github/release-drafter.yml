@@ -1,0 +1,95 @@
+# Pigeon のタグは vX.Y.Z 形式（release.yml のバージョン整合チェックと
+# ruleset protect-release-tags が v* 前提）のため v を付ける
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: '🚀 Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'bug'
+      - 'bugfix'
+      - 'fix'
+      - 'emergency'
+
+  - title: '⚡ Performance'
+    labels:
+      - 'performance'
+
+  - title: '🔧 Refactoring'
+    labels:
+      - 'refactor'
+
+  - title: '📖 Documentation'
+    labels:
+      - 'documentation'
+
+  - title: '✅ Tests'
+    labels:
+      - 'test'
+
+  - title: '🧰 Maintenance'
+    labels:
+      - 'chore'
+      - 'dependencies'
+
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+
+change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
+
+# major/minor/patch ラベルは autolabeler では付与せず、必要な場合のみ手動で付与する運用。
+# ラベル未付与時のデフォルトは patch。publish 前に tauri.conf.json の version を
+# ドラフトのバージョンと一致させる PR をマージすること（不一致は release.yml の
+# 整合チェックが publish 後のビルドで検知して失敗する）。
+version-resolver:
+  major:
+    labels:
+      - 'major'
+  minor:
+    labels:
+      - 'minor'
+  patch:
+    labels:
+      - 'patch'
+  default: patch
+
+template: |
+  ## Changes
+  $CHANGES
+
+# PR タイトルは Conventional Commits を強制している（validate-pr-title.yml）。
+# ラベルは運用上付与しないため、autolabeler が PR タイトルの `type(scope)!:` 形式から
+# ラベルを自動付与し、上記 categories でカテゴリ分類する。
+# ブランチ名は作業内容ベースでタイトルの type と食い違うことが多いため、title のみを判定に使う。
+autolabeler:
+  - label: enhancement
+    title:
+      - '/^feat(\(.+\))?!?:/i'
+
+  - label: bug
+    title:
+      - '/^fix(\(.+\))?!?:/i'
+
+  - label: performance
+    title:
+      - '/^perf(\(.+\))?!?:/i'
+
+  - label: refactor
+    title:
+      - '/^refactor(\(.+\))?!?:/i'
+
+  - label: documentation
+    title:
+      - '/^docs(\(.+\))?!?:/i'
+
+  - label: test
+    title:
+      - '/^test(\(.+\))?!?:/i'
+
+  - label: chore
+    title:
+      - '/^(chore|ci|build|style|revert)(\(.+\))?!?:/i'
