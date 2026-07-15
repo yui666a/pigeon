@@ -19,7 +19,7 @@
     "@tiptap/extension-link": "^3.27.3",
     "@tiptap/pm": "^3.27.3",
     "@tiptap/react": "^3.27.3",
-    "@tiptap/starter-kit": "^3.27.3",
+    "@tiptap/starter-kit": "^3.27.4",
     "dompurify": "^3.4.12",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
