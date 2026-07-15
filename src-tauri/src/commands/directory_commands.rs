@@ -65,11 +65,9 @@ pub async fn rescan_project_directory(
     project_id: String,
 ) -> Result<RescanOutcome, AppError> {
     let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
-    // プロバイダが Claude のときのみクラウド送信になる。cloud フラグは
-    // 送信可否ポリシー適用のためのもので、build_classifier とは独立。
-    let cloud = db.with_conn(|conn| {
-        Ok(crate::db::settings::get_or_default(conn, "llm_provider", "ollama")? == "claude")
-    })?;
+    // cloud フラグは送信可否ポリシー適用のためのもので、build_classifier とは独立。
+    // 判定は is_cloud_provider_configured に集約（Vertex 系もクラウド扱い）。
+    let cloud = db.with_conn(crate::classifier::factory::is_cloud_provider_configured)?;
     project_context::rescan_project(&db.0, classifier.as_ref(), &project_id, cloud).await
 }
 
