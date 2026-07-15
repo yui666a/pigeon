@@ -39,6 +39,8 @@ dirs = "5"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["compat"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# 外部画像URLのホスト種別判定（url::Host。reqwest 経由で既にツリー内にある）
+url = "2"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
