@@ -19,7 +19,9 @@ export function replaceCidReferences(html: string, images: InlineImage[]): strin
     const src = img.getAttribute("src") ?? "";
     const contentId = src.slice("cid:".length);
     const dataUri = byContentId.get(contentId);
-    if (dataUri) {
+    // バックエンドも MIME を許可リストで検証するが、フロントでも画像以外の
+    // data URI（data:text/html 等）を差し込まない（防御の多層化）
+    if (dataUri && dataUri.startsWith("data:image/")) {
       img.setAttribute("src", dataUri);
     }
   });
