@@ -62,8 +62,11 @@ SQLite（`settings` テーブルを含む）には、パスワード・トーク
 
 Stronghold スナップショットを暗号化する**マスター鍵**は、初回起動時に CSPRNG で生成するデバイス固有の 32byte 乱数とし、OS キーチェーンに保管する。
 
-- 保管先: macOS Keychain / Windows Credential Manager（`keyring` クレート、サービス名 `com.haiso666.pigeon`、アカウント `secure-store-master-key`）
-- キーチェーン非対応環境（Linux 等）: データディレクトリの `master.key`（権限 0600）に暫定保管する。secret-service 連携は将来課題
+- 保管先: macOS Keychain / Windows Credential Manager / Linux secret-service（GNOME Keyring 等）。いずれも `keyring` クレート、サービス名 `com.haiso666.pigeon`、アカウント `secure-store-master-key`
+- Linux（2026-07-15 実装）: secret-service へは zbus ベースの `async-secret-service` feature で接続する（pure Rust。libdbus 連携の `sync-secret-service` はビルドが壊れやすく、kernel keyutils の `linux-native` は再起動で鍵が消えるため不採用）。デーモン不在（ヘッドレス・CI 等）は実行時にデータディレクトリの `master.key`（権限 0600）へフォールバックする（`FallbackKeyBackend`）
+  - 旧 `master.key` 運用からの移行: secret-service が空でファイルに鍵がある場合、鍵を secret-service へ複製する。**ファイルは削除せず残す**: デーモンが一時的に不在の起動でも同じ鍵でスナップショットを開けるようにする可用性優先の判断（消すとデーモン不在時に新しい鍵が生成され、スナップショット退避 + 再認証に至る）。ファイルを消して保護を完成させるのは Linux 正式配布時の課題
+  - デーモンが不安定な環境（あるときと無いときが交互に来る）では鍵の不整合により再認証が発生しうる（データはスナップショット退避により失われない）
+- キーチェーン系がない他の環境: `master.key`（0600）のみ
 - テスト・CI: `MasterKeyBackend` トレイト経由でインメモリ鍵を注入し、実キーチェーンに触れない
 
 ソースコードに鍵素材（固定文字列やソルト）を置かない。鍵がデバイス固有であるため、スナップショットファイルを窃取されても他のデバイス・ソースコードの知識だけでは復号できない。
