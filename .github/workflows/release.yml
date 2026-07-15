@@ -7,6 +7,9 @@ on:
     paths-ignore:
       - "docs/**"
       - "**.md"
+  # 下書きではなく publish されたタイミングのみで起動する
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -28,6 +31,17 @@ jobs:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
+
+      # バージョンを上げ忘れたまま publish した場合にここで止める
+      - name: Verify tag matches tauri.conf.json version
+        if: github.event_name == 'release'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CONF_VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ "$TAG_VERSION" != "$CONF_VERSION" ]; then
+            echo "::error::タグ v${TAG_VERSION} と tauri.conf.json の version ${CONF_VERSION} が一致しません。version を上げる PR をマージしてから Release を作り直してください。"
+            exit 1
+          fi
 
       # latest だと pnpm のメジャー更新で挙動が変わり CI が壊れるため固定(test.yml と同じ)
       - uses: pnpm/action-setup@v4
@@ -90,3 +104,12 @@ jobs:
           name: ${{ matrix.asset }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${{ matrix.asset }}
           retention-days: 7
+
+      - name: Upload DMG to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${{ matrix.asset }}" \
+            --clobber
