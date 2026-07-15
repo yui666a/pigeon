@@ -8,59 +8,65 @@ tag-template: 'v$RESOLVED_VERSION'
 # (v0.1.1 パイプライン検証リリースで実際に発生)
 include-pre-releases: true
 
+# v7 の新スキーマ（when 条件）を使用。旧スキーマ（categories[*].labels /
+# version-resolver.*.labels）は非推奨警告が出るため移行済み
 categories:
   - title: '🚀 Features'
-    labels:
-      - 'feature'
-      - 'enhancement'
+    when:
+      labels:
+        - 'feature'
+        - 'enhancement'
 
   - title: '🐛 Bug Fixes'
-    labels:
-      - 'bug'
-      - 'bugfix'
-      - 'fix'
-      - 'emergency'
+    when:
+      labels:
+        - 'bug'
+        - 'bugfix'
+        - 'fix'
+        - 'emergency'
 
   - title: '⚡ Performance'
-    labels:
-      - 'performance'
+    when:
+      label: 'performance'
 
   - title: '🔧 Refactoring'
-    labels:
-      - 'refactor'
+    when:
+      label: 'refactor'
 
   - title: '📖 Documentation'
-    labels:
-      - 'documentation'
+    when:
+      label: 'documentation'
 
   - title: '✅ Tests'
-    labels:
-      - 'test'
+    when:
+      label: 'test'
 
   - title: '🧰 Maintenance'
-    labels:
-      - 'chore'
-      - 'dependencies'
+    when:
+      labels:
+        - 'chore'
+        - 'dependencies'
+
+  # major/minor ラベルは autolabeler では付与せず、必要な場合のみ手動で付与する運用。
+  # ラベル未付与時のデフォルトは patch（when なしの version-resolver）。
+  # publish 前に tauri.conf.json の version をドラフトのバージョンと一致させる PR を
+  # マージすること（不一致は release.yml の整合チェックが publish 後のビルドで検知して失敗する）
+  - type: 'version-resolver'
+    semver-increment: 'major'
+    when:
+      label: 'major'
+
+  - type: 'version-resolver'
+    semver-increment: 'minor'
+    when:
+      label: 'minor'
+
+  - type: 'version-resolver'
+    semver-increment: 'patch'
 
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
 
 change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
-
-# major/minor/patch ラベルは autolabeler では付与せず、必要な場合のみ手動で付与する運用。
-# ラベル未付与時のデフォルトは patch。publish 前に tauri.conf.json の version を
-# ドラフトのバージョンと一致させる PR をマージすること（不一致は release.yml の
-# 整合チェックが publish 後のビルドで検知して失敗する）。
-version-resolver:
-  major:
-    labels:
-      - 'major'
-  minor:
-    labels:
-      - 'minor'
-  patch:
-    labels:
-      - 'patch'
-  default: patch
 
 template: |
   ## Changes
@@ -69,6 +75,8 @@ template: |
 # PR タイトルは Conventional Commits を強制している（validate-pr-title.yml）。
 # ラベルは運用上付与しないため、autolabeler が PR タイトルの `type(scope)!:` 形式から
 # ラベルを自動付与し、上記 categories でカテゴリ分類する。
+# v7 では autolabeler は本体（release-note.yml の closed 実行）では動かず、
+# 分離アクション（autolabel.yml が opened/synchronize 等で実行）が本セクションを読む。
 # ブランチ名は作業内容ベースでタイトルの type と食い違うことが多いため、title のみを判定に使う。
 autolabeler:
   - label: enhancement
