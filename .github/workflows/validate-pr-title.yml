@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 3
     permissions:
       pull-requests: read
+      # wip: true は WIP 状態をコミットステータスとして書き込むため statuses: write が必要
+      statuses: write
     # dependabotでは `secrets.GITHUB_TOKEN` を参照できないためスキップ
     # （dependabot のタイトルは chore(deps): 形式で規約準拠のため実害なし）
     if: ${{ github.actor != 'dependabot[bot]' }}
