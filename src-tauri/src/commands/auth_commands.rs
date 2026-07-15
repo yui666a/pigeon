@@ -48,9 +48,9 @@ fn start_oauth_inner(
                     redirect_uri,
                     created_at: now,
                 },
-            );
+            )?;
 
-            oauth_store.cleanup_expired();
+            oauth_store.cleanup_expired()?;
 
             let auth_url = oauth::build_auth_url(&config, &state, &code_challenge);
             Ok(auth_url)
@@ -186,7 +186,7 @@ async fn handle_oauth_callback_inner(
     let (code, state_param) = oauth::parse_callback_url(url)?;
 
     let pending = oauth_store
-        .take(&state_param)
+        .take(&state_param)?
         .ok_or(AppError::InvalidOAuthState)?;
 
     // Check if the pending OAuth entry has expired

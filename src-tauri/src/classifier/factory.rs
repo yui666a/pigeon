@@ -272,7 +272,9 @@ mod tests {
     // --- build_classifier_from_params: 明示パラメータからの構築（接続テスト用） ---
 
     /// テスト用の使い捨て SA JSON（実在しないダミー鍵。オンライン検証はされない）。
-    const TEST_SA_JSON: &str = include_str!("test_sa.json");
+    fn test_sa_json() -> &'static str {
+        crate::test_helpers::test_sa_json()
+    }
 
     /// provider と秘密情報だけ差し替えたパラメータを組む小さなヘルパ。
     fn params<'a>(
@@ -360,7 +362,7 @@ mod tests {
         let (_c, store, _d) = setup();
         // 明示 SA JSON + project_id があれば構築できる
         let result = build_classifier_from_params(
-            &params("claude_vertex", None, "test-project", Some(TEST_SA_JSON)),
+            &params("claude_vertex", None, "test-project", Some(test_sa_json())),
             &store,
         );
         assert!(
@@ -374,7 +376,7 @@ mod tests {
     fn test_from_params_vertex_falls_back_to_stored_sa() {
         let (_c, store, _d) = setup();
         store
-            .insert("vertex_sa_json", TEST_SA_JSON.as_bytes())
+            .insert("vertex_sa_json", test_sa_json().as_bytes())
             .unwrap();
         // 明示 SA が None なら保存済み SA を使う
         let result = build_classifier_from_params(
@@ -407,7 +409,7 @@ mod tests {
         let (_c, store, _d) = setup();
         // SA はあっても project_id が空なら MissingApiKey
         let err = match build_classifier_from_params(
-            &params("claude_vertex", None, "", Some(TEST_SA_JSON)),
+            &params("claude_vertex", None, "", Some(test_sa_json())),
             &store,
         ) {
             Err(e) => e,
@@ -422,7 +424,7 @@ mod tests {
         settings::set(&conn, "llm_provider", "claude_vertex").unwrap();
         settings::set(&conn, "vertex_project_id", "test-project").unwrap();
         store
-            .insert("vertex_sa_json", TEST_SA_JSON.as_bytes())
+            .insert("vertex_sa_json", test_sa_json().as_bytes())
             .unwrap();
         assert!(build_classifier(&conn, &store).is_ok());
     }
@@ -433,7 +435,7 @@ mod tests {
     fn test_from_params_gemini_with_explicit_sa_builds() {
         let (_c, store, _d) = setup();
         let result = build_classifier_from_params(
-            &params("gemini_vertex", None, "test-project", Some(TEST_SA_JSON)),
+            &params("gemini_vertex", None, "test-project", Some(test_sa_json())),
             &store,
         );
         assert!(
@@ -460,7 +462,7 @@ mod tests {
     fn test_from_params_gemini_missing_project_id_errs() {
         let (_c, store, _d) = setup();
         let err = match build_classifier_from_params(
-            &params("gemini_vertex", None, "", Some(TEST_SA_JSON)),
+            &params("gemini_vertex", None, "", Some(test_sa_json())),
             &store,
         ) {
             Err(e) => e,
@@ -475,7 +477,7 @@ mod tests {
         settings::set(&conn, "llm_provider", "gemini_vertex").unwrap();
         settings::set(&conn, "vertex_project_id", "test-project").unwrap();
         store
-            .insert("vertex_sa_json", TEST_SA_JSON.as_bytes())
+            .insert("vertex_sa_json", test_sa_json().as_bytes())
             .unwrap();
         assert!(build_classifier(&conn, &store).is_ok());
     }

@@ -55,3 +55,11 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [dev-dependencies]
 tempfile = "3"
+# テスト用SA鍵の動的生成（PEM形式の鍵をリポジトリにコミットしないため）
+rsa = { version = "0.9", features = ["pem"] }
+
+# RSA鍵生成はデバッグビルドだと数十秒かかるため、テスト用に最適化する
+[profile.dev.package.rsa]
+opt-level = 3
+[profile.dev.package.num-bigint-dig]
+opt-level = 3

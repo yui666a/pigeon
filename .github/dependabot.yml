@@ -1,0 +1,20 @@
+# 依存の既知脆弱性・更新の追従（result-report.md #16）。
+# DOMPurify の脆弱性が放置された構造的原因（依存スキャンの不在）への対処。
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

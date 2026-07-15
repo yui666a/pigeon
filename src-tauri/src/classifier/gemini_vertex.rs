@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_endpoint_url_uses_google_generate_content() {
-        let sa_json = include_str!("test_sa.json");
+        let sa_json = crate::test_helpers::test_sa_json();
         let c = GeminiVertexClassifier::new(
             sa_json,
             "pigeon-mail-xxxxxx",
