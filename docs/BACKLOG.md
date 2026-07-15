@@ -62,13 +62,22 @@
 | C6 | ~~send_mail 添付パスの allowlist~~ | **2026-07-15 #138 で対応済み**（pick_attachment_files + ApprovedAttachments） |
 | C7 | merge_duplicate_sent_rows の両方割り当てケース | #89 レビュー記録。重複Sent行の統合時、両行が別案件に割り当て済みだと drop 側の割り当てが警告なく消える稀ケース |
 | C8 | SBOM 生成（リリース配布時） | 公開リリース配布を始める段階で、`cargo cyclonedx` と pnpm 依存から SBOM を CI 自動生成する。手書きはすぐ陳腐化するので今は作らない。依存は Cargo.lock / pnpm-lock.yaml で固定済み |
-| C9 | 外部画像の表示オプトイン | 2026-07-15 に外部画像はサニタイズ側で除去（CSPと多層化）。表示したいユーザー向けに「画像を表示」ボタン→Rust経由フェッチ（reqwest→data URI化）のオプトイン設計が将来課題。CSPの img-src は緩めない |
-| C10 | メール本文の sandbox iframe 隔離 | セキュリティ監査 #6 の多層防御の残り。srcdoc + sandbox 化は CSP frame-src 'none' との干渉を実機（WKWebView）で検証してから。DOMPurify バイパス時に Tauri IPC へ到達させないための第3層 |
+| C9 | ~~外部画像の表示オプトイン~~ | **2026-07-15 #160 で対応済み**（設計書 2026-07-15-external-image-optin-design.md。「画像を表示」→Rust経由フェッチ→data URI。非永続。送信者単位の常時許可・DNSリバインディング対策は将来課題） |
+| C10 | ~~メール本文の sandbox iframe 隔離~~ | **2026-07-15 #159 で対応済み**（実機検証の結果 WKWebView は frame-src 'none' を srcdoc に適用せず CSP 変更不要。allow-scripts なしの srcdoc iframe で隔離） |
+
+## 📌 Riskゲート（監査 #17 / ADR 0004）の進捗
+
+2026-07-15 の #161/#164/#165 で Phase 4-4 まで完了（asyncバス・Sensitive抽出・ゲート本体・audit_log v15・approval_queue v16）。残り:
+
+- 4-5: classify / sync / rescan のバス載せ替え
+- 5-1: MCP server driver / 5-2: 承認キューの消費UI・承認後再実行 / 5-3: 常駐エージェント
+
+2026-07-15 の #166 で Linux の secret-service 鍵保管も対応済み（ADR 0003 更新済み。master.key の廃止は Linux 正式配布時）。
 
 ## ⚠️ 引き継ぎ時の注意（開発運用）
 
 - **`gh pr merge --delete-branch` はそのブランチをbaseにする子PRを自動クローズする**。スタックのマージは「親マージ → 子のbaseをmainへ変更 → 最後にブランチ削除」の順で
-- **DBマイグレーションは番号昇順にマージすること**（逆順だと既存DBで後発の低番号ゲートが永久にスキップされる。2026-07-13 のマージで実際に順序制約が発生した）。現在 v14 まで使用済み
+- **DBマイグレーションは番号昇順にマージすること**（逆順だと既存DBで後発の低番号ゲートが永久にスキップされる。2026-07-13 のマージで実際に順序制約が発生した）。現在 v16 まで使用済み
 - **IMAP FETCH の本文取得は必ず `BODY.PEEK[]`**（RFC822/BODY[] は取得だけでサーバーに \Seen が付く。#100 の不具合。`FETCH_ITEMS_*` 定数と回帰テストで固定済み）
 - `cargo fmt -- <file>` はファイル限定にならずクレート全体を整形する
 - 並行エージェント開発時: DBマイグレーション番号の事前割り当て、`lib.rs` invoke_handler への挿入位置の分散。**並行実装は最大3体・検証フェーズ（cargo test/ビルド）は同時1〜2体まで**（2026-07-13 未明に6体並行でPCフリーズ）。`cargo test --lib -- --test-threads=4`・vitest `--maxWorkers 2` で負荷制限する
