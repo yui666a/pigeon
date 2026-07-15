@@ -59,9 +59,11 @@
 | C3 | エクスポート（.eml / mbox） | メールの書き出し。未実装 |
 | C4 | 通知の出し分け | フォアグラウンド時は通知しない等。VIP/差出人フィルタ |
 | C5 | vCard（連絡先添付）の取り込み | .vcf からアドレス帳へ。A3とセット。未実装 |
-| C6 | send_mail 添付パスの allowlist | #96 レビュー記録。dialog選択済みパス集合との照合を Rust 側に導入する defense-in-depth |
+| C6 | ~~send_mail 添付パスの allowlist~~ | **2026-07-15 #138 で対応済み**（pick_attachment_files + ApprovedAttachments） |
 | C7 | merge_duplicate_sent_rows の両方割り当てケース | #89 レビュー記録。重複Sent行の統合時、両行が別案件に割り当て済みだと drop 側の割り当てが警告なく消える稀ケース |
 | C8 | SBOM 生成（リリース配布時） | 公開リリース配布を始める段階で、`cargo cyclonedx` と pnpm 依存から SBOM を CI 自動生成する。手書きはすぐ陳腐化するので今は作らない。依存は Cargo.lock / pnpm-lock.yaml で固定済み |
+| C9 | 外部画像の表示オプトイン | 2026-07-15 に外部画像はサニタイズ側で除去（CSPと多層化）。表示したいユーザー向けに「画像を表示」ボタン→Rust経由フェッチ（reqwest→data URI化）のオプトイン設計が将来課題。CSPの img-src は緩めない |
+| C10 | メール本文の sandbox iframe 隔離 | セキュリティ監査 #6 の多層防御の残り。srcdoc + sandbox 化は CSP frame-src 'none' との干渉を実機（WKWebView）で検証してから。DOMPurify バイパス時に Tauri IPC へ到達させないための第3層 |
 
 ## ⚠️ 引き継ぎ時の注意（開発運用）
 
