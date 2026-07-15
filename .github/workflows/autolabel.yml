@@ -1,0 +1,30 @@
+# PR タイトル（Conventional Commits）から .github/release-drafter.yml の
+# autolabeler 定義に従ってラベルを自動付与する。
+# release-drafter v7 で autolabeler は本体から分離されたため、専用アクションを
+# PR オープン時に実行する（マージ時の release-note.yml 実行ではラベル付けされない）。
+# フォークからの PR はトークンが read-only のためラベル付与されない（カテゴリなしで
+# ドラフトに載るだけなので許容。pull_request_target は使わない方針）。
+name: autolabel
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  autolabel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: release-drafter/release-drafter/autolabeler@4d75298e00d9e34c483e5ff8c68d0ea1c1940c1e # v7.5.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
