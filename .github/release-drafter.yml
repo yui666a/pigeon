@@ -3,6 +3,11 @@
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 
+# prerelease もバージョン解決と変更履歴の基準リリースに含める。
+# これがないと prerelease しかない期間はドラフトが v0.0.1・変更なしで生成される
+# (v0.1.1 パイプライン検証リリースで実際に発生)
+include-pre-releases: true
+
 categories:
   - title: '🚀 Features'
     labels:
