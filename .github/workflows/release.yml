@@ -11,13 +11,18 @@ on:
   release:
     types: [published]
 
+# 依存コードを実行する build に書き込み権限を渡さない。write は publish 側の job レベルでのみ付与
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build DMG (${{ matrix.target }})
     runs-on: macos-14
+    # APPLE_* secrets は release environment(デプロイタグポリシー v*)にのみ登録してある。
+    # push:main の検証ビルドは secrets を持たない ci environment で実行し、
+    # 悪性依存が main に混入しても署名 secrets に触れられないようにする
+    environment: ${{ github.event_name == 'release' && 'release' || 'ci' }}
     strategy:
       fail-fast: false
       matrix:
@@ -29,8 +34,13 @@ jobs:
     env:
       # job レベル if では secrets を参照できないため、step レベル if 用に真偽値へ変換する
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    outputs:
+      # unsigned-notice job が「未署名ビルドか」を判定するための出力
+      signed: ${{ steps.signing.outputs.signed }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
 
       # バージョンを上げ忘れたまま publish した場合にここで止める
       - name: Verify tag matches tauri.conf.json version
@@ -48,12 +58,17 @@ jobs:
         with:
           version: 10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      # cache入力を渡していないためsetup-nodeはキャッシュしない(zizmorの誤検知を抑止)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 # zizmor: ignore[cache-poisoning]
         with:
           node-version: 22
 
+      # 配布物を作るリリースビルドではキャッシュ由来のコード混入(cache poisoning)を
+      # 避けるためキャッシュを使わない。push:main の検証ビルドのみ高速化に使う
       - name: Cache node_modules
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: github.event_name != 'release'
+        # if条件でreleaseイベントではキャッシュを使わないため許容(zizmorは条件を解釈できない)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0 # zizmor: ignore[cache-poisoning]
         id: node-modules-cache
         with:
           path: node_modules
@@ -69,10 +84,18 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # if条件でreleaseイベントではキャッシュを使わないため許容(zizmorは条件を解釈できない)
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2 # zizmor: ignore[cache-poisoning]
+        if: github.event_name != 'release'
         with:
           workspaces: src-tauri
           key: ${{ matrix.target }}
+
+      # environment 移行後は他 job から secrets.APPLE_CERTIFICATE を参照できないため、
+      # 署名有無を job output として下流(unsigned-notice)へ伝搬する
+      - name: Expose signing status
+        id: signing
+        run: echo "signed=$HAS_APPLE_CERT" >> "$GITHUB_OUTPUT"
 
       # 署名なしビルド。Secrets 登録後は下の signed ステップに切り替わる。
       # 空の APPLE_* 環境変数を渡すと Tauri が署名を試みて失敗しうるため、
@@ -99,35 +122,46 @@ jobs:
           DMG=$(ls "$DMG_DIR"/*.dmg)
           mv "$DMG" "$DMG_DIR/${{ matrix.asset }}"
 
+      # push(検証)では7日で消える。release では publish job がここから取得する
       - name: Upload build artifact
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.asset }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${{ matrix.asset }}
           retention-days: 7
 
-      - name: Upload DMG to release
-        if: github.event_name == 'release'
+  # 依存コードを一切実行しない job だけに contents: write を渡す
+  publish:
+    name: Publish DMGs to release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: "Pigeon_*.dmg"
+          merge-multiple: true
+          path: dist
+
+      - name: Upload DMGs to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" \
-            "src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${{ matrix.asset }}" \
-            --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/*.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
   # Secrets 未登録のままリリースした場合、ダウンロードした人が Gatekeeper 警告で
   # 混乱しないよう Release 本文に注意書きを自動追記する
   unsigned-notice:
     name: Add unsigned notice to release notes
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'release'
-    env:
-      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    needs: [build, publish]
+    if: github.event_name == 'release' && needs.build.outputs.signed != 'true'
+    permissions:
+      contents: write
     steps:
       - name: Append unsigned notice to release body
-        if: env.HAS_APPLE_CERT != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
