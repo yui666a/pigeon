@@ -22,14 +22,16 @@ pub trait MasterKeyBackend {
     fn describe(&self) -> String;
 }
 
-/// OS キーチェーン保管（macOS Keychain / Windows Credential Manager）。
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// OS キーチェーン保管（macOS Keychain / Windows Credential Manager /
+/// Linux secret-service）。Linux は zbus ベースの async-secret-service 経由
+/// （pure Rust。デーモン不在の環境は FallbackKeyBackend でファイル保管へ落とす）。
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub struct KeychainBackend {
     service: String,
     account: String,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl KeychainBackend {
     pub fn new(service: &str, account: &str) -> Self {
         Self {
@@ -44,7 +46,7 @@ impl KeychainBackend {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 impl MasterKeyBackend for KeychainBackend {
     fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, AppError> {
         match self.entry()?.get_secret() {
@@ -112,6 +114,83 @@ impl MasterKeyBackend for FileKeyBackend {
     }
 }
 
+/// 主バックエンド（キーチェーン）が使えない環境で予備（ファイル）へ落とす
+/// 合成バックエンド。Linux の secret-service はヘッドレス環境や CI で
+/// デーモンが存在しないため、実行時フォールバックが必須（ADR 0003）。
+///
+/// - load: 主 → 予備の順。主が空で予備に鍵がある場合は主へ複製する
+///   （旧 FileKeyBackend からの移行。ファイルは可用性のため残す:
+///   デーモンが一時的に不在の起動でも同じ鍵で開けるようにする）
+/// - store: 主に保存できたらファイルは作らない。主が失敗したときのみ予備へ
+pub struct FallbackKeyBackend<P, F> {
+    primary: P,
+    fallback: F,
+}
+
+impl<P: MasterKeyBackend, F: MasterKeyBackend> FallbackKeyBackend<P, F> {
+    pub fn new(primary: P, fallback: F) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+impl<P: MasterKeyBackend, F: MasterKeyBackend> MasterKeyBackend for FallbackKeyBackend<P, F> {
+    fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, AppError> {
+        match self.primary.load() {
+            Ok(Some(key)) => Ok(Some(key)),
+            Ok(None) => match self.fallback.load()? {
+                Some(key) => {
+                    // 予備にだけ鍵がある = 旧ファイル保管からの移行。主へ複製する。
+                    // 複製失敗でも鍵自体は返す（起動を止めない）
+                    if let Err(e) = self.primary.store(&key) {
+                        eprintln!(
+                            "[warn] master key: failed to migrate key into {}: {e}",
+                            self.primary.describe()
+                        );
+                    } else {
+                        eprintln!(
+                            "[info] master key: migrated from {} to {}",
+                            self.fallback.describe(),
+                            self.primary.describe()
+                        );
+                    }
+                    Ok(Some(key))
+                }
+                None => Ok(None),
+            },
+            Err(e) => {
+                eprintln!(
+                    "[warn] master key: {} unavailable ({e}); falling back to {}",
+                    self.primary.describe(),
+                    self.fallback.describe()
+                );
+                self.fallback.load()
+            }
+        }
+    }
+
+    fn store(&self, key: &[u8]) -> Result<(), AppError> {
+        match self.primary.store(key) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!(
+                    "[warn] master key: failed to store into {} ({e}); falling back to {}",
+                    self.primary.describe(),
+                    self.fallback.describe()
+                );
+                self.fallback.store(key)
+            }
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} (fallback: {})",
+            self.primary.describe(),
+            self.fallback.describe()
+        )
+    }
+}
+
 /// 実行環境に応じた既定のマスター鍵バックエンドを返す。
 pub fn default_master_key_backend(data_dir: &Path) -> Box<dyn MasterKeyBackend> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -122,7 +201,16 @@ pub fn default_master_key_backend(data_dir: &Path) -> Box<dyn MasterKeyBackend> 
             "secure-store-master-key",
         ))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        // secret-service（GNOME Keyring 等）を優先し、デーモン不在なら
+        // 従来の master.key ファイル（0600）へフォールバックする
+        Box::new(FallbackKeyBackend::new(
+            KeychainBackend::new("com.haiso666.pigeon", "secure-store-master-key"),
+            FileKeyBackend::new(data_dir.join("master.key")),
+        ))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Box::new(FileKeyBackend::new(data_dir.join("master.key")))
     }
@@ -354,6 +442,72 @@ mod tests {
         fn describe(&self) -> String {
             "in-memory (test)".to_string()
         }
+    }
+
+    /// 常に失敗するバックエンド（secret-service デーモン不在の模擬）。
+    struct FailingBackend;
+
+    impl MasterKeyBackend for FailingBackend {
+        fn load(&self) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, AppError> {
+            Err(AppError::Stronghold("daemon unavailable".into()))
+        }
+
+        fn store(&self, _key: &[u8]) -> Result<(), AppError> {
+            Err(AppError::Stronghold("daemon unavailable".into()))
+        }
+
+        fn describe(&self) -> String {
+            "failing (test)".to_string()
+        }
+    }
+
+    // --- FallbackKeyBackend（Linux: secret-service 優先 + ファイル退避） ---
+
+    #[test]
+    fn test_fallback_prefers_primary_and_does_not_touch_fallback() {
+        let backend = FallbackKeyBackend::new(InMemoryBackend::empty(), InMemoryBackend::empty());
+        let key = resolve_master_key(&backend).unwrap();
+
+        assert_eq!(*backend.primary.load().unwrap().unwrap(), *key);
+        assert!(
+            backend.fallback.load().unwrap().is_none(),
+            "主が健在なら予備（ファイル）に鍵を作らない"
+        );
+    }
+
+    #[test]
+    fn test_fallback_migrates_existing_fallback_key_into_primary() {
+        // 旧 FileKeyBackend 運用からの移行: 予備にだけ鍵がある状態
+        let backend = FallbackKeyBackend::new(InMemoryBackend::empty(), InMemoryBackend::empty());
+        backend.fallback.store(&[9u8; MASTER_KEY_LEN]).unwrap();
+
+        let key = resolve_master_key(&backend).unwrap();
+        assert_eq!(*key, [9u8; MASTER_KEY_LEN]);
+        assert_eq!(
+            *backend.primary.load().unwrap().unwrap(),
+            [9u8; MASTER_KEY_LEN],
+            "予備の鍵が主へ複製される"
+        );
+        assert!(
+            backend.fallback.load().unwrap().is_some(),
+            "予備の鍵は可用性のため残す（デーモン不在時の起動用）"
+        );
+    }
+
+    #[test]
+    fn test_fallback_uses_fallback_when_primary_unavailable() {
+        // デーモン不在: load/store とも予備で完結し、鍵は安定して同じものを返す
+        let backend = FallbackKeyBackend::new(FailingBackend, InMemoryBackend::empty());
+        let key = resolve_master_key(&backend).unwrap();
+        let key2 = resolve_master_key(&backend).unwrap();
+        assert_eq!(*key, *key2);
+        assert_eq!(*backend.fallback.load().unwrap().unwrap(), *key);
+    }
+
+    #[test]
+    fn test_fallback_store_errors_only_if_both_fail() {
+        let backend = FallbackKeyBackend::new(FailingBackend, FailingBackend);
+        assert!(resolve_master_key(&backend).is_err());
     }
 
     // --- resolve_master_key ---

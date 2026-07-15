@@ -52,10 +52,17 @@ gcp_auth = "0.12.7"
 jsonwebtoken = "9"
 
 # SecureStore マスター鍵の OS キーチェーン保管（ADR 0003）。
-# Linux はネイティブバックエンドがビルド依存（libdbus）や非永続（keyutils）の
-# 問題を持つため keyring を使わず、FileKeyBackend（0600）で暫定保管する。
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+# Linux は secret-service（GNOME Keyring 等）へ保管する。
+# sync-secret-service は libdbus（Cライブラリ）にリンクしビルドが壊れやすく、
+# linux-native（kernel keyutils）は再起動で鍵が消えるため、どちらも使わない。
+# async-secret-service は zbus ベースの pure Rust で外部依存がない。
+# デーモン不在（ヘッドレス等）は実行時に FileKeyBackend（0600）へフォールバック
+# する（secure_store::FallbackKeyBackend）。
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["async-secret-service", "tokio", "crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3"
