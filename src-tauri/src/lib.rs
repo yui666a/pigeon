@@ -64,7 +64,7 @@ pub fn run() {
     // UseCase レジストリ（dispatch バスの能力セット）。全 driver がここを共有する
     let registry = {
         let mut reg = usecase::Registry::new();
-        usecase::cases::search::register_read_cases(&mut reg);
+        usecase::cases::register_all(&mut reg);
         reg
     };
 

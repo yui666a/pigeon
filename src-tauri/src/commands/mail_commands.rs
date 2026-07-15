@@ -200,17 +200,48 @@ pub(crate) async fn resolve_imap_credentials(
 /// バックグラウンドでベストエフォート実行する（失敗してもエラーにしない。
 /// サーバー側の状態は次回同期のフラグ再同期で収束する）。
 #[tauri::command]
-pub fn mark_read(
-    app: AppHandle,
+pub async fn mark_read(
     state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
     account_id: String,
     mail_id: String,
 ) -> Result<(), AppError> {
-    let (folder, uid) = state.with_conn(|conn| mails::mark_read(conn, &mail_id))?;
+    mark_read_service(&state, &secure_store.0, &account_id, &mail_id).await
+}
+
+/// mark_read の本体（Ctx 非依存な service 関数。use case と command が共用）。
+/// DB 更新と資格情報の解決は同期的に行い、IMAP への \Seen 反映のみ
+/// バックグラウンドでベストエフォート実行する。
+pub(crate) async fn mark_read_service(
+    state: &DbState,
+    secure_store: &crate::secure_store::SecureStore,
+    account_id: &str,
+    mail_id: &str,
+) -> Result<(), AppError> {
+    let (folder, uid) = state.with_conn(|conn| mails::mark_read(conn, mail_id))?;
+
+    if crate::commands::mail_policy::is_local_only_folder(&folder) {
+        return Ok(());
+    }
+
+    let account = state.with_conn(|conn| accounts::get_account(conn, account_id))?;
+    let (auth_type, username, credential) =
+        resolve_imap_credentials(&account, secure_store).await?;
 
     // サーバー反映は同期処理と独立の都度接続で行い、UI をブロックしない
+    let mail_id = mail_id.to_string();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = push_seen_flag(&app, &account_id, &folder, uid).await {
+        if let Err(e) = push_flag_remote(
+            &account,
+            &auth_type,
+            &username,
+            &credential,
+            &folder,
+            uid,
+            RemoteFlagOp::SetSeen,
+        )
+        .await
+        {
             eprintln!(
                 "[warn] mark_read: failed to set \\Seen on server (mail {}, uid {}): {}",
                 mail_id, uid, e
@@ -220,31 +251,44 @@ pub fn mark_read(
     Ok(())
 }
 
-/// IMAP に接続して指定メールへ \Seen フラグを付ける（mark_read のバックグラウンド処理）。
-async fn push_seen_flag(
-    app: &AppHandle,
-    account_id: &str,
+/// バックグラウンドで反映するフラグ操作の種別。
+#[derive(Clone, Copy)]
+pub(crate) enum RemoteFlagOp {
+    SetSeen,
+    RemoveSeen,
+    SetFlagged,
+    RemoveFlagged,
+}
+
+/// IMAP に接続して指定メールのフラグを更新する（既読・未読・スターの
+/// バックグラウンド処理の共通本体。AppHandle 非依存）。
+pub(crate) async fn push_flag_remote(
+    account: &Account,
+    auth_type: &AuthType,
+    username: &str,
+    credential: &str,
     folder: &str,
     uid: u32,
+    op: RemoteFlagOp,
 ) -> Result<(), AppError> {
-    use tauri::Manager;
-
-    let account = app
-        .state::<DbState>()
-        .with_conn(|conn| accounts::get_account(conn, account_id))?;
-    let secure_store = app.state::<SecureStoreState>();
-    let (auth_type, username, credential) =
-        resolve_imap_credentials(&account, &secure_store.0).await?;
-
     let mut session = imap_client::connect(
         &account.imap_host,
         account.imap_port,
-        &auth_type,
-        &username,
-        &credential,
+        auth_type,
+        username,
+        credential,
     )
     .await?;
-    let store_result = imap_client::store_seen_flag(&mut session, folder, uid).await;
+    let store_result = match op {
+        RemoteFlagOp::SetSeen => imap_client::store_seen_flag(&mut session, folder, uid).await,
+        RemoteFlagOp::RemoveSeen => imap_client::remove_seen_flag(&mut session, folder, uid).await,
+        RemoteFlagOp::SetFlagged => {
+            imap_client::store_flagged(&mut session, folder, uid, true).await
+        }
+        RemoteFlagOp::RemoveFlagged => {
+            imap_client::store_flagged(&mut session, folder, uid, false).await
+        }
+    };
     if let Err(e) = session.logout().await {
         eprintln!("[warn] IMAP logout failed: {}", e);
     }
@@ -274,7 +318,7 @@ pub(crate) use crate::mail_sync::sync_service::ImapCredentials;
 /// 成功した場合のみローカル DB から行を削除する（既読と違い楽観更新しない。
 /// 案件割り当て等は CASCADE で消える）。
 pub(crate) async fn delete_mail_inner(
-    state: &State<'_, DbState>,
+    state: &DbState,
     secure_store: &crate::secure_store::SecureStore,
     account: &Account,
     creds: &tokio::sync::OnceCell<ImapCredentials>,
@@ -326,7 +370,7 @@ pub async fn delete_mail(
 /// ローカルの folder を 'Archive' に更新する。行は残るため案件割り当て・
 /// スレッド・検索は維持される。
 pub(crate) async fn archive_mail_inner(
-    state: &State<'_, DbState>,
+    state: &DbState,
     secure_store: &crate::secure_store::SecureStore,
     account: &Account,
     archive_folder: &str,
@@ -399,7 +443,7 @@ pub fn unarchive_mail(
     state.with_conn(|conn| unarchive_mail_inner(conn, &account_id, &mail_id))
 }
 
-fn unarchive_mail_inner(
+pub(crate) fn unarchive_mail_inner(
     conn: &rusqlite::Connection,
     account_id: &str,
     mail_id: &str,
