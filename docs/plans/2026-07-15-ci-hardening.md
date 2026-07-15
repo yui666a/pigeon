@@ -10,6 +10,8 @@
 
 **Spec:** `docs/design/2026-07-15-ci-hardening-design.md`
 
+> **実行時メモ（2026-07-15）**: 本プラン作成と並行して PR #139（repo-ci-hygiene）が main にマージされ、Task 1 のうち test.yml の SHA 固定と dependabot.yml 追加は実施済みとなった。そのため Task 1 は release.yml の SHA 固定のみ実施し、SHA は test.yml と同一値に揃えた。また zizmor の指摘を受け、Task 2 に「リリースビルドでのキャッシュ不使用」「checkout の persist-credentials: false」を追加した。Task 4 の Dependabot alerts は dependabot.yml とは別の設定のため予定どおり適用した。
+
 ## Global Constraints
 
 - ブランチ: `feat/ci-hardening`(base: `feat/release-cicd`)。PR は #140 の子として Stacked PR

@@ -76,6 +76,8 @@ Tauri は以下の環境変数が設定されていると、ビルド時に code
 | `APPLE_PASSWORD` | App 用パスワード |
 | `APPLE_TEAM_ID` | チーム ID |
 
+> **2026-07-15 更新**: 上記6項目の登録先はリポジトリ secrets ではなく **`release` environment の secrets**（Settings > Environments > release）。デプロイタグポリシー `v*` により、リリースタグ上の実行でしか secrets を取得できない。詳細は `docs/design/2026-07-15-ci-hardening-design.md` を参照。
+
 - ワークフロー内で `APPLE_CERTIFICATE` Secret の有無を判定し、**登録済みの場合のみ**これらの環境変数をビルドステップに渡す。空文字の環境変数を渡すと Tauri が署名を試みて失敗する可能性があるため、未登録時は環境変数自体を設定しない
 - Secrets 未登録の間は未署名 DMG が生成される（Gatekeeper 警告あり。動作確認用）
 - 未署名ビルドの場合、Release 本文に「このビルドは未署名です」という注意書きを自動追記する
