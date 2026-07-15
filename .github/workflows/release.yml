@@ -30,7 +30,7 @@ jobs:
       # job レベル if では secrets を参照できないため、step レベル if 用に真偽値へ変換する
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # バージョンを上げ忘れたまま publish した場合にここで止める
       - name: Verify tag matches tauri.conf.json version
@@ -44,16 +44,16 @@ jobs:
           fi
 
       # latest だと pnpm のメジャー更新で挙動が変わり CI が壊れるため固定(test.yml と同じ)
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
       - name: Cache node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: node-modules-cache
         with:
           path: node_modules
@@ -63,11 +63,13 @@ jobs:
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: pnpm install --frozen-lockfile
 
-      - uses: dtolnay/rust-toolchain@stable
+      # SHA固定するとref名によるツールチェーン選択が効かないため toolchain を明示する
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
           key: ${{ matrix.target }}
@@ -99,7 +101,7 @@ jobs:
 
       - name: Upload build artifact
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.asset }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/${{ matrix.asset }}
