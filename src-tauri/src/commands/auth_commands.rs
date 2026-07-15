@@ -201,7 +201,7 @@ async fn handle_oauth_callback_inner(
 
     // Extract email from ID token
     let email = match &token_response.id_token {
-        Some(id_token) => oauth::decode_id_token_email(id_token)?,
+        Some(id_token) => oauth::decode_id_token_email(id_token, &config.client_id)?,
         None => return Err(AppError::OAuth("No ID token in response".into())),
     };
 
