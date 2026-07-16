@@ -1,6 +1,6 @@
 [package]
 name = "pigeon"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI-powered email client that auto-groups mail by project"
 authors = ["you"]
 edition = "2021"
