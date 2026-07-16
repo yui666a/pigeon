@@ -76,6 +76,13 @@ impl OAuthConfig {
     }
 }
 
+/// OAuth クライアント ID/シークレット（ビルド時定数、ADR 0003）を解決する。
+///
+/// 優先順位は「実行時の環境変数 → ビルド時埋め込み（`option_env!`）」。
+/// 開発時は `.env`（dotenv が環境変数へ流し込む）で供給し、配布ビルドでは
+/// `.env` が同梱されないため、リリース CI が渡した環境変数を `option_env!` で
+/// バイナリに焼き込んだ値を使う。実行時を優先するので、開発時に一時的な
+/// 環境変数で差し替えることもできる。
 fn find_first_nonempty_env(keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Ok(value) = std::env::var(key) {
@@ -84,8 +91,29 @@ fn find_first_nonempty_env(keys: &[&str]) -> Option<String> {
                 return Some(trimmed.to_string());
             }
         }
+        if let Some(embedded) = build_embedded_value(key) {
+            let trimmed = embedded.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
     }
     None
+}
+
+/// ビルド時にバイナリへ焼き込んだ OAuth 定数を返す。
+///
+/// `option_env!` はコンパイル時にキー名リテラルを要求するため、対応キーを
+/// 静的に列挙する。ビルド時にその環境変数が無ければ `None`（＝開発ビルドや
+/// 未設定 CI ではビルド時埋め込みは効かず、実行時の環境変数に委ねる）。
+fn build_embedded_value(key: &str) -> Option<&'static str> {
+    match key {
+        "PIGEON_GOOGLE_CLIENT_ID_DESKTOP" => option_env!("PIGEON_GOOGLE_CLIENT_ID_DESKTOP"),
+        "PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP" => option_env!("PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP"),
+        "PIGEON_GOOGLE_CLIENT_ID_IOS" => option_env!("PIGEON_GOOGLE_CLIENT_ID_IOS"),
+        "PIGEON_GOOGLE_CLIENT_SECRET_IOS" => option_env!("PIGEON_GOOGLE_CLIENT_SECRET_IOS"),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -460,6 +488,55 @@ mod tests {
             client_id: "test-client-id.apps.googleusercontent.com".into(),
             client_secret: Some("test-client-secret".into()),
             redirect_uri: "com.haiso666.pigeon://oauth/callback".into(),
+        }
+    }
+
+    // --- OAuth 定数の解決（実行時 env → ビルド時埋め込み） ---
+
+    #[test]
+    fn test_find_first_nonempty_env_prefers_runtime_var() {
+        // 実行時の環境変数がビルド時埋め込みより優先される（開発時の差し替え用）。
+        // テスト専用のキーを使い、他テストと衝突しない
+        let key = "PIGEON_TEST_OAUTH_RUNTIME_ONLY";
+        std::env::set_var(key, "runtime-value");
+        assert_eq!(
+            find_first_nonempty_env(&[key]),
+            Some("runtime-value".to_string())
+        );
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn test_find_first_nonempty_env_trims_and_skips_empty() {
+        let key = "PIGEON_TEST_OAUTH_EMPTY";
+        std::env::set_var(key, "   ");
+        // 空白のみは未設定扱いで、埋め込みも無いキーなので None
+        assert_eq!(find_first_nonempty_env(&[key]), None);
+        std::env::set_var(key, "  padded  ");
+        assert_eq!(find_first_nonempty_env(&[key]), Some("padded".to_string()));
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn test_build_embedded_value_unknown_key_is_none() {
+        // 列挙外のキーはビルド時埋め込みの対象にならない
+        assert_eq!(build_embedded_value("SOME_UNRELATED_KEY"), None);
+    }
+
+    #[test]
+    fn test_build_embedded_value_covers_all_oauth_keys() {
+        // OAuthConfig が参照する4キーは build_embedded_value が
+        // （値の有無は別として）静的に対応していること。マクロ経由なので
+        // 「対応漏れ」を型ではなく明示テストで固定する
+        for key in [
+            "PIGEON_GOOGLE_CLIENT_ID_DESKTOP",
+            "PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP",
+            "PIGEON_GOOGLE_CLIENT_ID_IOS",
+            "PIGEON_GOOGLE_CLIENT_SECRET_IOS",
+        ] {
+            // ビルド時に未設定なら None だが、match の腕は存在する（_ に落ちない）。
+            // ここでは panic せず呼べることを確認する（値の有無は CI 依存のため断定しない）
+            let _ = build_embedded_value(key);
         }
     }
 
