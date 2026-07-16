@@ -18,6 +18,7 @@ use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
 use crate::models::classifier::{
     ClassifyAction, ClassifyBatchOutcome, ClassifyResponse, ClassifyResult, MailSummary,
+    ProjectSuggestion,
 };
 
 /// 自動割り当ての閾値。これ以上の確信度の assign はユーザー確認なしで割り当てる
@@ -288,13 +289,13 @@ pub async fn classify_one(
 }
 
 /// LLM が提案する新規案件名の最大文字数。
-const PROPOSED_NAME_MAX_CHARS: usize = 100;
+pub(crate) const PROPOSED_NAME_MAX_CHARS: usize = 100;
 /// LLM が提案する新規案件説明の最大文字数。
-const PROPOSED_DESCRIPTION_MAX_CHARS: usize = 300;
+pub(crate) const PROPOSED_DESCRIPTION_MAX_CHARS: usize = 300;
 
 /// LLM 出力の案件名/説明から制御文字を除去し長さを制限する
 /// （プロンプト再注入・端末/表示汚染対策）。
-fn sanitize_proposed_text(value: &str, max_chars: usize) -> String {
+pub(crate) fn sanitize_proposed_text(value: &str, max_chars: usize) -> String {
     value
         .chars()
         .filter(|c| !c.is_control())
@@ -398,6 +399,28 @@ pub fn apply_result(
         }
         ClassifyAction::Unclassified => Ok(result),
     }
+}
+
+/// 選択された複数メールから案件名・説明を1つ提案する。
+/// LLM へ送るのは MailSummary（件名・送信者・本文冒頭1000字）のみ。
+/// 提案パースに失敗しても空フォールバックで返し、Err にしない
+/// （名前が空ならフロントでユーザーが手入力する）。
+pub async fn suggest_project_name(
+    classifier: &dyn LlmClassifier,
+    mails: &[MailSummary],
+) -> Result<ProjectSuggestion, AppError> {
+    let user_prompt = crate::classifier::prompt::build_suggest_project_prompt(mails);
+    let raw = classifier
+        .generate_text(
+            crate::classifier::prompt::SUGGEST_PROJECT_SYSTEM_PROMPT,
+            &user_prompt,
+        )
+        .await?;
+    let parsed = crate::classifier::parse::parse_project_suggestion(&raw);
+    Ok(ProjectSuggestion {
+        name: sanitize_proposed_text(&parsed.name, PROPOSED_NAME_MAX_CHARS),
+        description: sanitize_proposed_text(&parsed.description, PROPOSED_DESCRIPTION_MAX_CHARS),
+    })
 }
 
 #[cfg(test)]
@@ -1239,5 +1262,57 @@ mod tests {
 
         let begun = batches.try_begin("acc1", || Ok(vec!["m2".into()])).unwrap();
         assert_eq!(begun, Some((vec!["m2".into()], 0)));
+    }
+
+    // --- suggest_project_name: 提案生成 ---
+
+    /// 固定テキストを返す `LlmClassifier` スタブ（提案テスト用）。
+    struct TextStubLlm(String);
+
+    #[async_trait]
+    impl TextGenerator for TextStubLlm {
+        async fn generate_text(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+        ) -> Result<String, AppError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[async_trait]
+    impl LlmClassifier for TextStubLlm {
+        async fn health_check(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    fn one_mail() -> Vec<MailSummary> {
+        vec![MailSummary {
+            subject: "s".into(),
+            from_addr: "f".into(),
+            date: "d".into(),
+            body_preview: "b".into(),
+        }]
+    }
+
+    #[tokio::test]
+    async fn test_suggest_project_name_parses_and_sanitizes() {
+        let llm = TextStubLlm(r#"{"name": "在庫管理", "description": "説明"}"#.into());
+        let s = super::suggest_project_name(&llm, &one_mail())
+            .await
+            .unwrap();
+        assert_eq!(s.name, "在庫管理");
+        assert_eq!(s.description, "説明");
+    }
+
+    #[tokio::test]
+    async fn test_suggest_project_name_unparseable_returns_empty() {
+        let llm = TextStubLlm("no json".into());
+        let s = super::suggest_project_name(&llm, &one_mail())
+            .await
+            .unwrap();
+        assert_eq!(s.name, "");
+        assert_eq!(s.description, "");
     }
 }
