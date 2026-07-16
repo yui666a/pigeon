@@ -54,7 +54,7 @@ jobs:
           fi
 
       # latest だと pnpm のメジャー更新で挙動が変わり CI が壊れるため固定(test.yml と同じ)
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 10
 
