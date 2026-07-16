@@ -7,6 +7,7 @@ interface BulkActionBarProps {
   onArchive: () => void;
   onMove: (projectId: string) => void;
   onClear: () => void;
+  onCreateProject: () => void;
 }
 
 /**
@@ -21,6 +22,7 @@ export function BulkActionBar({
   onArchive,
   onMove,
   onClear,
+  onCreateProject,
 }: BulkActionBarProps) {
   if (selectedCount === 0) return null;
 
@@ -48,6 +50,12 @@ export function BulkActionBar({
             </option>
           ))}
         </select>
+        <button
+          onClick={onCreateProject}
+          className="shrink-0 whitespace-nowrap rounded border border-blue-300 px-3 py-1 text-sm text-blue-700 hover:bg-blue-100"
+        >
+          ＋ 新しい案件
+        </button>
         <button
           onClick={onArchive}
           className="rounded border px-3 py-1 text-sm hover:bg-blue-100"
