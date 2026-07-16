@@ -21,9 +21,27 @@ gh secret set APPLE_TEAM_ID --env release --body "<TEAM_ID>"
 
 ※ Claude に「secrets 登録して」と言えば対話的に進められる
 
+### 1.5. OAuth クライアント定数を release environment に登録（配布アプリで Google 認証を通すため必須）
+
+配布バイナリには `.env` が同梱されないため、OAuth クライアント ID/シークレットを
+ビルド時にバイナリへ焼き込む（Rust の `option_env!` + `build.rs` の rerun-if-env-changed、
+CI の build ステップで env 注入。実装済み）。値は `.env` の DESKTOP 2項目と同じもの。
+
+- [ ] PIGEON_GOOGLE_* 2項目を **release environment の secrets** に登録:
+
+```bash
+gh secret set PIGEON_GOOGLE_CLIENT_ID_DESKTOP --env release --body "<.env の client id>"
+gh secret set PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP --env release --body "<.env の client secret>"
+```
+
+※ 未登録のままリリースすると、配布アプリで「client id not set」になり Google 認証ができない
+※ シークレットをローテーションする場合は、GCP Console 更新 → `.env` 更新 → この secret も更新
+
 ### 2. 署名付き初回リリース
 
-- [ ] v0.1.2 を**正式リリース**（prerelease なし）として publish
+- [ ] tauri.conf.json 等の version を 0.1.2 に上げる PR をマージ
+- [ ] **ドラフトリリース v0.1.2 を publish**（release-drafter がマージごとに自動更新している。
+      Releases 画面にカテゴリ分類済みノートが下書きされている）
       → 署名・公証済み DMG が自動添付される
 - [ ] ダウンロードした app で `spctl -a -vv /Applications/Pigeon.app` が
       `accepted / source=Notarized Developer ID` になることを確認

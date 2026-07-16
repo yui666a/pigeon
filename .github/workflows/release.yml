@@ -100,9 +100,16 @@ jobs:
       # 署名なしビルド。Secrets 登録後は下の signed ステップに切り替わる。
       # 空の APPLE_* 環境変数を渡すと Tauri が署名を試みて失敗しうるため、
       # env を渡さないステップとして分離している
+      # OAuth クライアント ID/シークレットはビルド時定数（ADR 0003）。
+      # 配布バイナリに .env は同梱されないため、release environment の secrets を
+      # 環境変数で渡し、Rust 側の option_env!(...) がバイナリへ焼き込む。
+      # secret 未登録なら空文字が渡り、option_env! は None → 実行時 env に委ねる。
       - name: Build DMG (unsigned)
         if: env.HAS_APPLE_CERT != 'true'
         run: pnpm tauri build --target ${{ matrix.target }}
+        env:
+          PIGEON_GOOGLE_CLIENT_ID_DESKTOP: ${{ secrets.PIGEON_GOOGLE_CLIENT_ID_DESKTOP }}
+          PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP: ${{ secrets.PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP }}
 
       - name: Build DMG (signed & notarized)
         if: env.HAS_APPLE_CERT == 'true'
@@ -114,6 +121,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PIGEON_GOOGLE_CLIENT_ID_DESKTOP: ${{ secrets.PIGEON_GOOGLE_CLIENT_ID_DESKTOP }}
+          PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP: ${{ secrets.PIGEON_GOOGLE_CLIENT_SECRET_DESKTOP }}
 
       # releases/latest/download/ の固定URLで参照できるよう、バージョンを含まない名前に統一する
       - name: Rename DMG to stable asset name
