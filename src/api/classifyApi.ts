@@ -1,5 +1,9 @@
 import { invokeCommand } from "./client";
-import type { ClassifyBatchOutcome, ClassifyResponse } from "../types/classifier";
+import type {
+  ClassifyBatchOutcome,
+  ClassifyResponse,
+  ProjectSuggestion,
+} from "../types/classifier";
 import type { Project } from "../types/project";
 
 /** AI 分類系 Tauri commands の型付きラッパ */
@@ -35,4 +39,8 @@ export const classifyApi = {
 
   rejectClassification: (mailId: string) =>
     invokeCommand<void>("reject_classification", { mailId }),
+
+  /** 選択メール群から新規案件名・説明を LLM に提案させる */
+  suggestProjectFromMails: (mailIds: string[]) =>
+    invokeCommand<ProjectSuggestion>("suggest_project_from_mails", { mailIds }),
 };

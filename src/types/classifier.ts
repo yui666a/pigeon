@@ -31,3 +31,9 @@ export interface ClassifyProgressEvent {
    */
   assigned_mail_id: string | null;
 }
+
+/** suggest_project_from_mails の戻り値（Rust の ProjectSuggestion）。 */
+export interface ProjectSuggestion {
+  name: string;
+  description: string;
+}
