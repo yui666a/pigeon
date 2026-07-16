@@ -2,6 +2,7 @@ pub mod classifier;
 pub mod commands;
 pub mod context;
 pub mod db;
+pub mod env_config;
 pub mod error;
 pub mod mail_sync;
 pub mod models;
@@ -25,7 +26,9 @@ use std::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    dotenvy::dotenv().ok();
+    // cwd 起点で見つからなければ実行ファイル位置から上方探索する。
+    // `open` 起動の .app（cwd=/）でも開発時の .env を拾えるようにする（env_config）。
+    env_config::load_dotenv();
 
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
