@@ -70,7 +70,6 @@ pub fn remove_account(app: AppHandle, state: State<DbState>, id: String) -> Resu
 mod tests {
     use super::*;
     use crate::models::account::{AccountProvider, AuthType};
-    use sha2::Digest;
 
     fn make_account(id: &str, provider: AccountProvider) -> Account {
         Account {
@@ -94,10 +93,7 @@ mod tests {
 
     #[test]
     fn test_check_reauth_marks_google_without_token() {
-        let key = sha2::Sha256::digest(b"test-key");
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::secure_store::SecureStore::new(dir.path().join("test.stronghold"), &key)
-            .unwrap();
+        let store = crate::secure_store::SecureStore::in_memory();
 
         let mut accounts = vec![
             make_account("acc-google", AccountProvider::Google),
@@ -118,10 +114,7 @@ mod tests {
 
     #[test]
     fn test_check_reauth_does_not_mark_google_with_token() {
-        let key = sha2::Sha256::digest(b"test-key");
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::secure_store::SecureStore::new(dir.path().join("test.stronghold"), &key)
-            .unwrap();
+        let store = crate::secure_store::SecureStore::in_memory();
 
         let token_data = crate::models::account::OAuthTokenData {
             access_token: "at".to_string(),

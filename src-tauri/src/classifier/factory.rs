@@ -166,23 +166,19 @@ fn resolve_secret(
 mod tests {
     use super::*;
     use crate::db::migrations::run_migrations;
-    use sha2::Digest;
-    use tempfile::TempDir;
 
-    fn setup() -> (Connection, SecureStore, TempDir) {
+    fn setup() -> (Connection, SecureStore) {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        let dir = TempDir::new().unwrap();
-        // SecureStore/Stronghold expects a fixed-size (32-byte) key, so hash the
-        // test password the same way lib.rs derives the real key (see lib.rs).
-        let key = sha2::Sha256::digest(b"test-password-123");
-        let store = SecureStore::new(dir.path().join("test.stronghold"), &key).unwrap();
-        (conn, store, dir)
+        // InMemory SecureStore は実 Stronghold のスナップショット I/O（1 回 55 秒）を
+        // 回避する。秘密の保存/取得のみを検証するテストでは実 Stronghold は不要。
+        let store = SecureStore::in_memory();
+        (conn, store)
     }
 
     #[test]
     fn test_default_provider_is_ollama() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         // llm_provider 未設定 → ollama として構築でき、エラーにならない
         assert!(build_classifier(&conn, &store).is_ok());
     }
@@ -211,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_is_cloud_provider_configured_reads_settings() {
-        let (conn, _store, _d) = setup();
+        let (conn, _store) = setup();
         // デフォルト（ollama）はローカル
         assert!(!is_cloud_provider_configured(&conn).unwrap());
 
@@ -229,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_claude_without_key_errs_missing_api_key() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         settings::set(&conn, "llm_provider", "claude").unwrap();
         let err = match build_classifier(&conn, &store) {
             Err(e) => e,
@@ -240,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_claude_with_key_builds() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         settings::set(&conn, "llm_provider", "claude").unwrap();
         store.insert("claude_api_key", b"sk-ant-xxx").unwrap();
         assert!(build_classifier(&conn, &store).is_ok());
@@ -248,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_claude_with_empty_key_errs() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         settings::set(&conn, "llm_provider", "claude").unwrap();
         store.insert("claude_api_key", b"   ").unwrap();
         let err = match build_classifier(&conn, &store) {
@@ -260,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_openai_errs_unsupported() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         settings::set(&conn, "llm_provider", "openai").unwrap();
         let err = match build_classifier(&conn, &store) {
             Err(e) => e,
@@ -299,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_from_params_ollama_ignores_stored_settings() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         // DB に何も保存していなくても、明示パラメータだけで ollama を構築できる
         let result = build_classifier_from_params(&params("ollama", None, "", None), &store);
         assert!(result.is_ok());
@@ -307,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_from_params_claude_uses_explicit_key() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         // 保存済みキーが無くても、明示的に渡したキーで構築できる（未保存テストのケース）
         let result = build_classifier_from_params(
             &params("claude", Some("sk-ant-explicit"), "", None),
@@ -318,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_from_params_claude_falls_back_to_stored_key() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         store.insert("claude_api_key", b"sk-ant-stored").unwrap();
         // 明示キーが None なら保存済みキーを使う（登録済みキーの再テスト）
         let result = build_classifier_from_params(&params("claude", None, "", None), &store);
@@ -327,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_from_params_claude_empty_explicit_key_falls_back() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         store.insert("claude_api_key", b"sk-ant-stored").unwrap();
         // 空文字の明示キーは「未入力」扱いで保存済みキーにフォールバック
         let result = build_classifier_from_params(&params("claude", Some("   "), "", None), &store);
@@ -336,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_from_params_claude_no_key_anywhere_errs() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         // 明示キーも保存済みキーも無ければ MissingApiKey
         let err = match build_classifier_from_params(&params("claude", None, "", None), &store) {
             Err(e) => e,
@@ -347,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_from_params_openai_errs_unsupported() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         let err = match build_classifier_from_params(&params("openai", None, "", None), &store) {
             Err(e) => e,
             Ok(_) => panic!("expected UnsupportedProvider error"),
@@ -359,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_from_params_vertex_with_explicit_sa_builds() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         // 明示 SA JSON + project_id があれば構築できる
         let result = build_classifier_from_params(
             &params("claude_vertex", None, "test-project", Some(test_sa_json())),
@@ -374,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_from_params_vertex_falls_back_to_stored_sa() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         store
             .insert("vertex_sa_json", test_sa_json().as_bytes())
             .unwrap();
@@ -392,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_from_params_vertex_no_sa_errs() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         // SA が明示にも保存済みにも無ければ MissingApiKey
         let err = match build_classifier_from_params(
             &params("claude_vertex", None, "test-project", None),
@@ -406,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_from_params_vertex_missing_project_id_errs() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         // SA はあっても project_id が空なら MissingApiKey
         let err = match build_classifier_from_params(
             &params("claude_vertex", None, "", Some(test_sa_json())),
@@ -420,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_build_classifier_vertex_from_stored_settings() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         settings::set(&conn, "llm_provider", "claude_vertex").unwrap();
         settings::set(&conn, "vertex_project_id", "test-project").unwrap();
         store
@@ -433,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_from_params_gemini_with_explicit_sa_builds() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         let result = build_classifier_from_params(
             &params("gemini_vertex", None, "test-project", Some(test_sa_json())),
             &store,
@@ -447,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_from_params_gemini_no_sa_errs() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         let err = match build_classifier_from_params(
             &params("gemini_vertex", None, "test-project", None),
             &store,
@@ -460,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_from_params_gemini_missing_project_id_errs() {
-        let (_c, store, _d) = setup();
+        let (_c, store) = setup();
         let err = match build_classifier_from_params(
             &params("gemini_vertex", None, "", Some(test_sa_json())),
             &store,
@@ -473,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_build_classifier_gemini_from_stored_settings() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         settings::set(&conn, "llm_provider", "gemini_vertex").unwrap();
         settings::set(&conn, "vertex_project_id", "test-project").unwrap();
         store
