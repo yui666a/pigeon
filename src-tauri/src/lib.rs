@@ -7,6 +7,8 @@ pub mod error;
 pub mod mail_sync;
 pub mod models;
 pub mod project_context;
+pub mod search_normalize;
+pub mod search_snippet;
 pub mod secure_store;
 pub mod state;
 pub mod threading;

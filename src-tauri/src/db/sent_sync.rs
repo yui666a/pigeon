@@ -60,6 +60,10 @@ pub fn insert_sent_mail_with_next_uid(conn: &Connection, mail: &Mail) -> Result<
         params![mail.id],
         |row| row.get(0),
     )?;
+    // v17 でトリガー廃止後は明示同期が必須（db::fts 冒頭コメント参照）。
+    // uid はここで初めて採番されるが fts_mails には格納しないため、
+    // 呼び出し側の `mail`（uid 確定前の値）をそのまま渡してよい。
+    crate::db::fts::index_mail(conn, mail)?;
     Ok(uid)
 }
 
@@ -255,6 +259,35 @@ mod tests {
         assert!(
             !loaded.uid_confirmed,
             "採番 uid は推定値なので常に uid_confirmed=0"
+        );
+    }
+
+    #[test]
+    fn test_insert_sent_mail_with_next_uid_indexes_normalized_fts_row() {
+        // Task 3 の配線漏れ修正対象: insert_sent_mail_with_next_uid は生の INSERT を
+        // 行っており db::fts::index_mail を呼んでいなかったため、送信メールが
+        // fts_mails に索引されず検索不能になっていた（v17 でトリガー廃止後の退行）。
+        let conn = setup_db();
+        let mut mail = make_mail(
+            "s1",
+            "<s1@example.com>",
+            "ＳＡＴＯ確認",
+            "2026-07-13T10:00:00",
+        );
+        mail.folder = "Sent".into();
+
+        insert_sent_mail_with_next_uid(&conn, &mail).unwrap();
+
+        let subject: String = conn
+            .query_row(
+                "SELECT subject FROM fts_mails WHERE mail_id = ?1",
+                params!["s1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            subject, "sato確認",
+            "送信メールも他の書き込み経路と同様に正規化済みで fts_mails に索引されること"
         );
     }
 
