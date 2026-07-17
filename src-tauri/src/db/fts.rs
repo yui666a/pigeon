@@ -1,7 +1,8 @@
 //! fts_mails 索引の書き込みを一元管理する。
 //! v17 で SQL トリガー同期を廃止したため、mails への書き込みは必ずこの
 //! モジュール経由で FTS を同期すること。現在の呼び出し元:
-//! insert_mail / delete_mail / delete_account。
+//! insert_mail / delete_mail / delete_account /
+//! sent_sync::insert_sent_mail_with_next_uid（送信メールのローカル Sent 保存）。
 //! 索引には search_normalize::normalize_for_search を適用した正規化済み
 //! テキストを格納する（クエリ側も同じ正規化を適用して照合する）。
 
