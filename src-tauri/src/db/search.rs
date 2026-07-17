@@ -44,30 +44,30 @@ pub fn search_mails(
     query: &str,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
+    let norm_query = crate::search_normalize::normalize_for_search(query.trim());
+    if norm_query.is_empty() {
         return Ok(Vec::new());
     }
 
-    if is_fts_eligible(trimmed) {
-        search_fts(conn, account_id, trimmed, limit)
+    if is_fts_eligible(&norm_query) {
+        search_fts(conn, account_id, &norm_query, limit)
     } else {
-        search_like(conn, account_id, trimmed, limit)
+        search_like(conn, account_id, &norm_query, limit)
     }
 }
 
-/// FTS5 trigram search for queries with 3+ characters.
+/// FTS5 trigram search for queries with 3+ characters (post-normalization).
+/// `norm_query` must already be normalized via `search_normalize::normalize_for_search`.
 fn search_fts(
     conn: &Connection,
     account_id: &str,
-    query: &str,
+    norm_query: &str,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
-    let safe_query = sanitize_fts_query(query);
+    let safe_query = sanitize_fts_query(norm_query);
 
     let mut stmt = conn.prepare(&format!(
-        "SELECT {}, p.id, p.name,
-                snippet(fts_mails, 1, '<b>', '</b>', '...', 32) AS snip
+        "SELECT {}, p.id, p.name
          FROM fts_mails fts
          JOIN mails m ON fts.mail_id = m.id
          LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
@@ -84,36 +84,56 @@ fn search_fts(
             let mail = row_to_mail(row)?;
             let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
             let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
-            let snippet: String = row.get(MAIL_COLUMN_COUNT + 2)?;
-            Ok(SearchResult {
+            Ok((mail, project_id, project_name))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(results
+        .into_iter()
+        .map(|(mail, project_id, project_name)| {
+            let snippet = snippet_for_mail(&mail, norm_query);
+            SearchResult {
                 mail,
                 project_id,
                 project_name,
                 snippet,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+            }
+        })
+        .collect())
+}
 
-    Ok(results)
+/// 件名→本文の順でスニペットを試み、どちらにも無ければ件名をそのまま使う
+/// （from/to だけにマッチした場合等のフォールバック）
+fn snippet_for_mail(mail: &crate::models::mail::Mail, norm_query: &str) -> String {
+    crate::search_snippet::make_snippet(&mail.subject, norm_query)
+        .or_else(|| {
+            mail.body_text
+                .as_deref()
+                .and_then(|body| crate::search_snippet::make_snippet(body, norm_query))
+        })
+        .unwrap_or_else(|| mail.subject.clone())
 }
 
 /// LIKE fallback for queries with < 3 characters (e.g. 2-char Japanese words).
-/// No FTS5 ranking or snippet available, so we use subject as snippet.
+/// Matches against the normalized fts_mails columns so query-side normalization
+/// (hiragana/katakana folding, fullwidth/halfwidth, casing) applies here too.
+/// `norm_query` must already be normalized via `search_normalize::normalize_for_search`.
 fn search_like(
     conn: &Connection,
     account_id: &str,
-    query: &str,
+    norm_query: &str,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
-    let like_pattern = format!("%{}%", escape_like(query));
+    let like_pattern = format!("%{}%", escape_like(norm_query));
 
     let mut stmt = conn.prepare(&format!(
         "SELECT {}, p.id, p.name
-         FROM mails m
+         FROM fts_mails fts
+         JOIN mails m ON fts.mail_id = m.id
          LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
          LEFT JOIN projects p ON mpa.project_id = p.id
          WHERE m.account_id = ?1
-           AND (m.subject LIKE ?2 ESCAPE '\\' OR m.body_text LIKE ?2 ESCAPE '\\' OR m.from_addr LIKE ?2 ESCAPE '\\' OR m.to_addr LIKE ?2 ESCAPE '\\')
+           AND (fts.subject LIKE ?2 ESCAPE '\\' OR fts.body_text LIKE ?2 ESCAPE '\\' OR fts.from_addr LIKE ?2 ESCAPE '\\' OR fts.to_addr LIKE ?2 ESCAPE '\\')
          ORDER BY m.date DESC
          LIMIT ?3",
         *MAIL_COLUMNS_PREFIXED
@@ -124,16 +144,22 @@ fn search_like(
             let mail = row_to_mail(row)?;
             let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
             let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
-            Ok(SearchResult {
-                mail: mail.clone(),
-                project_id,
-                project_name,
-                snippet: mail.subject,
-            })
+            Ok((mail, project_id, project_name))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    Ok(results)
+    Ok(results
+        .into_iter()
+        .map(|(mail, project_id, project_name)| {
+            let snippet = snippet_for_mail(&mail, norm_query);
+            SearchResult {
+                mail,
+                project_id,
+                project_name,
+                snippet,
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -222,11 +248,9 @@ mod tests {
         mails::insert_mail(&conn, &m2).unwrap();
 
         // 4 chars — uses FTS trigram。索引には search_normalize::normalize_for_search
-        // 適用後のテキストが入る（ひらがな→カタカナ折り畳み）。クエリ側の正規化は
-        // 検索強化Phase1 Task4（search.rs）でまだ配線されていないため、ここでは
-        // 索引済みテキストと同じ形（"見積モリ"）で照合する。Task4完了後はクエリ側でも
-        // 正規化されるため、この期待値は生ひらがな "見積もり" に戻せる。
-        let results = search_mails(&conn, "acc1", "見積モリ", 50).unwrap();
+        // 適用後のテキストが入る（ひらがな→カタカナ折り畳み）。クエリ側も同じ正規化を
+        // 適用してから照合するため、生ひらがなのクエリでカタカナ索引にヒットする。
+        let results = search_mails(&conn, "acc1", "見積もり", 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.id, "m1");
     }
@@ -433,5 +457,59 @@ mod tests {
         assert_eq!(results.len(), 1);
         // LIKE fallback snippet should use subject as fallback
         assert!(!results[0].snippet.is_empty());
+    }
+
+    // --- normalization integration tests (Phase 1) ---
+
+    #[test]
+    fn test_search_halfwidth_query_matches_fullwidth_subject() {
+        let conn = setup_db();
+        let m = make_mail(
+            "m1",
+            "<m1@ex.com>",
+            "ＳＡＴＯ商事お見積り",
+            "2026-07-17T10:00:00",
+        );
+        mails::insert_mail(&conn, &m).unwrap();
+
+        let results = search_mails(&conn, "acc1", "sato", 50).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].mail.id, "m1");
+    }
+
+    #[test]
+    fn test_search_hiragana_query_matches_katakana_text() {
+        let conn = setup_db();
+        let mut m = make_mail("m1", "<m1@ex.com>", "端末の件", "2026-07-17T10:00:00");
+        m.body_text = Some("サトー様のプリンターについて".into());
+        mails::insert_mail(&conn, &m).unwrap();
+
+        let results = search_mails(&conn, "acc1", "さとー", 50).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_2char_normalized_like_fallback() {
+        let conn = setup_db();
+        let mut m = make_mail("m1", "<m1@ex.com>", "件名", "2026-07-17T10:00:00");
+        m.body_text = Some("ｻﾄｰの予算".into());
+        mails::insert_mail(&conn, &m).unwrap();
+
+        // 2 文字 → LIKE フォールバック側でも正規化照合される（ｻﾄ→サト）
+        let results = search_mails(&conn, "acc1", "さと", 50).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_snippet_shows_original_text() {
+        let conn = setup_db();
+        let mut m = make_mail("m1", "<m1@ex.com>", "Report", "2026-07-17T10:00:00");
+        m.body_text = Some("ＳＡＴＯ商事より見積書が届きました".into());
+        mails::insert_mail(&conn, &m).unwrap();
+
+        let results = search_mails(&conn, "acc1", "sato", 50).unwrap();
+        assert_eq!(results.len(), 1);
+        // スニペットは正規化テキストでなく原文（全角のまま）で返る
+        assert!(results[0].snippet.contains("<b>ＳＡＴＯ</b>"));
     }
 }
