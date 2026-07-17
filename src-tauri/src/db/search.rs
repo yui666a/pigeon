@@ -455,8 +455,8 @@ mod tests {
 
         let results = search_mails(&conn, "acc1", "件名", 50).unwrap();
         assert_eq!(results.len(), 1);
-        // LIKE fallback snippet should use subject as fallback
-        assert!(!results[0].snippet.is_empty());
+        // LIKE フォールバック経路でも件名マッチが <b> ハイライトされる
+        assert_eq!(results[0].snippet, "<b>件名</b>");
     }
 
     // --- normalization integration tests (Phase 1) ---
@@ -498,6 +498,8 @@ mod tests {
         // 2 文字 → LIKE フォールバック側でも正規化照合される（ｻﾄ→サト）
         let results = search_mails(&conn, "acc1", "さと", 50).unwrap();
         assert_eq!(results.len(), 1);
+        // スニペットは本文の原文表記（半角カナのまま）でハイライトされる
+        assert_eq!(results[0].snippet, "<b>ｻﾄ</b>ｰの予算");
     }
 
     #[test]
