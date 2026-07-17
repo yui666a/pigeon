@@ -83,9 +83,9 @@ Phase 3: モード切替UI + スマートビュー
 
 | 項目 | 内容 |
 |---|---|
-| 第一候補 | **Ruri v3-130m**（cl-nagoya、JMTEB Retrieval 81.89、Apache-2.0、512次元、最大8192トークン） |
-| フォールバック | **bge-m3**（Ollama 公式ライブラリ、1024次元、精度は劣るが導入確実） |
-| 前提 | Ollama v0.31.2 以降（ModernBERT 対応、2026-07-03）。Ruri v3 はコミュニティ GGUF または自前変換 GGUF を Modelfile でインポート |
+| デフォルト（スパイクで確定） | **bge-m3**（Ollama 公式ライブラリ、`ollama pull bge-m3` 一発、1024次元、最大8192トークン、プレフィックス不要、MIT） |
+| 将来差し替え候補 | **Ruri v3-130m**（cl-nagoya、JMTEB Retrieval 81.89、Apache-2.0、512次元）— 忠実な GGUF が入手可能になった時点で再評価 |
+| 前提 | Ollama v0.31.2 以降 |
 
 モデルは**設定で差し替え可能**にする。設定項目: モデル名・ベクトル次元・クエリ/文書プレフィックス（Ruri v3 は `検索クエリ: ` / `検索文書: ` の付与が必須、bge-m3 は不要）。**モデル変更時は全チャンクの再埋め込みが必要**（次元も変わるため索引テーブルを作り直す）。
 
@@ -98,6 +98,15 @@ Ruri v3-130m を採用してよいか、実装前に以下を確認する:
 3. 実データで「サトー↔佐藤」「プリンター↔端末」が上位ヒットするか
 
 いずれかが不合格なら bge-m3 をデフォルトにして先行リリースし、Ruri v3 の安定後に差し替える。
+
+**スパイク結果（2026-07-17 実施 → 不合格、bge-m3 をデフォルトに確定）:**
+
+- 環境: Ollama v0.32.1（0.31.1 から更新して検証）
+- 条件1: **合格** — コミュニティ GGUF（keisuke-miyako/ruri-v3-130m-gguf-q8_0、136MB）の import 成功、`/api/embed` が 512 次元を正常返却
+- 条件2: **不合格** — 本家 sentence-transformers との cos 類似度が実測 0.74〜0.89（5件全て閾値 0.99 未達）
+- 条件3: 未検証（条件2不合格によりスキップ）
+- 原因: モデル重みの量子化誤差ではなく **GGUF 変換のトークナイザ忠実性**。同一文字列が本家トークナイザで12トークン、GGUF 経由で17トークン（GGUF メタデータが `tokenizer.ggml.pre: default` の汎用 pre-tokenizer になっており、Ruri v3 のカスタム BPE 語彙が再現されていない）。pooling 方式（MEAN）は両者一致で原因ではないことを確認済み
+- 判定: Ruri v3 自体の能力ではなく変換品質の問題のため、「安定後差し替え」の将来パスは維持。忠実な GGUF（公式配布 or 検証済み自前変換）が得られた時点で再評価する
 
 ### チャンク化
 
@@ -124,7 +133,7 @@ CREATE TABLE mail_chunks (
 -- ベクトル索引（sqlite-vec 仮想テーブル。次元はモデル設定に依存）
 CREATE VIRTUAL TABLE vec_chunks USING vec0(
   chunk_id INTEGER PRIMARY KEY,    -- mail_chunks.id
-  embedding float[512]
+  embedding float[1024]            -- 次元はモデル設定に依存（bge-m3 = 1024）
 );
 ```
 
