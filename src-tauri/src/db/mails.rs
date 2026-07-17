@@ -109,6 +109,11 @@ pub fn get_mail_by_id(conn: &Connection, mail_id: &str) -> Result<Mail, AppError
 /// OR REPLACE にすると UNIQUE 衝突時に既存行が削除され、案件割り当てが
 /// CASCADE で消えるため、必ず IGNORE で既存行を守ること。
 pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
+    // 挿入と FTS 索引の2文を原子化する（索引失敗時に検索不能な行を残さない）
+    crate::db::tx::with_tx(conn, |conn| insert_mail_inner(conn, mail))
+}
+
+fn insert_mail_inner(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
     let affected = conn.execute(
         &format!(
             "INSERT OR IGNORE INTO mails ({})
@@ -232,12 +237,15 @@ pub fn update_flag_state(
 /// correction_log は CASCADE で消え、FTS は db::fts::remove_mail で同期する。
 /// 対象が存在しなければ MailNotFound。
 pub fn delete_mail(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
-    let affected = conn.execute("DELETE FROM mails WHERE id = ?1", params![mail_id])?;
-    if affected == 0 {
-        return Err(AppError::MailNotFound(mail_id.to_string()));
-    }
-    crate::db::fts::remove_mail(conn, mail_id)?;
-    Ok(())
+    // 行削除と FTS 索引削除の2文を原子化する
+    crate::db::tx::with_tx(conn, |conn| {
+        let affected = conn.execute("DELETE FROM mails WHERE id = ?1", params![mail_id])?;
+        if affected == 0 {
+            return Err(AppError::MailNotFound(mail_id.to_string()));
+        }
+        crate::db::fts::remove_mail(conn, mail_id)?;
+        Ok(())
+    })
 }
 
 /// メールのフォルダを更新する（アーカイブ等）。行は残るため案件割り当て・

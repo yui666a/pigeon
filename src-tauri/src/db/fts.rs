@@ -74,7 +74,7 @@ pub fn rebuild(conn: &Connection) -> Result<usize, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{accounts, mails};
+    use crate::db::{accounts, mails, sent_sync};
     use crate::test_helpers::{make_mail, setup_db};
 
     fn fts_row_count(conn: &Connection) -> i64 {
@@ -162,5 +162,64 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(fts_subject(&conn, "m1"), "abc");
         assert_eq!(fts_subject(&conn, "m2"), "カタカナ");
+    }
+
+    // --- 挿入/削除と FTS 索引の原子性 ---
+
+    fn mails_row_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM mails", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn test_insert_mail_rolls_back_when_indexing_fails() {
+        let conn = setup_db();
+        // FTS テーブルを壊して index_mail を失敗させる
+        conn.execute_batch("DROP TABLE fts_mails;").unwrap();
+        let m = make_mail("m1", "<m1@ex.com>", "Hello", "2026-07-17T10:00:00");
+        assert!(mails::insert_mail(&conn, &m).is_err());
+        assert_eq!(
+            mails_row_count(&conn),
+            0,
+            "索引失敗時はメール挿入ごとロールバックされる（FTSに無い行を作らない）"
+        );
+    }
+
+    #[test]
+    fn test_delete_mail_rolls_back_when_index_removal_fails() {
+        let conn = setup_db();
+        let m = make_mail("m1", "<m1@ex.com>", "Hello", "2026-07-17T10:00:00");
+        mails::insert_mail(&conn, &m).unwrap();
+        conn.execute_batch("DROP TABLE fts_mails;").unwrap();
+        assert!(mails::delete_mail(&conn, "m1").is_err());
+        assert_eq!(
+            mails_row_count(&conn),
+            1,
+            "索引削除失敗時は行削除ごとロールバックされる"
+        );
+    }
+
+    #[test]
+    fn test_insert_sent_mail_rolls_back_when_indexing_fails() {
+        let conn = setup_db();
+        conn.execute_batch("DROP TABLE fts_mails;").unwrap();
+        let m = make_mail("m1", "<m1@ex.com>", "Sent mail", "2026-07-17T10:00:00");
+        assert!(sent_sync::insert_sent_mail_with_next_uid(&conn, &m).is_err());
+        assert_eq!(mails_row_count(&conn), 0);
+    }
+
+    #[test]
+    fn test_insert_mail_inside_caller_transaction_still_works() {
+        // 呼び出し元が既にトランザクションを張っているケース（upsert_sent_mail 等）で
+        // ネスト BEGIN にならないことの回帰テスト
+        let conn = setup_db();
+        let tx = conn.unchecked_transaction().unwrap();
+        let m = make_mail("m1", "<m1@ex.com>", "Hello", "2026-07-17T10:00:00");
+        assert!(mails::insert_mail(&tx, &m).unwrap());
+        mails::delete_mail(&tx, "m1").unwrap();
+        assert!(mails::insert_mail(&tx, &m).unwrap());
+        tx.commit().unwrap();
+        assert_eq!(mails_row_count(&conn), 1);
+        assert_eq!(fts_row_count(&conn), 1);
     }
 }
