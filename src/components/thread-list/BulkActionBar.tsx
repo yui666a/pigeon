@@ -27,9 +27,11 @@ export function BulkActionBar({
   if (selectedCount === 0) return null;
 
   return (
-    <div className="flex items-center gap-2 border-b bg-blue-50 px-4 py-2">
-      <span className="text-sm text-blue-800">{selectedCount} 件選択中</span>
-      <div className="ml-auto flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 border-b bg-blue-50 px-4 py-2">
+      <span className="shrink-0 whitespace-nowrap text-sm text-blue-800">
+        {selectedCount} 件選択中
+      </span>
+      <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
         <select
           aria-label="案件へ移動"
           defaultValue=""
@@ -39,7 +41,7 @@ export function BulkActionBar({
               e.target.value = "";
             }
           }}
-          className="rounded border px-2 py-1 text-sm"
+          className="min-w-0 flex-1 rounded border px-2 py-1 text-sm"
         >
           <option value="" disabled>
             案件へ移動...
@@ -58,19 +60,19 @@ export function BulkActionBar({
         </button>
         <button
           onClick={onArchive}
-          className="rounded border px-3 py-1 text-sm hover:bg-blue-100"
+          className="shrink-0 whitespace-nowrap rounded border px-3 py-1 text-sm hover:bg-blue-100"
         >
           アーカイブ
         </button>
         <button
           onClick={onDelete}
-          className="rounded border px-3 py-1 text-sm text-red-600 hover:bg-red-50"
+          className="shrink-0 whitespace-nowrap rounded border px-3 py-1 text-sm text-red-600 hover:bg-red-50"
         >
           削除
         </button>
         <button
           onClick={onClear}
-          className="rounded border px-3 py-1 text-sm hover:bg-gray-100"
+          className="shrink-0 whitespace-nowrap rounded border px-3 py-1 text-sm hover:bg-gray-100"
         >
           選択解除
         </button>

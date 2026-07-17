@@ -43,28 +43,30 @@ export function AccountList({
           >
             <button
               onClick={() => onSelect(account.id)}
-              className={`flex-1 text-left text-sm ${selectedId === account.id ? "font-semibold text-blue-700" : ""}`}
+              className={`min-w-0 flex-1 text-left text-sm ${selectedId === account.id ? "font-semibold text-blue-700" : ""}`}
             >
               <div className="flex items-center gap-1.5">
                 {account.provider === "google" && (
                   <span
-                    className="text-xs font-bold text-blue-600"
+                    className="shrink-0 text-xs font-bold text-blue-600"
                     title="Google"
                   >
                     G
                   </span>
                 )}
-                <span>{account.name}</span>
+                <span className="truncate">{account.name}</span>
                 {account.needs_reauth && (
                   <span
-                    className="text-xs text-amber-500"
+                    className="shrink-0 text-xs text-amber-500"
                     title="再認証が必要です"
                   >
                     !
                   </span>
                 )}
               </div>
-              <div className="text-xs text-gray-400">{account.email}</div>
+              <div className="truncate text-xs text-gray-400">
+                {account.email}
+              </div>
             </button>
             {account.needs_reauth && onReauth && (
               <button
