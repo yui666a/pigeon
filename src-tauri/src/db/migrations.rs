@@ -170,6 +170,7 @@ const MIGRATIONS: &[Migration] = &[
     (14, migrate_v14),
     (15, migrate_v15),
     (16, migrate_v16),
+    (17, migrate_v17),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -464,6 +465,18 @@ fn migrate_v16(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v17: FTS 索引を正規化済みテキストで再構築し、SQL トリガー同期を廃止する。
+/// 正規化（search_normalize）は Rust 関数のため SQL トリガーでは適用できない。
+/// 以後の同期は db::fts 経由で行う（insert_mail / delete_mail / delete_account）。
+fn migrate_v17(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS trg_fts_mails_insert;
+         DROP TRIGGER IF EXISTS trg_fts_mails_delete;",
+    )?;
+    crate::db::fts::rebuild(conn)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,7 +521,7 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((17, migrate_broken_partial));
+        with_broken.push((18, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -521,7 +534,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            16,
+            17,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -532,17 +545,17 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((17, migrate_broken_partial));
+        with_broken.push((18, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((17, migrate_fixed));
+        with_fixed.push((18, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 17);
+        assert_eq!(schema_version(&conn), 18);
     }
 
     #[test]
@@ -550,21 +563,21 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((17, migrate_broken_partial));
+        with_broken.push((18, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v16）はコミット済みのまま
+        // 成功済みバージョン（v1〜v17）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            16,
+            17,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 16);
+        assert_eq!(schema_version(&conn), 17);
     }
 
     #[test]
@@ -677,7 +690,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -884,7 +897,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -910,7 +923,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -974,22 +987,17 @@ mod tests {
     }
 
     #[test]
-    fn test_v4_fts_trigger_on_insert() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
-             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
-            [],
-        ).unwrap();
-
-        conn.execute(
-            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
-             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'alice@example.com', 'me@example.com', 'Meeting Tomorrow', 'Let us discuss the project plan', '2026-04-13', 1)",
-            [],
-        ).unwrap();
+    fn test_v4_fts_index_mail_on_insert() {
+        // v17でトリガー同期は廃止された。索引は db::fts::index_mail 経由（insert_mail 内で
+        // 呼ばれる）で行われるため、raw INSERT ではなく insert_mail を使う。
+        let conn = crate::test_helpers::setup_db();
+        let mail = crate::test_helpers::make_mail(
+            "m1",
+            "<msg1>",
+            "Meeting Tomorrow",
+            "2026-04-13T10:00:00",
+        );
+        crate::db::mails::insert_mail(&conn, &mail).unwrap();
 
         // trigram tokenizer: substring match with 3+ chars
         let count: i32 = conn
@@ -1003,25 +1011,14 @@ mod tests {
     }
 
     #[test]
-    fn test_v4_fts_trigger_on_delete() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        run_migrations(&conn).unwrap();
-
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
-             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
-            [],
-        ).unwrap();
-
-        conn.execute(
-            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
-             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'alice@example.com', 'me@example.com', 'DeleteTarget', 'body', '2026-04-13', 1)",
-            [],
-        ).unwrap();
-
-        conn.execute("DELETE FROM mails WHERE id = 'm1'", [])
-            .unwrap();
+    fn test_v4_fts_remove_mail_on_delete() {
+        // v17でトリガー同期は廃止された。削除同期は db::fts::remove_mail 経由
+        // （delete_mail 内で呼ばれる）で行われる。
+        let conn = crate::test_helpers::setup_db();
+        let mail =
+            crate::test_helpers::make_mail("m1", "<msg1>", "DeleteTarget", "2026-04-13T10:00:00");
+        crate::db::mails::insert_mail(&conn, &mail).unwrap();
+        crate::db::mails::delete_mail(&conn, "m1").unwrap();
 
         let count: i32 = conn
             .query_row(
@@ -1035,26 +1032,18 @@ mod tests {
 
     #[test]
     fn test_v4_fts_japanese_3char_search() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        run_migrations(&conn).unwrap();
+        let conn = crate::test_helpers::setup_db();
+        let mail =
+            crate::test_helpers::make_mail("m1", "<msg1>", "見積もりの件", "2026-04-13T10:00:00");
+        crate::db::mails::insert_mail(&conn, &mail).unwrap();
 
-        conn.execute(
-            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
-             VALUES ('acc1', 'Test', 'test@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
-            [],
-        ).unwrap();
-
-        conn.execute(
-            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
-             VALUES ('m1', 'acc1', 'INBOX', '<msg1>', 'sender@example.com', 'me@example.com', '見積もりの件', '予算について相談があります', '2026-04-13', 1)",
-            [],
-        ).unwrap();
-
-        // trigram: 3+ char Japanese substring works via FTS
+        // trigram: 3+ char Japanese substring works via FTS. 索引には
+        // search_normalize::normalize_for_search 適用後のテキストが入る
+        // （ひらがな→カタカナ折り畳み）ため、クエリ側も同じ正規化を適用した
+        // 形（"見積モリ"）で照合する。
         let subject_count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM fts_mails WHERE fts_mails MATCH '\"見積もり\"'",
+                "SELECT COUNT(*) FROM fts_mails WHERE fts_mails MATCH '\"見積モリ\"'",
                 [],
                 |row| row.get(0),
             )
@@ -1087,7 +1076,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -1289,7 +1278,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -1383,7 +1372,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -1499,7 +1488,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -1624,7 +1613,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]
@@ -1644,7 +1633,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]

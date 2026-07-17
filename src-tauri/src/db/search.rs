@@ -221,8 +221,12 @@ mod tests {
         mails::insert_mail(&conn, &m1).unwrap();
         mails::insert_mail(&conn, &m2).unwrap();
 
-        // 4 chars — uses FTS trigram
-        let results = search_mails(&conn, "acc1", "見積もり", 50).unwrap();
+        // 4 chars — uses FTS trigram。索引には search_normalize::normalize_for_search
+        // 適用後のテキストが入る（ひらがな→カタカナ折り畳み）。クエリ側の正規化は
+        // 検索強化Phase1 Task4（search.rs）でまだ配線されていないため、ここでは
+        // 索引済みテキストと同じ形（"見積モリ"）で照合する。Task4完了後はクエリ側でも
+        // 正規化されるため、この期待値は生ひらがな "見積もり" に戻せる。
+        let results = search_mails(&conn, "acc1", "見積モリ", 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.id, "m1");
     }

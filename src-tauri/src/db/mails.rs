@@ -139,7 +139,11 @@ pub fn insert_mail(conn: &Connection, mail: &Mail) -> Result<bool, AppError> {
             mail.uid_confirmed,
         ],
     )?;
-    Ok(affected > 0)
+    let inserted = affected > 0;
+    if inserted {
+        crate::db::fts::index_mail(conn, mail)?;
+    }
+    Ok(inserted)
 }
 
 pub fn get_mails_by_account(
@@ -225,13 +229,14 @@ pub fn update_flag_state(
 }
 
 /// メールの行を削除する。mail_project_assignments / mail_attachments /
-/// correction_log は CASCADE で消え、FTS はトリガーで削除される。
+/// correction_log は CASCADE で消え、FTS は db::fts::remove_mail で同期する。
 /// 対象が存在しなければ MailNotFound。
 pub fn delete_mail(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
     let affected = conn.execute("DELETE FROM mails WHERE id = ?1", params![mail_id])?;
     if affected == 0 {
         return Err(AppError::MailNotFound(mail_id.to_string()));
     }
+    crate::db::fts::remove_mail(conn, mail_id)?;
     Ok(())
 }
 
