@@ -651,6 +651,7 @@ mod tests {
     // --- SecureStore: スナップショットの再オープン ---
 
     #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
     fn test_secure_store_reopen_reads_persisted_value() {
         // 再オープンで既存データが読めること。create_client を先に呼ぶ旧実装は
         // 空クライアントが既存データを覆い隠し、次の commit で消失していた
@@ -674,6 +675,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
     fn test_open_with_migration_fresh_store() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("pigeon.stronghold");
@@ -685,6 +687,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
     fn test_open_with_migration_reopens_with_current_key() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("pigeon.stronghold");
@@ -699,6 +702,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
     fn test_open_with_migration_migrates_legacy_snapshot() {
         // 旧固定鍵で作られた既存スナップショットは、新鍵で再暗号化して
         // 中身を保持したまま開ける（ユーザーの再認証を避ける）
@@ -732,6 +736,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
     fn test_open_with_migration_unreadable_snapshot_backed_up() {
         // 別デバイスの鍵で作られた（=どの手持ち鍵でも開けない）スナップショットは
         // 上書き破壊せず退避し、新規ストアで起動する（要再認証）
@@ -754,6 +759,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
     fn test_stronghold_snapshots_not_cross_decryptable() {
         // 受け入れ基準: 別鍵（=別デバイス）で生成したスナップショットは相互に復号できない
         let dir = TempDir::new().unwrap();
