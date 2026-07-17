@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::models::classifier::ClassifyResult;
+use crate::models::classifier::{ClassifyResult, ProjectSuggestion};
 
 /// 本文中の最初の '{' から最後の '}' までを取り出す。
 pub fn extract_json(content: &str) -> Option<&str> {
@@ -23,6 +23,33 @@ pub fn parse_classify_result(content: &str) -> Result<ClassifyResult, AppError> 
             json_str, e
         ))
     })
+}
+
+/// LLM 応答から ProjectSuggestion をパースする。
+/// パース不能・フィールド欠落でも Err にせず、埋められた分だけ返す
+/// （名前が空ならフォーム側でユーザーが手入力する前提）。
+pub fn parse_project_suggestion(content: &str) -> ProjectSuggestion {
+    // serde の Deserialize で欠落フィールドを空文字に落とすため、
+    // Option で受けてから unwrap_or_default する
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        name: Option<String>,
+        description: Option<String>,
+    }
+    let empty = ProjectSuggestion {
+        name: String::new(),
+        description: String::new(),
+    };
+    let Some(json_str) = extract_json(content) else {
+        return empty;
+    };
+    match serde_json::from_str::<Raw>(json_str) {
+        Ok(raw) => ProjectSuggestion {
+            name: raw.name.unwrap_or_default(),
+            description: raw.description.unwrap_or_default(),
+        },
+        Err(_) => empty,
+    }
 }
 
 #[cfg(test)]
@@ -154,5 +181,37 @@ mod tests {
         )
         .unwrap();
         assert!((r1.confidence - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_project_suggestion_valid() {
+        let content = r#"{"name": "在庫管理", "description": "在庫MTGとレポート"}"#;
+        let s = parse_project_suggestion(content);
+        assert_eq!(s.name, "在庫管理");
+        assert_eq!(s.description, "在庫MTGとレポート");
+    }
+
+    #[test]
+    fn test_parse_project_suggestion_with_surrounding_text() {
+        let content = "はい: {\"name\": \"A\", \"description\": \"B\"} 以上";
+        let s = parse_project_suggestion(content);
+        assert_eq!(s.name, "A");
+        assert_eq!(s.description, "B");
+    }
+
+    #[test]
+    fn test_parse_project_suggestion_invalid_falls_back_to_empty() {
+        // パース不能でも Err にせず空フォールバック（フォームで手入力可能）
+        let s = parse_project_suggestion("plain text no json");
+        assert_eq!(s.name, "");
+        assert_eq!(s.description, "");
+    }
+
+    #[test]
+    fn test_parse_project_suggestion_missing_description() {
+        // description 欠落時は空文字で補う（パニックしない）
+        let s = parse_project_suggestion(r#"{"name": "只名前"}"#);
+        assert_eq!(s.name, "只名前");
+        assert_eq!(s.description, "");
     }
 }

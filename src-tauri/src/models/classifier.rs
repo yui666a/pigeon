@@ -29,6 +29,14 @@ impl MailSummary {
     }
 }
 
+/// 複数メールから提案された新規案件の名前・説明。
+/// LLM 提案をフロントのフォーム初期値として返すための型。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSuggestion {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSummary {
     pub id: String,
