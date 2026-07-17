@@ -50,6 +50,7 @@ async-trait = "0.1"
 gcp_auth = "0.12.7"
 # OAuth id_token の JWKS 署名検証（RS256）
 jsonwebtoken = "9"
+unicode-normalization = "0.1"
 
 # SecureStore マスター鍵の OS キーチェーン保管（ADR 0003）。
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
