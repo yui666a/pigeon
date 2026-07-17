@@ -90,33 +90,32 @@ clearSelection() + fetchUnclassified(accountId)           ← 既存
 
 | 追加/改修 | 内容 |
 |---|---|
-| 新規 `src/components/thread-list/NewProjectFromSelectionForm.tsx` | `ProjectForm` をベースにした展開フォーム。props: `accountId`, `selectedMailIds`, `onCreated`, `onCancel`。マウント時に `suggestProjectFromMails` を呼び、取得中はローディング表示、完了したら名前・説明を初期値化。ボタンラベルは「作成（N件を移動）」。名前空欄時は作成 disabled。 |
-| 改修 `src/components/thread-list/BulkActionBar.tsx` | 「＋ 新しい案件」ボタンを追加し、押下で `onCreateProject` を発火。props に `onCreateProject: () => void` を追加。 |
-| 改修 `src/components/thread-list/UnclassifiedList.tsx` | フォーム開閉 state を持ち、`BulkActionBar` の `onCreateProject` で開く。作成成功時に選択解除・未分類再取得。 |
+| 新規 `src/components/thread-list/NewProjectFromSelectionForm.tsx` | 展開フォーム。props: `mailIds`, `onCreate(name, description?)`, `onCancel`。マウント時に `suggestProjectFromMails` を呼び、取得中はローディング表示、完了したら名前・説明を初期値化。ボタンラベルは「作成（N件を移動）」。名前空欄時は作成 disabled。**入力は名前・説明のみ**（色・案件フォルダは扱わない。§2「案件フォルダ選択の必須化はしない」に沿った簡素化）。 |
+| 新規 `src/hooks/useCreateProjectFromSelection.ts` | 作成→移動フローの共有フック。`open`/`cancel`/`submit`/`creating`/`formMailIds` を返す。`UnclassifiedList` と `ThreadList` の両方で使う（`BulkActionBar` は両リストで描画されるため、`onCreateProject` を両方に配線する必要がある）。 |
+| 改修 `src/components/thread-list/BulkActionBar.tsx` | 「＋ 新しい案件」ボタンを追加し、押下で `onCreateProject` を発火。props に `onCreateProject: () => void`（必須）を追加。 |
+| 改修 `src/components/thread-list/UnclassifiedList.tsx` / `ThreadList.tsx` | 共有フックを使い、`BulkActionBar` の `onCreateProject` で開く。作成成功時に選択解除・一覧再取得（各リストの reload）。 |
 
 **選択の固定**: フォームは開いた時点の選択 mailIds を保持する。フォーム表示中に選択が変わっても、
 作成時は開いた時点の mailIds を使う（提案と作成の対象を一致させる）。
 
 ## 5. 作成 → 移動の合成ハンドラ
 
+共有フック `useCreateProjectFromSelection` の `submit` が担う。案件を作成してから、
+開いた時点で固定した選択メールをその案件へ移動する（名前・説明のみ。色・フォルダは扱わない）:
+
 ```ts
-async function handleCreateAndMove(
-  name: string,
-  description: string | undefined,
-  color: string | undefined,
-  directoryPath: string | undefined,
-  mailIds: string[],
-) {
-  const project = await createProject(accountId, name, description, color);
-  // directoryPath があれば linkDirectory(project.id, directoryPath)
-  const result = await bulkMoveMails(mailIds, project.id);
+const submit = async (name: string, description: string | undefined) => {
+  if (!accountId) return;
+  const project = await createProject(accountId, name, description);
+  await bulkMoveMails(formMailIds, project.id); // formMailIds は open() 時に固定
   clearSelection();
-  fetchUnclassified(accountId);
-  return result;
-}
+  // フォームを閉じてから reload（呼び出し元のビュー依存: 未分類再取得 / スレッド再取得）
+  reload();
+};
 ```
 
-`ProjectForm` が持つ「案件フォルダ選択」を残す場合、作成後に既存の `linkDirectory` を呼んで紐づける。
+`reload` は呼び出し元が注入する（`UnclassifiedList` は未分類再取得、`ThreadList` は
+`reloadThreads`）。案件フォルダ連携は本機能のスコープ外（§2）。
 
 ## 6. エラーハンドリング
 

@@ -5,7 +5,7 @@ use crate::classifier::service::{self, ClassifyBatches, PendingClassifications};
 use crate::context::Ctx;
 use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
-use crate::models::classifier::{ClassifyBatchOutcome, ClassifyResponse};
+use crate::models::classifier::{ClassifyBatchOutcome, ClassifyResponse, ProjectSuggestion};
 use crate::models::mail::Mail;
 use crate::models::project::{CreateProjectRequest, Project};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
@@ -248,6 +248,31 @@ pub(crate) fn move_mail_inner(
 #[tauri::command]
 pub fn get_mails_by_project(db: State<DbState>, project_id: String) -> Result<Vec<Mail>, AppError> {
     db.with_conn(|conn| assignments::get_mails_by_project(conn, &project_id))
+}
+
+/// 選択された複数メールから、新規案件の名前・説明を LLM に提案させる。
+/// 案件作成・メール移動はフロント側で既存の create_project / bulk_move_mails
+/// を合成して行うため、この command は「提案の取得」だけを担う。
+#[tauri::command]
+pub async fn suggest_project_from_mails(
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    mail_ids: Vec<String>,
+) -> Result<ProjectSuggestion, AppError> {
+    // --- メール要約の取得（ロック内） ---
+    let summaries: Vec<crate::models::classifier::MailSummary> = db.with_conn(|conn| {
+        let mut out = Vec::with_capacity(mail_ids.len());
+        for id in &mail_ids {
+            let mail = mails::get_mail_by_id(conn, id)?;
+            out.push(crate::models::classifier::MailSummary::from_mail(&mail));
+        }
+        Ok(out)
+    })?;
+
+    // --- LLM 実行（ロック外） ---
+    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    classifier.health_check().await?;
+    service::suggest_project_name(classifier.as_ref(), &summaries).await
 }
 
 #[cfg(test)]

@@ -233,6 +233,7 @@ pub fn run() {
             commands::classify_commands::cancel_classification,
             commands::classify_commands::approve_classification,
             commands::classify_commands::approve_new_project,
+            commands::classify_commands::suggest_project_from_mails,
             commands::classify_commands::reject_classification,
             commands::classify_commands::move_mail,
             commands::classify_commands::get_unclassified_mails,

@@ -26,6 +26,7 @@ describe("BulkActionBar", () => {
         onArchive={() => {}}
         onMove={() => {}}
         onClear={() => {}}
+        onCreateProject={() => {}}
       />,
     );
     expect(container).toBeEmptyDOMElement();
@@ -40,6 +41,7 @@ describe("BulkActionBar", () => {
         onArchive={() => {}}
         onMove={() => {}}
         onClear={() => {}}
+        onCreateProject={() => {}}
       />,
     );
     expect(screen.getByText("3 件選択中")).toBeInTheDocument();
@@ -57,6 +59,7 @@ describe("BulkActionBar", () => {
         onArchive={onArchive}
         onMove={() => {}}
         onClear={onClear}
+        onCreateProject={() => {}}
       />,
     );
     fireEvent.click(screen.getByText("削除"));
@@ -77,11 +80,29 @@ describe("BulkActionBar", () => {
         onArchive={() => {}}
         onMove={onMove}
         onClear={() => {}}
+        onCreateProject={() => {}}
       />,
     );
     fireEvent.change(screen.getByLabelText("案件へ移動"), {
       target: { value: "p1" },
     });
     expect(onMove).toHaveBeenCalledWith("p1");
+  });
+
+  it("「＋ 新しい案件」ボタンで onCreateProject を発火する", () => {
+    const onCreateProject = vi.fn();
+    render(
+      <BulkActionBar
+        selectedCount={3}
+        projects={[]}
+        onDelete={() => {}}
+        onArchive={() => {}}
+        onMove={() => {}}
+        onClear={() => {}}
+        onCreateProject={onCreateProject}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /新しい案件/ }));
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
   });
 });

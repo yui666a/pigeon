@@ -1,0 +1,39 @@
+name: Nightly Stronghold Tests
+
+# 実 Stronghold を叩く受け入れテスト（スナップショット I/O が重く PR CI から
+# 外している #[ignore] 付きテスト）を日次で実行し、鍵移行・相互復号不可の
+# 回帰を担保する。手動実行も可能。
+on:
+  schedule:
+    - cron: "0 18 * * *" # 毎日 03:00 JST (18:00 UTC)
+  workflow_dispatch:
+
+# GITHUB_TOKEN は読み取りのみ（既定権限の縮小）
+permissions:
+  contents: read
+
+# サードパーティ action はフル SHA でピン留めする（test.yml と同じ値に揃える）。
+jobs:
+  stronghold-test:
+    name: Stronghold Acceptance Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libglib2.0-dev libgtk-3-dev
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      # #[ignore] 付き（実 Stronghold）テストのみを実行する
+      - name: Run ignored (Stronghold) tests
+        run: cargo test -- --ignored

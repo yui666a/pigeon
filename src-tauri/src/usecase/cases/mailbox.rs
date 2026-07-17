@@ -271,8 +271,6 @@ mod tests {
     use crate::state::{DbState, SyncLocks};
     use crate::test_helpers::{make_mail, setup_db};
 
-    const TEST_KEY: [u8; 32] = [7u8; 32];
-
     fn build_states() -> (DbState, PendingClassifications, ClassifyBatches, SyncLocks) {
         (
             DbState(Mutex::new(setup_db())),
@@ -282,11 +280,10 @@ mod tests {
         )
     }
 
-    /// テスト用の実 SecureStore（tempfile 上の Stronghold）。
-    /// local-only 分岐では参照が取れれば十分で、実体には触れない。
-    fn test_secure_store(dir: &tempfile::TempDir) -> crate::secure_store::SecureStore {
-        crate::secure_store::SecureStore::new(dir.path().join("test.stronghold"), &TEST_KEY)
-            .unwrap()
+    /// テスト用の SecureStore（InMemory）。local-only 分岐では参照が取れれば
+    /// 十分で、実体には触れない。実 Stronghold のスナップショット I/O を回避する。
+    fn test_secure_store() -> crate::secure_store::SecureStore {
+        crate::secure_store::SecureStore::in_memory()
     }
 
     fn insert_mail_in_folder(db: &DbState, id: &str, folder: &str) {
@@ -387,8 +384,7 @@ mod tests {
     async fn test_delete_sent_mail_removes_local_row() {
         let (db, pending, batches, locks) = build_states();
         insert_mail_in_folder(&db, "sent1", "Sent");
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = test_secure_store(&dir);
+        let store = test_secure_store();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks).with_secure_store(&store);
 
         DeleteMailUseCase
@@ -410,8 +406,7 @@ mod tests {
     async fn test_archive_sent_mail_updates_folder_locally() {
         let (db, pending, batches, locks) = build_states();
         insert_mail_in_folder(&db, "sent1", "Sent");
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = test_secure_store(&dir);
+        let store = test_secure_store();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks).with_secure_store(&store);
 
         ArchiveMailUseCase

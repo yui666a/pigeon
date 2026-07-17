@@ -5,9 +5,11 @@ import { useProjectStore } from "../../stores/projectStore";
 import { useSelectionStore } from "../../stores/selectionStore";
 import { ThreadItem } from "./ThreadItem";
 import { BulkActionBar } from "./BulkActionBar";
+import { NewProjectFromSelectionForm } from "./NewProjectFromSelectionForm";
 import { EmptyState } from "../common/EmptyState";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
 import { useBulkActions } from "../../hooks/useBulkActions";
+import { useCreateProjectFromSelection } from "../../hooks/useCreateProjectFromSelection";
 import { INBOX_FOLDER } from "../../constants/folders";
 
 interface ThreadListProps {
@@ -67,6 +69,12 @@ export function ThreadList({ viewMode }: ThreadListProps) {
       reload: reloadThreads,
     });
 
+  const createFromSelection = useCreateProjectFromSelection({
+    accountId: selectedAccountId,
+    threads,
+    reload: reloadThreads,
+  });
+
   if (!selectedAccountId) {
     return <EmptyState message="アカウントを選択してください" />;
   }
@@ -100,7 +108,17 @@ export function ThreadList({ viewMode }: ThreadListProps) {
         onArchive={() => void handleBulkArchive()}
         onMove={(projectId) => void handleBulkMove(projectId)}
         onClear={clearSelection}
+        onCreateProject={createFromSelection.open}
       />
+      {createFromSelection.creating && (
+        <NewProjectFromSelectionForm
+          mailIds={createFromSelection.formMailIds}
+          onCreate={(name, description) =>
+            void createFromSelection.submit(name, description)
+          }
+          onCancel={createFromSelection.cancel}
+        />
+      )}
       <div className="flex-1 overflow-y-auto">
         {visible.map((thread) => (
           <ThreadItem

@@ -7,9 +7,11 @@ import { useSelectionStore } from "../../stores/selectionStore";
 import { ClassifyButton } from "./ClassifyButton";
 import { ThreadDragItem } from "./ThreadDragItem";
 import { BulkActionBar } from "./BulkActionBar";
+import { NewProjectFromSelectionForm } from "./NewProjectFromSelectionForm";
 import { NewProjectProposal } from "../common/NewProjectProposal";
 import { useDisplayLimit } from "../../hooks/useDisplayLimit";
 import { useBulkActions } from "../../hooks/useBulkActions";
+import { useCreateProjectFromSelection } from "../../hooks/useCreateProjectFromSelection";
 import type { Thread } from "../../types/mail";
 
 export function UnclassifiedList() {
@@ -42,6 +44,14 @@ export function UnclassifiedList() {
         if (selectedAccountId) void fetchUnclassified(selectedAccountId);
       },
     });
+
+  const createFromSelection = useCreateProjectFromSelection({
+    accountId: selectedAccountId,
+    threads: unclassifiedThreads,
+    reload: () => {
+      if (selectedAccountId) void fetchUnclassified(selectedAccountId);
+    },
+  });
 
   useEffect(() => {
     if (selectedAccountId) {
@@ -107,6 +117,17 @@ export function UnclassifiedList() {
             onArchive={() => void handleBulkArchive()}
             onMove={(projectId) => void handleBulkMove(projectId)}
             onClear={clearSelection}
+            onCreateProject={createFromSelection.open}
+          />
+        )}
+
+        {createFromSelection.creating && (
+          <NewProjectFromSelectionForm
+            mailIds={createFromSelection.formMailIds}
+            onCreate={(name, description) =>
+              void createFromSelection.submit(name, description)
+            }
+            onCancel={createFromSelection.cancel}
           />
         )}
       </div>
