@@ -175,23 +175,19 @@ pub async fn test_llm_connection(
 mod tests {
     use super::*;
     use crate::db::migrations::run_migrations;
-    use sha2::Digest;
-    use tempfile::TempDir;
 
-    fn setup() -> (Connection, SecureStore, TempDir) {
+    fn setup() -> (Connection, SecureStore) {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
-        let dir = TempDir::new().unwrap();
-        // SecureStore/Stronghold expects a fixed-size (32-byte) key, so hash the
-        // test password the same way lib.rs derives the real key (see lib.rs).
-        let key = sha2::Sha256::digest(b"pw-123456");
-        let store = SecureStore::new(dir.path().join("t.stronghold"), &key).unwrap();
-        (conn, store, dir)
+        // InMemory SecureStore は実 Stronghold のスナップショット I/O（1 回 55 秒）を
+        // 回避する。秘密の保存/取得のみを検証するテストでは実 Stronghold は不要。
+        let store = SecureStore::in_memory();
+        (conn, store)
     }
 
     #[test]
     fn test_defaults_when_unset() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         let s = load_llm_settings(&conn, &store).unwrap();
         assert_eq!(s.provider, "ollama");
         assert_eq!(s.claude_model, "claude-haiku-4-5");
@@ -200,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_defaults_include_vertex() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         let s = load_llm_settings(&conn, &store).unwrap();
         assert_eq!(s.vertex_location, "global");
         assert_eq!(s.vertex_model, "claude-haiku-4-5@20251001");
@@ -211,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_store_then_load_roundtrip() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         store_llm_settings(
             &conn,
             &store,
@@ -235,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_empty_key_preserves_existing() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         store.insert(CLAUDE_API_KEY, b"existing-key").unwrap();
         store_llm_settings(
             &conn,
@@ -259,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_vertex_store_then_load_roundtrip() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         store_llm_settings(
             &conn,
             &store,
@@ -284,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_empty_sa_json_preserves_existing() {
-        let (conn, store, _d) = setup();
+        let (conn, store) = setup();
         store.insert(VERTEX_SA_JSON, b"existing-sa").unwrap();
         store_llm_settings(
             &conn,

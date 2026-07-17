@@ -126,8 +126,6 @@ mod tests {
     use crate::state::{DbState, SyncLocks};
     use crate::test_helpers::{make_mail, setup_db};
 
-    const TEST_KEY: [u8; 32] = [7u8; 32];
-
     fn build_states() -> (DbState, PendingClassifications, ClassifyBatches, SyncLocks) {
         (
             DbState(Mutex::new(setup_db())),
@@ -137,11 +135,10 @@ mod tests {
         )
     }
 
-    /// テスト用の実 SecureStore（tempfile 上の Stronghold）。
-    /// local-only 分岐では参照が取れれば十分で、実体には触れない。
-    fn test_secure_store(dir: &tempfile::TempDir) -> crate::secure_store::SecureStore {
-        crate::secure_store::SecureStore::new(dir.path().join("test.stronghold"), &TEST_KEY)
-            .unwrap()
+    /// テスト用の SecureStore（InMemory）。local-only 分岐では参照が取れれば
+    /// 十分で、実体には触れない。実 Stronghold のスナップショット I/O を回避する。
+    fn test_secure_store() -> crate::secure_store::SecureStore {
+        crate::secure_store::SecureStore::in_memory()
     }
 
     /// Sent（ローカルのみ反映のフォルダ）のメールを入れる。IMAP 接続に進まないため
@@ -193,8 +190,7 @@ mod tests {
     async fn test_set_flagged_updates_db_for_local_only_folder() {
         let (db, pending, batches, locks) = build_states();
         insert_sent_mail(&db, "m1");
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = test_secure_store(&dir);
+        let store = test_secure_store();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks).with_secure_store(&store);
 
         SetFlaggedUseCase
@@ -219,8 +215,7 @@ mod tests {
     async fn test_mark_read_and_unread_roundtrip_for_local_only_folder() {
         let (db, pending, batches, locks) = build_states();
         insert_sent_mail(&db, "m1");
-        let dir = tempfile::TempDir::new().unwrap();
-        let store = test_secure_store(&dir);
+        let store = test_secure_store();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks).with_secure_store(&store);
 
         MarkReadUseCase
