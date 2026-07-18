@@ -48,17 +48,15 @@ pub fn insert_saved_search(
 
 pub fn rename_saved_search(conn: &Connection, id: i64, name: &str) -> Result<(), AppError> {
     // projects.rs の archive_project / delete_project と同じく、対象 0 行を
-    // エラーで返す（あちらは専用の ProjectNotFound を使う）。saved_searches には
-    // 専用の NotFound 変種がなく、error.rs に新変種は足さない方針のため、既存の
-    // 汎用変種 Validation に該当 ID を含めたメッセージを載せて通知する。
+    // エラーで返す。あちらは専用の ProjectNotFound を使う流儀なので、saved_searches
+    // でも同じく専用の SavedSearchNotFound を返す（Validation は入力不正の意味に
+    // なり未存在の表現として不適切なため）。
     let affected = conn.execute(
         "UPDATE saved_searches SET name = ?1 WHERE id = ?2",
         params![name, id],
     )?;
     if affected == 0 {
-        return Err(AppError::Validation(format!(
-            "Saved search not found: {id}"
-        )));
+        return Err(AppError::SavedSearchNotFound(format!("{id}")));
     }
     Ok(())
 }
@@ -66,9 +64,7 @@ pub fn rename_saved_search(conn: &Connection, id: i64, name: &str) -> Result<(),
 pub fn delete_saved_search(conn: &Connection, id: i64) -> Result<(), AppError> {
     let affected = conn.execute("DELETE FROM saved_searches WHERE id = ?1", params![id])?;
     if affected == 0 {
-        return Err(AppError::Validation(format!(
-            "Saved search not found: {id}"
-        )));
+        return Err(AppError::SavedSearchNotFound(format!("{id}")));
     }
     Ok(())
 }
@@ -114,7 +110,8 @@ mod tests {
     #[test]
     fn test_rename_missing_is_error() {
         let conn = setup_db();
-        assert!(rename_saved_search(&conn, 9999, "x").is_err());
+        let err = rename_saved_search(&conn, 9999, "x").unwrap_err();
+        assert!(matches!(err, AppError::SavedSearchNotFound(_)));
     }
 
     #[test]
@@ -123,9 +120,10 @@ mod tests {
         let s = insert_saved_search(&conn, &req("消す", "fulltext")).unwrap();
         delete_saved_search(&conn, s.id).unwrap();
         assert!(list_saved_searches(&conn).unwrap().is_empty());
+        let err = delete_saved_search(&conn, s.id).unwrap_err();
         assert!(
-            delete_saved_search(&conn, s.id).is_err(),
-            "二重削除はエラー"
+            matches!(err, AppError::SavedSearchNotFound(_)),
+            "二重削除は SavedSearchNotFound"
         );
     }
 

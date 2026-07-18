@@ -45,6 +45,9 @@ pub enum AppError {
     #[error("Project not found: {0}")]
     ProjectNotFound(String),
 
+    #[error("Saved search not found: {0}")]
+    SavedSearchNotFound(String),
+
     #[error("Directory not found: {0}")]
     DirectoryNotFound(String),
 
