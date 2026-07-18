@@ -207,6 +207,7 @@ ALTER TABLE correction_log_new RENAME TO correction_log;
 - **戻り値の型**: `Mail` は変更しない（検索の `SearchResult` ラッパーと同じ流儀）。`Thread` に `projects: Vec<ThreadProjectRef { project_id, display_path }>` を追加し、メンバーメールの**直接所属案件の集合**を返す。`display_path` は**選択ノードからの相対パス**（階層内では同名案件が共存し得るため単一 name にしない）。全メールが選択ノード直属なら空配列（UI はラベル省略）
 - **データフロー**: `threading.rs::build_threads` は `Mail` のみから組み立てるため（`Mail` は案件情報を持たない）、`get_threads_by_project` 側で `mail_id → project_id` の対応表を assignments から取得し、`build_threads` の**外側で** `Thread.projects` を付与する
 - **未読バッジ**: `get_unread_counts` は現行通り「ノード直接所属の未読数」を返し、**集約はフロントのツリー構築時にボトムアップ加算**（ノード数ぶんの再帰CTE実行を避ける）
+- **アーカイブ済み子孫の扱い**: 集約表示は**アーカイブ済みサブツリーのメールを含めない**。アーカイブ済み案件のメールは表示されないという従来挙動と一貫させ、サイドバーに存在しないノードへのチップ表示という不整合を避ける（実装レビューでの決定事項）
 
 ### 5.2 フロントエンドの状態整合契約
 
