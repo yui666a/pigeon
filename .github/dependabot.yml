@@ -7,14 +7,77 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
+    groups:
+      npm-dependencies:
+        applies-to: "version-updates"
+        dependency-type: "production"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      npm-dev-dependencies:
+        applies-to: "version-updates"
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "cargo"
     directory: "/src-tauri"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
+    groups:
+      cargo-dependencies:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        # 0.x は minor 更新でも破壊的変更を含み得るため、
+        # DB・メール・認証・暗号などの重要依存は個別 PR にする。
+        exclude-patterns:
+          - "rusqlite"
+          - "sqlite-vec"
+          - "async-imap"
+          - "async-native-tls"
+          - "lettre"
+          - "mail-parser"
+          - "reqwest"
+          - "gcp_auth"
+          - "sha2"
+          - "rand"
+          - "zerocopy"
+          - "tokio-util"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
+    groups:
+      github-actions-dependencies:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
