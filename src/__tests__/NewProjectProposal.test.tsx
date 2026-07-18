@@ -1,6 +1,13 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { NewProjectProposal } from "../components/common/NewProjectProposal";
+import type { Project } from "../types/project";
+
+const p = (id: string, name: string, parent: string | null): Project => ({
+  id, account_id: "acc1", name, description: null, color: null,
+  is_archived: false, parent_id: parent,
+  created_at: "2026-07-18", updated_at: "2026-07-18",
+});
 
 describe("NewProjectProposal", () => {
   const defaultProps = {
@@ -8,6 +15,7 @@ describe("NewProjectProposal", () => {
     suggestedName: "新規案件",
     suggestedDescription: "AIが提案した説明",
     reason: "既存プロジェクトに一致なし",
+    projects: [] as Project[],
     onApprove: vi.fn(),
     onReject: vi.fn(),
   };
@@ -25,7 +33,7 @@ describe("NewProjectProposal", () => {
     const nameInput = screen.getByDisplayValue("新規案件");
     fireEvent.change(nameInput, { target: { value: "修正された案件名" } });
     fireEvent.click(screen.getByText("案件を作成"));
-    expect(onApprove).toHaveBeenCalledWith("mail-1", "修正された案件名", "AIが提案した説明");
+    expect(onApprove).toHaveBeenCalledWith("mail-1", "修正された案件名", "AIが提案した説明", undefined);
   });
 
   it("calls onReject with mailId", () => {
@@ -55,6 +63,74 @@ describe("NewProjectProposal", () => {
     const onApprove = vi.fn();
     render(<NewProjectProposal {...defaultProps} suggestedDescription={undefined} onApprove={onApprove} />);
     fireEvent.click(screen.getByText("案件を作成"));
-    expect(onApprove).toHaveBeenCalledWith("mail-1", "新規案件", undefined);
+    expect(onApprove).toHaveBeenCalledWith("mail-1", "新規案件", undefined, undefined);
+  });
+
+  it("does not show a target path when no parent is proposed", () => {
+    render(<NewProjectProposal {...defaultProps} />);
+    expect(screen.queryByText(/^作成先:/)).not.toBeInTheDocument();
+  });
+
+  it("new project proposal shows target path when parent is proposed", () => {
+    const projects = [p("tour", "ツアー", null)];
+    render(
+      <NewProjectProposal
+        {...defaultProps}
+        parentProjectId="tour"
+        projects={projects}
+      />,
+    );
+    expect(screen.getByText("作成先: ツアー")).toBeInTheDocument();
+  });
+
+  it("shows a parent selection dropdown including root, defaulting to the proposed parent", () => {
+    const projects = [p("tour", "ツアー", null), p("other", "別案件", null)];
+    render(
+      <NewProjectProposal
+        {...defaultProps}
+        parentProjectId="tour"
+        projects={projects}
+      />,
+    );
+    const select = screen.getByLabelText("作成先の親案件");
+    expect(select).toHaveValue("tour");
+    expect(screen.getByRole("option", { name: "ルート（親なし）" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "別案件" })).toBeInTheDocument();
+  });
+
+  it("changing the parent dropdown updates the displayed target path and passed parentProjectId", () => {
+    const onApprove = vi.fn();
+    const projects = [p("tour", "ツアー", null), p("other", "別案件", null)];
+    render(
+      <NewProjectProposal
+        {...defaultProps}
+        parentProjectId="tour"
+        projects={projects}
+        onApprove={onApprove}
+      />,
+    );
+    const select = screen.getByLabelText("作成先の親案件");
+    fireEvent.change(select, { target: { value: "other" } });
+    expect(screen.getByText("作成先: 別案件")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("案件を作成"));
+    expect(onApprove).toHaveBeenCalledWith("mail-1", "新規案件", "AIが提案した説明", "other");
+  });
+
+  it("selecting root in the dropdown passes undefined as parentProjectId", () => {
+    const onApprove = vi.fn();
+    const projects = [p("tour", "ツアー", null)];
+    render(
+      <NewProjectProposal
+        {...defaultProps}
+        parentProjectId="tour"
+        projects={projects}
+        onApprove={onApprove}
+      />,
+    );
+    const select = screen.getByLabelText("作成先の親案件");
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(screen.getByText("案件を作成"));
+    expect(onApprove).toHaveBeenCalledWith("mail-1", "新規案件", "AIが提案した説明", undefined);
   });
 });

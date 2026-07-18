@@ -4,6 +4,8 @@ export interface ClassifyResponse {
   project_id?: string;
   project_name?: string;
   description?: string;
+  /** action="create" のとき、既存案件配下に子案件として作成する提案なら設定される */
+  parent_project_id?: string;
   confidence: number;
   reason: string;
 }

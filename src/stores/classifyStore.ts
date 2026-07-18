@@ -32,6 +32,7 @@ interface ClassifyState {
     mailId: string,
     projectName: string,
     description?: string,
+    parentProjectId?: string,
   ) => Promise<void>;
   rejectClassification: (mailId: string) => Promise<void>;
   /** classify-progress イベントの購読を張る（ClassifyButton がマウント時に呼ぶ） */
@@ -112,12 +113,13 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
       });
     },
 
-    approveNewProject: async (mailId, projectName, description) => {
+    approveNewProject: async (mailId, projectName, description, parentProjectId) => {
       try {
         const project = await classifyApi.approveNewProject(
           mailId,
           projectName,
           description,
+          parentProjectId,
         );
         useProjectStore.getState().addProject(project);
       } catch (e) {
