@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockSetSelectedIndex = vi.fn();
 const mockSearchStore = {
   query: "",
+  mode: "fulltext" as import("../types/search").SearchMode,
   results: [] as import("../types/mail").SearchResult[],
   searching: false,
   selectedIndex: -1,
@@ -13,6 +14,15 @@ const mockSearchStore = {
 vi.mock("../stores/searchStore", () => ({
   useSearchStore: (selector: (s: typeof mockSearchStore) => unknown) =>
     selector(mockSearchStore),
+}));
+
+// Mock savedSearchStore — track calls to create
+const mockCreateSaved = vi.fn();
+vi.mock("../stores/savedSearchStore", () => ({
+  useSavedSearchStore: (selector: (s: Record<string, unknown>) => unknown) =>
+    selector({
+      create: mockCreateSaved,
+    }),
 }));
 
 // Mock mailStore — track calls to selectThread and selectMail
@@ -58,6 +68,7 @@ function makeMail(overrides: Partial<Mail> = {}): Mail {
 describe("SearchResults", () => {
   beforeEach(() => {
     mockSearchStore.query = "";
+    mockSearchStore.mode = "fulltext";
     mockSearchStore.results = [];
     mockSearchStore.searching = false;
     mockSearchStore.selectedIndex = -1;
@@ -220,5 +231,96 @@ describe("SearchResults", () => {
     const threadCallOrder = mockSelectThread.mock.invocationCallOrder[0];
     const mailCallOrder = mockSelectMail.mock.invocationCallOrder[0];
     expect(threadCallOrder).toBeLessThan(mailCallOrder);
+  });
+
+  it("この検索を保存 で名前を付けて保存できる", async () => {
+    const result: SearchResult = {
+      mail: makeMail({ subject: "見積もりの件" }),
+      project_id: "proj1",
+      project_name: "案件A",
+      snippet: "...",
+    };
+    mockSearchStore.query = "灯体";
+    mockSearchStore.mode = "semantic";
+    mockSearchStore.results = [result];
+    render(<SearchResults />);
+    fireEvent.click(screen.getByRole("button", { name: "この検索を保存" }));
+    fireEvent.change(screen.getByPlaceholderText("ビュー名"), {
+      target: { value: "照明" },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText("ビュー名"), { key: "Enter" });
+    expect(mockCreateSaved).toHaveBeenCalledWith("照明", "灯体", "semantic");
+  });
+
+  it("Escape で保存入力を取り消す", () => {
+    const result: SearchResult = {
+      mail: makeMail({ subject: "見積もりの件" }),
+      project_id: "proj1",
+      project_name: "案件A",
+      snippet: "...",
+    };
+    mockSearchStore.query = "灯体";
+    mockSearchStore.results = [result];
+    render(<SearchResults />);
+    fireEvent.click(screen.getByRole("button", { name: "この検索を保存" }));
+    const input = screen.getByPlaceholderText("ビュー名");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByPlaceholderText("ビュー名")).not.toBeInTheDocument();
+    expect(mockCreateSaved).not.toHaveBeenCalled();
+  });
+
+  it("日付順トグルで mail.date 降順に並び替える", () => {
+    const results: SearchResult[] = [
+      {
+        mail: makeMail({ id: "m1", subject: "Older", date: "2026-01-01T00:00:00" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+      {
+        mail: makeMail({ id: "m2", subject: "Newer", date: "2026-12-31T00:00:00" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+    ];
+    mockSearchStore.query = "x";
+    mockSearchStore.results = results;
+    render(<SearchResults />);
+
+    // 関連度順（初期）: バックエンド到着順のまま
+    let rows = screen.getAllByText(/Older|Newer/);
+    expect(rows[0].textContent).toBe("Older");
+
+    fireEvent.click(screen.getByRole("button", { name: "日付順" }));
+    rows = screen.getAllByText(/Older|Newer/);
+    expect(rows[0].textContent).toBe("Newer");
+  });
+
+  it("日付順のとき selectedIndex はソート後の配列を指す", () => {
+    const results: SearchResult[] = [
+      {
+        mail: makeMail({ id: "m1", subject: "Older", date: "2026-01-01T00:00:00" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+      {
+        mail: makeMail({ id: "m2", subject: "Newer", date: "2026-12-31T00:00:00" }),
+        project_id: null,
+        project_name: null,
+        snippet: "...",
+      },
+    ];
+    mockSearchStore.query = "x";
+    mockSearchStore.results = results;
+    mockSearchStore.selectedIndex = 0;
+    render(<SearchResults />);
+
+    fireEvent.click(screen.getByRole("button", { name: "日付順" }));
+    // ソート後 index 0 は Newer(m2)。右ペインには m2 が反映されるべき
+    const calls = mockSelectMail.mock.calls;
+    const lastMailCall = calls[calls.length - 1];
+    expect(lastMailCall?.[0]).toEqual(results[1].mail);
   });
 });
