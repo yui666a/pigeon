@@ -250,6 +250,43 @@ pub fn delete_project(conn: &Connection, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 加算的継承の有効コンテキスト。ルート→自ノード順で、各エントリは定義元
+/// ノードに紐づく（クラウド送信可否も定義元ノードのルールで評価される——
+/// ルール同士の合成はしない。設計書 §7）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EffectiveContextEntry {
+    pub project_id: String,
+    pub project_name: String,
+    pub is_self: bool,
+    pub directory_path: Option<String>,
+    pub context: Option<String>,
+}
+
+pub fn build_effective_context(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<EffectiveContextEntry>, AppError> {
+    let path = ancestor_path(conn, project_id)?;
+    if path.is_empty() {
+        return Err(AppError::ProjectNotFound(project_id.to_string()));
+    }
+    let mut entries = Vec::with_capacity(path.len());
+    for node in &path {
+        let context = crate::db::project_contexts::get_context(conn, &node.id)?
+            .and_then(|c| c.cached_context);
+        let directory_path =
+            crate::db::directories::get_directory_by_project(conn, &node.id)?.map(|d| d.path);
+        entries.push(EffectiveContextEntry {
+            project_id: node.id.clone(),
+            project_name: node.name.clone(),
+            is_self: node.id == project_id,
+            directory_path,
+            context,
+        });
+    }
+    Ok(entries)
+}
+
 /// サブツリー配下の所属メール数（削除確認ダイアログ用）。
 pub fn count_subtree_mails(conn: &Connection, id: &str) -> Result<u32, AppError> {
     let count: u32 = conn.query_row(
@@ -835,6 +872,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active, 0, "親だけ消えて子が宙に浮く状態を作らない");
+    }
+
+    #[test]
+    fn test_build_effective_context_accumulates_ancestors() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "leaf", "音響", Some("root"));
+        crate::db::project_contexts::upsert_generated(
+            &conn,
+            "root",
+            "ツアー全体の共有情報",
+            "h",
+            "i",
+        )
+        .unwrap();
+        crate::db::project_contexts::upsert_generated(&conn, "leaf", "音響の機材リスト", "h", "i")
+            .unwrap();
+
+        let entries = build_effective_context(&conn, "leaf").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].project_name, "ツアー");
+        assert!(!entries[0].is_self);
+        assert_eq!(entries[0].context.as_deref(), Some("ツアー全体の共有情報"));
+        assert_eq!(entries[1].project_name, "音響");
+        assert!(entries[1].is_self);
+    }
+
+    #[test]
+    fn test_build_effective_context_includes_directory_path_and_missing_context() {
+        let mut conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "leaf", "音響", Some("root"));
+        crate::db::directories::link_directory(&mut conn, "root", "/tmp/tour").unwrap();
+
+        let entries = build_effective_context(&conn, "leaf").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].directory_path.as_deref(), Some("/tmp/tour"));
+        assert!(entries[0].context.is_none());
+        assert!(entries[1].directory_path.is_none());
+    }
+
+    #[test]
+    fn test_build_effective_context_nonexistent_project() {
+        let conn = setup_db();
+        let result = build_effective_context(&conn, "nonexistent");
+        assert!(matches!(result, Err(AppError::ProjectNotFound(_))));
     }
 
     #[test]

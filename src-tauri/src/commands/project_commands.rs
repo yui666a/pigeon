@@ -66,6 +66,17 @@ pub fn merge_projects(
     state.with_conn(|conn| projects::merge_projects(conn, &source_id, &target_id))
 }
 
+/// 案件の祖先パス（ルート→自ノード）に沿った加算的な有効コンテキストを返す。
+/// 各エントリの定義元ノードが明示されるので、クラウド送信可否は呼び出し側が
+/// 定義元ノードの `allow_cloud_context` に従って個別判定する（ルールの合成はしない）。
+#[tauri::command]
+pub fn get_effective_context(
+    state: State<DbState>,
+    project_id: String,
+) -> Result<Vec<projects::EffectiveContextEntry>, AppError> {
+    state.with_conn(|conn| projects::build_effective_context(conn, &project_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

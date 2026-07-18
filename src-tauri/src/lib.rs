@@ -239,6 +239,7 @@ pub fn run() {
             commands::project_commands::archive_project,
             commands::project_commands::delete_project,
             commands::project_commands::merge_projects,
+            commands::project_commands::get_effective_context,
             commands::saved_search_commands::list_saved_searches,
             commands::saved_search_commands::create_saved_search,
             commands::saved_search_commands::rename_saved_search,
