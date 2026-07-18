@@ -265,19 +265,40 @@ pub fn count_subtree_mails(conn: &Connection, id: &str) -> Result<u32, AppError>
     Ok(count)
 }
 
-/// Merge source project into target project within a transaction.
-/// All mails from source are reassigned to target, correction_log entries are recorded,
-/// and the source project is deleted.
+/// source を target へ統合する。
+/// 検証: self / 異アカウント / target が source の子孫 / どちらかがアーカイブ済み → 拒否。
+/// 処理順（1トランザクション）: (1) source 直属メールを target へ reassign（パス
+/// スナップショット付き訂正ログ）→ (2) source の子を target の子へ reparent →
+/// (3) source を削除（子は移動済みなので単発 DELETE で CASCADE 再帰なし）。
 pub fn merge_projects(
-    conn: &mut Connection,
+    conn: &Connection,
     source_id: &str,
     target_id: &str,
 ) -> Result<u32, AppError> {
-    // Validate both projects exist before starting
-    let _source = get_project(conn, source_id)?;
-    let _target = get_project(conn, target_id)?;
+    if source_id == target_id {
+        return Err(AppError::Validation(
+            "同じ案件同士はマージできません".into(),
+        ));
+    }
+    let source = get_project(conn, source_id)?;
+    let target = get_project(conn, target_id)?;
+    if source.account_id != target.account_id {
+        return Err(AppError::Validation(
+            "異なるアカウントの案件はマージできません".into(),
+        ));
+    }
+    if source.is_archived || target.is_archived {
+        return Err(AppError::Validation(
+            "アーカイブ済みの案件はマージできません".into(),
+        ));
+    }
+    if subtree_ids(conn, source_id)?.contains(&target_id.to_string()) {
+        return Err(AppError::Validation(
+            "統合先が統合元の配下にあります".into(),
+        ));
+    }
 
-    let tx = conn.transaction()?;
+    let tx = conn.unchecked_transaction()?;
 
     // Get all mail IDs currently assigned to the source project
     let mail_ids: Vec<String> = {
@@ -296,7 +317,13 @@ pub fn merge_projects(
         assignments::reassign_with_correction(&tx, mail_id, source_id, target_id)?;
     }
 
-    // Delete the source project (no cascade issues since assignments were moved)
+    // Reparent source's children to target before deleting source
+    tx.execute(
+        "UPDATE projects SET parent_id = ?1 WHERE parent_id = ?2",
+        params![target_id, source_id],
+    )?;
+
+    // Delete the source project (no cascade issues since assignments and children were moved)
     tx.execute("DELETE FROM projects WHERE id = ?1", params![source_id])?;
 
     tx.commit()?;
@@ -461,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_merge_projects_moves_mails() {
-        let mut conn = setup_db();
+        let conn = setup_db();
 
         let source = insert_project(
             &conn,
@@ -494,7 +521,7 @@ mod tests {
         assignments::assign_mail(&conn, "m1", &source.id, "ai", Some(0.9)).unwrap();
         assignments::assign_mail(&conn, "m2", &source.id, "ai", Some(0.8)).unwrap();
 
-        let moved = merge_projects(&mut conn, &source.id, &target.id).unwrap();
+        let moved = merge_projects(&conn, &source.id, &target.id).unwrap();
         assert_eq!(moved, 2);
 
         // Mails should now be in target
@@ -514,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_merge_projects_source_empty() {
-        let mut conn = setup_db();
+        let conn = setup_db();
 
         let source = insert_project(
             &conn,
@@ -539,7 +566,7 @@ mod tests {
         )
         .unwrap();
 
-        let moved = merge_projects(&mut conn, &source.id, &target.id).unwrap();
+        let moved = merge_projects(&conn, &source.id, &target.id).unwrap();
         assert_eq!(moved, 0);
 
         // Source should still be deleted
@@ -553,7 +580,7 @@ mod tests {
 
     #[test]
     fn test_merge_projects_source_not_found() {
-        let mut conn = setup_db();
+        let conn = setup_db();
 
         let target = insert_project(
             &conn,
@@ -567,13 +594,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = merge_projects(&mut conn, "nonexistent", &target.id);
+        let result = merge_projects(&conn, "nonexistent", &target.id);
         assert!(matches!(result, Err(AppError::ProjectNotFound(_))));
     }
 
     #[test]
     fn test_merge_projects_target_not_found() {
-        let mut conn = setup_db();
+        let conn = setup_db();
 
         let source = insert_project(
             &conn,
@@ -587,13 +614,13 @@ mod tests {
         )
         .unwrap();
 
-        let result = merge_projects(&mut conn, &source.id, "nonexistent");
+        let result = merge_projects(&conn, &source.id, "nonexistent");
         assert!(matches!(result, Err(AppError::ProjectNotFound(_))));
     }
 
     #[test]
     fn test_merge_preserves_existing_target_mails() {
-        let mut conn = setup_db();
+        let conn = setup_db();
 
         let source = insert_project(
             &conn,
@@ -628,11 +655,70 @@ mod tests {
         crate::db::mails::insert_mail(&conn, &m2).unwrap();
         assignments::assign_mail(&conn, "m2", &source.id, "ai", Some(0.9)).unwrap();
 
-        let moved = merge_projects(&mut conn, &source.id, &target.id).unwrap();
+        let moved = merge_projects(&conn, &source.id, &target.id).unwrap();
         assert_eq!(moved, 1);
 
         let target_mails = assignments::get_mails_by_project(&conn, &target.id).unwrap();
         assert_eq!(target_mails.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_rejects_self_and_descendant_and_archived() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        insert_child(&conn, "arch", "旧公演", None);
+        archive_project(&conn, "arch").unwrap();
+
+        assert!(merge_projects(&conn, "root", "root").is_err(), "self");
+        assert!(
+            merge_projects(&conn, "root", "mid").is_err(),
+            "descendant target"
+        );
+        assert!(
+            merge_projects(&conn, "mid", "arch").is_err(),
+            "archived target"
+        );
+        assert!(
+            merge_projects(&conn, "arch", "mid").is_err(),
+            "archived source"
+        );
+    }
+
+    #[test]
+    fn test_merge_reparents_children_to_target() {
+        let conn = setup_db();
+        insert_child(&conn, "src", "旧ツアー", None);
+        insert_child(&conn, "child", "埼玉", Some("src"));
+        insert_child(&conn, "dst", "新ツアー", None);
+
+        merge_projects(&conn, "src", "dst").unwrap();
+
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_id FROM projects WHERE id = 'child'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent.as_deref(), Some("dst"));
+        assert!(get_project(&conn, "src").is_err());
+    }
+
+    #[test]
+    fn test_merge_records_path_snapshots() {
+        let conn = setup_db();
+        insert_child(&conn, "src", "照明", None);
+        insert_child(&conn, "dst", "音響", None);
+        let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "S", "2026-07-18T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m).unwrap();
+        assignments::assign_mail(&conn, "m1", "src", "ai", Some(0.9)).unwrap();
+
+        merge_projects(&conn, "src", "dst").unwrap();
+
+        let c = &assignments::get_recent_corrections(&conn, "acc1", 1).unwrap()[0];
+        assert_eq!(c.from_path.as_deref(), Some("照明"));
+        assert_eq!(c.to_path, "音響");
     }
 
     #[test]

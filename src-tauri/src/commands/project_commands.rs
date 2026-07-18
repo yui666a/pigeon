@@ -63,7 +63,7 @@ pub fn merge_projects(
     source_id: String,
     target_id: String,
 ) -> Result<u32, AppError> {
-    state.with_conn_mut(|conn| projects::merge_projects(conn, &source_id, &target_id))
+    state.with_conn(|conn| projects::merge_projects(conn, &source_id, &target_id))
 }
 
 #[cfg(test)]
