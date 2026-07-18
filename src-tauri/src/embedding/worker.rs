@@ -59,8 +59,14 @@ pub async fn run_embedding_pass(
         // embed の await は with_conn（＝ロック）の外で行う
         let embeddings = match embedder.embed(&inputs).await {
             Ok(e) => e,
-            // 接続エラーは「今は埋め込めない」だけ。キューに残して静かに終了
-            Err(AppError::OllamaConnection(_)) => break,
+            // 接続エラーは「今は埋め込めない」だけ。キューに残して打ち切るが、
+            // 沈黙スタックを診断できるようログには残す。
+            Err(AppError::OllamaConnection(e)) => {
+                eprintln!(
+                    "[warn] embedding pass paused (connection): {e} — queue retained, will retry next pass"
+                );
+                break;
+            }
             Err(e) => return Err(e),
         };
         db.with_conn(|conn| {

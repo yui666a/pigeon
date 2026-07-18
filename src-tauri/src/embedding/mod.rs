@@ -6,8 +6,23 @@ use crate::error::AppError;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use std::time::Duration;
 
 pub mod worker;
+
+/// 埋め込み専用の HTTP クライアントを構築する（classifier::build_http_client と
+/// 構造は同じ、タイムアウトのみ異なる）。
+/// classifier のチャット用クライアントは 30 秒だが、埋め込みは bge-m3 の
+/// コールドロード＋16件バッチの合計で 30 秒を正当に超えうる。同じ 30 秒に
+/// 揃えると reqwest タイムアウトが OllamaConnection にマップされ、バックフィルが
+/// 無進捗のままキューに滞留し続ける（cold load を毎回払ってゼロ進捗）ため、
+/// 埋め込みには専用の長めのタイムアウトを設ける。
+fn build_embedding_http_client() -> Result<reqwest::Client, AppError> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| AppError::HttpRequest(e.to_string()))
+}
 
 #[async_trait]
 pub trait Embedder: Send + Sync {
@@ -59,13 +74,13 @@ pub(crate) fn parse_embed_response(
 }
 
 impl OllamaEmbedder {
-    /// build_http_client は Result を返す（classifier/mod.rs:20）ため new も Result
+    /// build_embedding_http_client は Result を返すため new も Result
     pub fn new(endpoint: String, model: String, dimensions: usize) -> Result<Self, AppError> {
         Ok(Self {
             endpoint,
             model,
             dimensions,
-            client: crate::classifier::build_http_client()?,
+            client: build_embedding_http_client()?,
         })
     }
 
