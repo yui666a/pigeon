@@ -251,6 +251,7 @@ pub fn run() {
             commands::classify_commands::get_unclassified_threads,
             commands::classify_commands::get_mails_by_project,
             commands::search_commands::search_mails,
+            commands::search_commands::semantic_search,
             commands::send_commands::send_mail,
             commands::send_commands::pick_attachment_files,
             commands::draft_commands::save_draft,
