@@ -2,6 +2,7 @@ pub mod classifier;
 pub mod commands;
 pub mod context;
 pub mod db;
+pub mod embedding;
 pub mod env_config;
 pub mod error;
 pub mod mail_chunker;

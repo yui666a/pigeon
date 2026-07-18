@@ -16,6 +16,7 @@ export interface LlmSettingsPayload {
   vertexModel: string;
   vertexSaJson: string | null;
   geminiModel: string;
+  embeddingModel: string;
 }
 
 /** LLM 設定系 Tauri commands の型付きラッパ */

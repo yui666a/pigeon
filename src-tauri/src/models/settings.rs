@@ -16,4 +16,6 @@ pub struct LlmSettings {
     pub vertex_sa_json_set: bool,
     // --- Gemini on Vertex AI (gemini_vertex)。SA/project/location は上記と共通 ---
     pub gemini_model: String,
+    // --- 埋め込みモデル（セマンティック検索用）。次元・プレフィックスは v1 では非公開 ---
+    pub embedding_model: String,
 }
