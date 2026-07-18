@@ -305,6 +305,20 @@ pub(crate) fn sanitize_proposed_text(value: &str, max_chars: usize) -> String {
         .to_string()
 }
 
+/// create 提案の parent_project_id を検証する。存在しない・別アカウントの場合は
+/// None（=ルート作成）に落とす。create はユーザー承認制のためエラーにはしない。
+pub(crate) fn validate_parent_project(
+    conn: &Connection,
+    account_id: &str,
+    parent_project_id: Option<&str>,
+) -> Option<String> {
+    let pid = parent_project_id?;
+    match projects::get_project(conn, pid) {
+        Ok(p) if p.account_id == account_id => Some(p.id),
+        _ => None,
+    }
+}
+
 /// LLM が返した project_id が、当該メールのアカウント配下に実在するか。
 /// LLM 出力は信頼できない（幻覚・プロンプトインジェクションで操作可能）ため、
 /// 割り当て前にアプリ層で検証する。DB トリガー（trg_mpa_account_check）は
@@ -376,6 +390,7 @@ pub fn apply_result(
         ClassifyAction::Create {
             ref project_name,
             ref description,
+            ref parent_project_id,
         } => {
             let name = sanitize_proposed_text(project_name, PROPOSED_NAME_MAX_CHARS);
             if name.is_empty() {
@@ -384,6 +399,12 @@ pub fn apply_result(
                     result.confidence,
                 ));
             }
+            let mail = mails::get_mail_by_id(conn, mail_id)?;
+            let parent_project_id = validate_parent_project(
+                conn,
+                &mail.account_id,
+                parent_project_id.as_deref(),
+            );
             let sanitized = ClassifyResult {
                 action: ClassifyAction::Create {
                     project_name: name,
@@ -391,6 +412,7 @@ pub fn apply_result(
                         description,
                         PROPOSED_DESCRIPTION_MAX_CHARS,
                     ),
+                    parent_project_id,
                 },
                 ..result
             };
@@ -491,6 +513,7 @@ mod tests {
             action: ClassifyAction::Create {
                 project_name: "Suggested".into(),
                 description: "desc".into(),
+                parent_project_id: None,
             },
             confidence: 0.8,
             reason: "新規案件の提案".into(),
@@ -834,6 +857,7 @@ mod tests {
             action: ClassifyAction::Create {
                 project_name: long_name,
                 description: format!("desc\u{0}{}", "い".repeat(1000)),
+                parent_project_id: None,
             },
             confidence: 0.8,
             reason: "r".into(),
@@ -845,6 +869,7 @@ mod tests {
             ClassifyAction::Create {
                 project_name,
                 description,
+                ..
             } => {
                 assert!(
                     !project_name.chars().any(|c| c.is_control()),
@@ -869,6 +894,7 @@ mod tests {
             action: ClassifyAction::Create {
                 project_name: "\u{7}\u{1b} ".into(),
                 description: "d".into(),
+                parent_project_id: None,
             },
             confidence: 0.8,
             reason: "r".into(),
@@ -878,6 +904,90 @@ mod tests {
 
         assert!(matches!(res.action, ClassifyAction::Unclassified));
         assert!(!pending.contains("m1").unwrap(), "不成立の提案は積まない");
+    }
+
+    // --- validate_parent_project / apply_result: create の parent_project_id 検証 ---
+
+    #[test]
+    fn test_validate_parent_project_falls_back_to_root_on_hallucination() {
+        // 存在しない/別アカウントの parent_project_id は None に落とす
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            validate_parent_project(&conn, "acc1", Some("root")),
+            Some("root".to_string()),
+            "実在する同一アカウントの親は通す"
+        );
+        assert_eq!(
+            validate_parent_project(&conn, "acc1", Some("ghost")),
+            None,
+            "存在しない親はルート作成に落とす"
+        );
+        assert_eq!(validate_parent_project(&conn, "acc1", None), None);
+    }
+
+    #[test]
+    fn test_apply_result_create_keeps_valid_parent_project_id() {
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        let parent = insert_project(&conn, "ツアー");
+        let result = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: "音響".into(),
+                description: "d".into(),
+                parent_project_id: Some(parent.id.clone()),
+            },
+            confidence: 0.8,
+            reason: "r".into(),
+        };
+
+        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+
+        match res.action {
+            ClassifyAction::Create {
+                parent_project_id, ..
+            } => assert_eq!(parent_project_id, Some(parent.id)),
+            other => panic!("expected Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_apply_result_create_drops_hallucinated_parent_project_id() {
+        // 存在しない parent_project_id はエラーにせず None（ルート作成）に落とす
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        let result = ClassifyResult {
+            action: ClassifyAction::Create {
+                project_name: "音響".into(),
+                description: "d".into(),
+                parent_project_id: Some("ghost-project".into()),
+            },
+            confidence: 0.8,
+            reason: "r".into(),
+        };
+
+        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+
+        match res.action {
+            ClassifyAction::Create {
+                parent_project_id, ..
+            } => assert_eq!(
+                parent_project_id, None,
+                "存在しない親はルート作成として続行する（エラーにしない）"
+            ),
+            other => panic!("expected Create, got {other:?}"),
+        }
     }
 
     // --- apply_result: 確信度ゲートの単体挙動 ---
