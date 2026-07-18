@@ -22,11 +22,16 @@ interface SearchState {
   searching: boolean;
   /** 検索結果リスト内の選択位置（j/kナビ用）。未選択は -1 */
   selectedIndex: number;
-  search: (accountId: string, query: string) => Promise<void>;
+  /** 「この案件内で検索」トグルの状態。選択案件が変わっても維持する（OFFに戻さない） */
+  scopeToProject: boolean;
+  /** projectId を渡すと scopeToProject=true の場合のみ検索範囲をそのサブツリーに限定する */
+  search: (accountId: string, query: string, projectId?: string | null) => Promise<void>;
   /** モードを変更し localStorage に永続化する。再検索は行わない（呼び出し側の責務） */
   setMode: (mode: SearchMode) => void;
   /** localStorage から永続化済みモードを読む（不正値は fulltext） */
   loadPersistedMode: () => SearchMode;
+  /** 案件内検索トグルを変更する（再検索は呼び出し側の責務。モード切替と異なり自動再検索はしない） */
+  setScopeToProject: (scope: boolean) => void;
   clearSearch: () => void;
   /** 選択位置を direction 分移動する。境界で止まる（ループしない） */
   moveSelection: (direction: 1 | -1) => void;
@@ -39,8 +44,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   results: [],
   searching: false,
   selectedIndex: -1,
+  scopeToProject: false,
 
-  search: async (accountId, query) => {
+  search: async (accountId, query, projectId) => {
     if (!query.trim()) {
       set({ query: "", results: [], searching: false, selectedIndex: -1 });
       return;
@@ -51,7 +57,8 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         get().mode === "semantic"
           ? searchApi.semanticSearch
           : searchApi.searchMails;
-      const results = await searchFn(accountId, query);
+      const scopedProjectId = get().scopeToProject && projectId ? projectId : undefined;
+      const results = await searchFn(accountId, query, scopedProjectId);
       set({ results, searching: false });
     } catch (e) {
       set({ results: [], searching: false });
@@ -63,6 +70,8 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     localStorage.setItem(SEARCH_MODE_KEY, mode);
     set({ mode });
   },
+
+  setScopeToProject: (scope) => set({ scopeToProject: scope }),
 
   loadPersistedMode: () => readPersistedMode(),
 

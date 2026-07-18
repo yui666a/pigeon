@@ -13,6 +13,7 @@ const BACKFILL_LIMIT = 5000;
 import { AccountForm } from "./AccountForm";
 import { SearchBar } from "./SearchBar";
 import { SearchModeToggle } from "./SearchModeToggle";
+import { SearchScopeToggle } from "./SearchScopeToggle";
 import { ProjectTree } from "./ProjectTree";
 import { SmartViewList } from "./SmartViewList";
 import { ProjectForm } from "./ProjectForm";
@@ -34,6 +35,7 @@ export function Sidebar() {
   const createProject = useProjectStore((s) => s.createProject);
   const linkDirectory = useProjectStore((s) => s.linkDirectory);
   const rescanProject = useProjectStore((s) => s.rescanProject);
+  const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
   const backfillAccount = useMailStore((s) => s.backfillAccount);
   const backfillExhausted = useMailStore((s) => s.backfillExhausted);
   const openCompose = useComposeStore((s) => s.openCompose);
@@ -55,7 +57,7 @@ export function Sidebar() {
 
   const handleSearch = (query: string) => {
     if (!selectedAccountId) return;
-    search(selectedAccountId, query);
+    search(selectedAccountId, query, selectedProjectId);
     setViewMode("search");
   };
 
@@ -136,7 +138,8 @@ export function Sidebar() {
         />
       )}
       <SearchBar onSearch={handleSearch} onClear={handleClearSearch} />
-      <SearchModeToggle accountId={selectedAccountId} />
+      <SearchModeToggle accountId={selectedAccountId} selectedProjectId={selectedProjectId} />
+      <SearchScopeToggle selectedProjectId={selectedProjectId} />
       <div className="flex-1 overflow-y-auto">
         <AccountList
           accounts={accounts}

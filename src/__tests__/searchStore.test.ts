@@ -164,3 +164,61 @@ describe("search mode", () => {
     expect(useSearchStore.getState().loadPersistedMode()).toBe("semantic");
   });
 });
+
+describe("search scope toggle passes projectId to search API", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSearchStore.setState({
+      mode: "fulltext",
+      query: "",
+      results: [],
+      searching: false,
+      selectedIndex: -1,
+      scopeToProject: false,
+    });
+    mockInvoke.mockResolvedValue([]);
+  });
+
+  it("scopeToProject が false のときは projectId なしで search_mails を呼ぶ", async () => {
+    await useSearchStore.getState().search("acc1", "照明", "p1");
+    expect(mockInvoke).toHaveBeenCalledWith("search_mails", {
+      accountId: "acc1",
+      query: "照明",
+    });
+  });
+
+  it("scopeToProject が true のときは projectId 付きで search_mails を呼ぶ", async () => {
+    useSearchStore.getState().setScopeToProject(true);
+    await useSearchStore.getState().search("acc1", "照明", "p1");
+    expect(mockInvoke).toHaveBeenCalledWith("search_mails", {
+      accountId: "acc1",
+      query: "照明",
+      projectId: "p1",
+    });
+  });
+
+  it("scopeToProject が true でも選択案件がなければ projectId は渡さない", async () => {
+    useSearchStore.getState().setScopeToProject(true);
+    await useSearchStore.getState().search("acc1", "照明", null);
+    expect(mockInvoke).toHaveBeenCalledWith("search_mails", {
+      accountId: "acc1",
+      query: "照明",
+    });
+  });
+
+  it("scopeToProject が true のときは semantic_search にも projectId を渡す", async () => {
+    useSearchStore.getState().setMode("semantic");
+    useSearchStore.getState().setScopeToProject(true);
+    await useSearchStore.getState().search("acc1", "照明", "p1");
+    expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
+      accountId: "acc1",
+      query: "照明",
+      projectId: "p1",
+    });
+  });
+
+  it("setScopeToProject はモード切替のような再検索を伴わずトグルするだけ", () => {
+    useSearchStore.getState().setScopeToProject(true);
+    expect(useSearchStore.getState().scopeToProject).toBe(true);
+  });
+});

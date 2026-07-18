@@ -28,6 +28,14 @@ describe("SearchModeToggle", () => {
     useSearchStore.setState({ query: "照明", search: searchSpy });
     render(<SearchModeToggle accountId="acc1" />);
     fireEvent.click(screen.getByRole("button", { name: "ベクトル" }));
-    expect(searchSpy).toHaveBeenCalledWith("acc1", "照明");
+    expect(searchSpy).toHaveBeenCalledWith("acc1", "照明", null);
+  });
+
+  it("案件内検索スコープが有効なときはモード切替の再検索にも選択案件を渡す", () => {
+    const searchSpy = vi.fn();
+    useSearchStore.setState({ query: "照明", search: searchSpy });
+    render(<SearchModeToggle accountId="acc1" selectedProjectId="p1" />);
+    fireEvent.click(screen.getByRole("button", { name: "ベクトル" }));
+    expect(searchSpy).toHaveBeenCalledWith("acc1", "照明", "p1");
   });
 });
