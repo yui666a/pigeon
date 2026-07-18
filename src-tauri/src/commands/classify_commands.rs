@@ -123,6 +123,7 @@ pub fn approve_new_project(
     mail_id: String,
     project_name: String,
     description: Option<String>,
+    parent_project_id: Option<String>,
 ) -> Result<Project, AppError> {
     let project = db.with_conn_mut(|conn| {
         // Load mail to get account_id
@@ -130,14 +131,15 @@ pub fn approve_new_project(
 
         let tx = conn.transaction()?;
 
-        let req = CreateProjectRequest {
-            account_id: mail.account_id.clone(),
-            name: project_name,
-            description,
-            color: None,
-            parent_id: None,
-        };
-        let project = projects::insert_project(&tx, &req)?;
+        let project = projects::insert_project_with_id(
+            &tx,
+            &uuid::Uuid::new_v4().to_string(),
+            &mail.account_id,
+            &project_name,
+            description.as_deref(),
+            None,
+            parent_project_id.as_deref(),
+        )?;
 
         assignments::assign_mail(&tx, &mail_id, &project.id, "user", Some(1.0))?;
 
@@ -387,6 +389,7 @@ mod tests {
             action: ClassifyAction::Create {
                 project_name: "Test".into(),
                 description: "desc".into(),
+                parent_project_id: None,
             },
             confidence: 0.8,
             reason: "test".into(),
@@ -554,6 +557,7 @@ mod tests {
             action: ClassifyAction::Create {
                 project_name: "Suggested".into(),
                 description: "desc".into(),
+                parent_project_id: None,
             },
             confidence: 0.8,
             reason: "test".into(),

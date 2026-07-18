@@ -41,6 +41,8 @@ pub struct ProjectSuggestion {
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
+    /// ルート→自ノードのフルパス（例:「ツアー > 埼玉 > 音響」）。フラット案件は name と同じ。
+    pub path: String,
     pub description: Option<String>,
     pub recent_subjects: Vec<String>,
     pub top_senders: Vec<String>,
@@ -64,6 +66,10 @@ pub enum ClassifyAction {
     Create {
         project_name: String,
         description: String,
+        /// 既存案件配下に子案件として作成する提案。存在しない/別アカウントの
+        /// 場合は apply_result 内でルート作成（None）に落とす（設計書 §6）。
+        #[serde(default)]
+        parent_project_id: Option<String>,
     },
     #[serde(rename = "unclassified")]
     Unclassified,
@@ -175,5 +181,34 @@ mod tests {
         let mail = make_mail(Some(&japanese_body));
         let summary = MailSummary::from_mail(&mail);
         assert_eq!(summary.body_preview.chars().count(), 1000);
+    }
+
+    // --- ClassifyAction::Create: parent_project_id のパース ---
+
+    #[test]
+    fn test_create_action_parses_parent_project_id() {
+        let json = r#"{"action":"create","project_name":"音響","description":"d","parent_project_id":"root","confidence":0.8,"reason":"r"}"#;
+        let result: ClassifyResult = serde_json::from_str(json).unwrap();
+        match result.action {
+            ClassifyAction::Create {
+                parent_project_id, ..
+            } => {
+                assert_eq!(parent_project_id.as_deref(), Some("root"));
+            }
+            _ => panic!("expected create"),
+        }
+    }
+
+    #[test]
+    fn test_create_action_without_parent_still_parses() {
+        // 旧形式の応答（parent なし）も壊れない
+        let json = r#"{"action":"create","project_name":"音響","description":"d","confidence":0.8,"reason":"r"}"#;
+        let result: ClassifyResult = serde_json::from_str(json).unwrap();
+        match result.action {
+            ClassifyAction::Create {
+                parent_project_id, ..
+            } => assert!(parent_project_id.is_none()),
+            _ => panic!("expected create"),
+        }
     }
 }
