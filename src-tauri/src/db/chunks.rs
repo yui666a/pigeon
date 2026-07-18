@@ -59,19 +59,28 @@ pub fn pending_chunks(conn: &Connection, limit: u32) -> Result<Vec<PendingChunk>
     Ok(rows)
 }
 
+/// 埋め込みベクトルを保存し、対応する mail_chunks 行に embedded_at を立てる。
+/// UPDATE を先に行い影響行数を見る: embed の HTTP 呼び出し中にメール（と
+/// mail_chunks 行、CASCADE 経由）が削除されていた場合は 0 行にマッチするので、
+/// vec_chunks への INSERT をスキップして Ok を返す（vec0 は FK に参加しないため、
+/// 先に INSERT すると mail_chunks 側が消えていてもベクトルだけが孤児として残る）。
 pub fn store_embedding(
     conn: &Connection,
     chunk_id: i64,
     embedding: &[f32],
 ) -> Result<(), AppError> {
     crate::db::tx::with_tx(conn, |conn| {
+        let affected = conn.execute(
+            "UPDATE mail_chunks SET embedded_at = datetime('now') WHERE id = ?1",
+            params![chunk_id],
+        )?;
+        if affected == 0 {
+            // チャンクは埋め込み中に削除済み。索引すべき対象がないので何もしない。
+            return Ok(());
+        }
         conn.execute(
             "INSERT INTO vec_chunks (chunk_id, embedding) VALUES (?1, ?2)",
             params![chunk_id, embedding.as_bytes()],
-        )?;
-        conn.execute(
-            "UPDATE mail_chunks SET embedded_at = datetime('now') WHERE id = ?1",
-            params![chunk_id],
         )?;
         Ok(())
     })
@@ -214,6 +223,30 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM mail_chunks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(chunk_count, 0, "mail_chunks は CASCADE で消える");
+    }
+
+    #[test]
+    fn test_store_embedding_skips_orphan_when_chunk_deleted_mid_embed() {
+        // メール（と mail_chunks 行）が embed の HTTP 呼び出し中に削除された場合を再現。
+        // UPDATE が 0 行にマッチするので vec_chunks への INSERT はスキップされ、
+        // ベクトルの孤児化を防ぐこと。
+        let conn = setup_db();
+        let m = make_mail("m1", "<m1@ex.com>", "S", "2026-07-17T10:00:00");
+        mails::insert_mail(&conn, &m).unwrap();
+        insert_chunks(&conn, "m1", &["c1".into()]).unwrap();
+        let chunk_id = pending_chunks(&conn, 1).unwrap()[0].id;
+
+        conn.execute("DELETE FROM mail_chunks WHERE id = ?1", params![chunk_id])
+            .unwrap();
+
+        let result = store_embedding(&conn, chunk_id, &vec![0.5f32; 1024]);
+
+        assert!(result.is_ok(), "チャンク消滅は正常系（何もしない）");
+        assert_eq!(
+            vec_row_count(&conn),
+            0,
+            "vec_chunks に孤児ベクトルを残さない"
+        );
     }
 
     #[test]
