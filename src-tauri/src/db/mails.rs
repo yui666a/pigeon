@@ -371,6 +371,35 @@ pub fn get_unread_counts(conn: &Connection, account_id: &str) -> Result<UnreadCo
     })
 }
 
+/// `ids`（selected_id のサブツリー、深い順）のうち、is_archived = FALSE の
+/// ものだけに絞る。selected_id 自身はアーカイブ済みでも常に残す
+/// （選択ノードが直接アーカイブ済みでも自分のメールは見えるようにするため）。
+/// subtree_ids の契約（深い順・delete用）を変えないよう、ここでは新しい
+/// Vec を返すだけで subtree_ids 自体は変更しない。
+fn filter_active_or_selected(
+    conn: &Connection,
+    ids: &[String],
+    selected_id: &str,
+) -> Result<Vec<String>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql =
+        format!("SELECT id FROM projects WHERE id IN ({placeholders}) AND is_archived = FALSE");
+    let mut stmt = conn.prepare(&sql)?;
+    let active: std::collections::HashSet<String> = stmt
+        .query_map(rusqlite::params_from_iter(ids.iter()), |row| row.get(0))?
+        .collect::<rusqlite::Result<std::collections::HashSet<String>>>()?;
+    Ok(ids
+        .iter()
+        .filter(|id| id.as_str() == selected_id || active.contains(id.as_str()))
+        .cloned()
+        .collect())
+}
+
 /// 案件のスレッド一覧を、選択ノード配下のサブツリーごと集約して返す。
 /// サブツリー内の他案件に直接所属するスレッドには、選択ノードからの相対パスを
 /// `Thread.projects` に注釈する（選択ノード直属は注釈なし）。
@@ -378,10 +407,14 @@ pub fn get_threads_by_project(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<Thread>, AppError> {
-    let ids = crate::db::projects::subtree_ids(conn, project_id)?;
-    if ids.is_empty() {
+    let all_ids = crate::db::projects::subtree_ids(conn, project_id)?;
+    if all_ids.is_empty() {
         return Err(AppError::ProjectNotFound(project_id.to_string()));
     }
+    // アーカイブ済みノード（サブツリー）のメールは親の集約表示に含めない
+    // （アーカイブ済み案件のメールが非表示という従来挙動と一貫させる）。
+    // 選択ノード自身は、アーカイブ済みでも常に含める（自分のメールは見える）。
+    let ids = filter_active_or_selected(conn, &all_ids, project_id)?;
     let mails = assignments::get_mails_by_projects(conn, &ids)?;
     let assignment_map = assignments::get_assignment_map(conn, &ids)?;
 
@@ -1058,6 +1091,130 @@ mod tests {
         // leaf 選択: 自分の1通のみ
         let threads = get_threads_by_project(&conn, "leaf").unwrap();
         assert_eq!(threads.len(), 1);
+    }
+
+    #[test]
+    fn test_get_threads_by_project_excludes_archived_descendant_mails() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "arch_child",
+            "acc1",
+            "旧公演",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+
+        for (mid, pid, subj) in [
+            ("m1", "root", "全体連絡"),
+            ("m2", "arch_child", "旧公演の連絡"),
+        ] {
+            let m = crate::test_helpers::make_mail(
+                mid,
+                &format!("<{mid}@ex>"),
+                subj,
+                "2026-07-18T10:00:00",
+            );
+            crate::db::mails::insert_mail(&conn, &m).unwrap();
+            crate::db::assignments::assign_mail(&conn, mid, pid, "user", None).unwrap();
+        }
+
+        // 子をアーカイブ
+        crate::db::projects::archive_project(&conn, "arch_child").unwrap();
+
+        let threads = get_threads_by_project(&conn, "root").unwrap();
+        assert_eq!(
+            threads.len(),
+            1,
+            "アーカイブ済み子孫のメールは親の集約表示に含めない"
+        );
+        assert_eq!(threads[0].subject, "全体連絡");
+    }
+
+    #[test]
+    fn test_get_threads_by_project_selected_node_archived_returns_own_mails() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "arch",
+            "acc1",
+            "旧公演",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "連絡", "2026-07-18T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m).unwrap();
+        crate::db::assignments::assign_mail(&conn, "m1", "arch", "user", None).unwrap();
+
+        crate::db::projects::archive_project(&conn, "arch").unwrap();
+
+        // 選択ノード自身がアーカイブ済みでも ProjectNotFound にはならず、自分の
+        // メールは表示される（選択ノードは常にフィルタ対象から除外する）
+        let threads = get_threads_by_project(&conn, "arch").unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].subject, "連絡");
+    }
+
+    #[test]
+    fn test_thread_projects_dedup_same_sub_project() {
+        // 同一スレッド内に、同じサブ案件に割り当てられたメールが複数あっても
+        // Thread.projects には1エントリのみ入る（デドゥプの意図固定）
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "sub",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+
+        // 同じスレッドになるよう In-Reply-To でつなぐ2通を sub に割り当てる
+        let mut m1 = crate::test_helpers::make_mail("m1", "<m1@ex>", "件名", "2026-07-18T10:00:00");
+        m1.subject = "件名".into();
+        let mut m2 =
+            crate::test_helpers::make_mail("m2", "<m2@ex>", "Re: 件名", "2026-07-18T11:00:00");
+        m2.in_reply_to = Some("<m1@ex>".into());
+        crate::db::mails::insert_mail(&conn, &m1).unwrap();
+        crate::db::mails::insert_mail(&conn, &m2).unwrap();
+        crate::db::assignments::assign_mail(&conn, "m1", "sub", "user", None).unwrap();
+        crate::db::assignments::assign_mail(&conn, "m2", "sub", "user", None).unwrap();
+
+        let threads = get_threads_by_project(&conn, "root").unwrap();
+        assert_eq!(threads.len(), 1, "In-Reply-Toで同一スレッドにまとまる");
+        assert_eq!(threads[0].mails.len(), 2);
+        assert_eq!(
+            threads[0].projects.len(),
+            1,
+            "同じサブ案件は1エントリにデドゥプされる"
+        );
+        assert_eq!(threads[0].projects[0].project_id, "sub");
     }
 
     #[test]
