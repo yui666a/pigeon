@@ -1,27 +1,40 @@
 use tauri::State;
 
+use crate::classifier::service::{ClassifyBatches, PendingClassifications};
+use crate::context::Ctx;
 use crate::db::projects;
 use crate::error::AppError;
-use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
-use crate::state::DbState;
+use crate::models::project::Project;
+use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::usecase::{dispatch, Registry};
 
 #[tauri::command]
-pub fn create_project(
-    state: State<DbState>,
+pub async fn create_project(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     name: String,
     description: Option<String>,
     color: Option<String>,
     parent_id: Option<String>,
 ) -> Result<Project, AppError> {
-    let req = CreateProjectRequest {
-        account_id,
-        name,
-        description,
-        color,
-        parent_id,
-    };
-    state.with_conn(|conn| projects::insert_project(conn, &req))
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "create_project",
+        serde_json::json!({
+            "account_id": account_id, "name": name, "description": description,
+            "color": color, "parent_id": parent_id,
+        }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected create_project output: {e}")))
 }
 
 #[tauri::command]
@@ -30,40 +43,122 @@ pub fn get_projects(state: State<DbState>, account_id: String) -> Result<Vec<Pro
 }
 
 #[tauri::command]
-pub fn update_project(
-    state: State<DbState>,
+pub async fn update_project(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     id: String,
     name: Option<String>,
     description: Option<String>,
     color: Option<String>,
 ) -> Result<Project, AppError> {
-    let req = UpdateProjectRequest {
-        name,
-        description,
-        color,
-    };
-    state.with_conn(|conn| projects::update_project(conn, &id, &req))
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "update_project",
+        serde_json::json!({
+            "id": id, "name": name, "description": description, "color": color,
+        }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected update_project output: {e}")))
 }
 
 #[tauri::command]
-pub fn archive_project(state: State<DbState>, id: String) -> Result<(), AppError> {
-    state.with_conn(|conn| projects::archive_project(conn, &id))
+pub async fn set_project_parent(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
+    project_id: String,
+    parent_id: Option<String>,
+) -> Result<(), AppError> {
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "set_project_parent",
+        serde_json::json!({ "project_id": project_id, "parent_id": parent_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected set_project_parent output: {e}")))
 }
 
 #[tauri::command]
-pub fn delete_project(state: State<DbState>, id: String) -> Result<(), AppError> {
-    state.with_conn(|conn| projects::delete_project(conn, &id))
+pub async fn archive_project(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
+    id: String,
+) -> Result<(), AppError> {
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "archive_project",
+        serde_json::json!({ "project_id": id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected archive_project output: {e}")))
+}
+
+#[tauri::command]
+pub async fn delete_project(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
+    id: String,
+) -> Result<(), AppError> {
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "delete_project",
+        serde_json::json!({ "project_id": id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected delete_project output: {e}")))
 }
 
 /// Merge source project into target: reassign all mails, log corrections, delete source.
 /// Returns the number of mails moved.
 #[tauri::command]
-pub fn merge_projects(
-    state: State<DbState>,
+pub async fn merge_projects(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     source_id: String,
     target_id: String,
 ) -> Result<u32, AppError> {
-    state.with_conn(|conn| projects::merge_projects(conn, &source_id, &target_id))
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "merge_projects",
+        serde_json::json!({ "source_id": source_id, "target_id": target_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected merge_projects output: {e}")))
 }
 
 /// 案件の祖先パス（ルート→自ノード）に沿った加算的な有効コンテキストを返す。
@@ -77,10 +172,34 @@ pub fn get_effective_context(
     state.with_conn(|conn| projects::build_effective_context(conn, &project_id))
 }
 
+#[derive(serde::Serialize)]
+pub struct DeleteImpact {
+    pub projects: u32,
+    pub mails: u32,
+}
+
+/// 削除確認ダイアログ用: サブツリーの案件数とメール件数を返す（Read 系・直呼び）。
+#[tauri::command]
+pub fn get_project_delete_impact(
+    state: State<DbState>,
+    project_id: String,
+) -> Result<DeleteImpact, AppError> {
+    state.with_conn(|conn| {
+        let ids = projects::subtree_ids(conn, &project_id)?;
+        if ids.is_empty() {
+            return Err(AppError::ProjectNotFound(project_id.clone()));
+        }
+        Ok(DeleteImpact {
+            projects: ids.len() as u32,
+            mails: projects::count_subtree_mails(conn, &project_id)?,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::models::project::UpdateProjectRequest;
+    use crate::db::projects;
+    use crate::models::project::{CreateProjectRequest, UpdateProjectRequest};
     use crate::test_helpers::setup_db;
 
     #[test]
