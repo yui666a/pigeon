@@ -54,9 +54,17 @@ pub fn search_mails_semantic(
     conn: &Connection,
     account_id: &str,
     query_embedding: &[f32],
+    project_id: Option<&str>,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
-    let k = (limit * KNN_FACTOR).min(KNN_MAX);
+    // スコープ指定時は k を常に上限まで拡大する。KNN→後段フィルタ方式のため、
+    // 上位 k 件をスコープ外が占有すると取りこぼす（既知の制限、設計書 §8）。
+    // 小さい案件では k=KNN_MAX でも取りこぼしが残り得ることを許容する。
+    let k = if project_id.is_some() {
+        KNN_MAX
+    } else {
+        (limit * KNN_FACTOR).min(KNN_MAX)
+    };
     let mut stmt = conn.prepare(&format!(
         "SELECT {}, p.id, p.name, c.content, knn.distance
          FROM (SELECT chunk_id, distance FROM vec_chunks
@@ -67,19 +75,30 @@ pub fn search_mails_semantic(
          LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
          LEFT JOIN projects p ON mpa.project_id = p.id
          WHERE m.account_id = ?3
+           AND (?4 IS NULL OR mpa.project_id IN (
+               WITH RECURSIVE scope(id) AS (
+                   SELECT id FROM projects WHERE id = ?4
+                   UNION ALL
+                   SELECT p2.id FROM projects p2 JOIN scope s ON p2.parent_id = s.id
+               )
+               SELECT id FROM scope
+           ))
          ORDER BY knn.distance",
         *MAIL_COLUMNS_PREFIXED
     ))?;
 
     let rows = stmt
-        .query_map(params![query_embedding.as_bytes(), k, account_id], |row| {
-            let mail = row_to_mail(row)?;
-            let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
-            let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
-            let content: String = row.get(MAIL_COLUMN_COUNT + 2)?;
-            let distance: f64 = row.get(MAIL_COLUMN_COUNT + 3)?;
-            Ok((mail, project_id, project_name, content, distance))
-        })?
+        .query_map(
+            params![query_embedding.as_bytes(), k, account_id, project_id],
+            |row| {
+                let mail = row_to_mail(row)?;
+                let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
+                let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
+                let content: String = row.get(MAIL_COLUMN_COUNT + 2)?;
+                let distance: f64 = row.get(MAIL_COLUMN_COUNT + 3)?;
+                Ok((mail, project_id, project_name, content, distance))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     // distance 昇順で来るので、初出の mail_id だけ採用すれば「メールごとの
@@ -162,7 +181,7 @@ mod tests {
         insert_mail_with_embedded_chunk(&conn, "m1", "照明", "件名: 照明\n灯体の件", 0);
         insert_mail_with_embedded_chunk(&conn, "m2", "音響", "件名: 音響\nスピーカー", 1);
 
-        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), 10).unwrap();
+        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), None, 10).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].mail.id, "m1", "クエリに近い軸のメールが1位");
     }
@@ -176,7 +195,7 @@ mod tests {
         for c in chunks::pending_chunks(&conn, 10).unwrap() {
             chunks::store_embedding(&conn, c.id, &axis_vec(0)).unwrap();
         }
-        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), 10).unwrap();
+        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), None, 10).unwrap();
         assert_eq!(results.len(), 1, "同一メールの複数チャンクは1件に集約");
     }
 
@@ -197,7 +216,7 @@ mod tests {
         let id = chunks::pending_chunks(&conn, 10).unwrap()[0].id;
         chunks::store_embedding(&conn, id, &axis_vec(0)).unwrap();
 
-        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), 10).unwrap();
+        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), None, 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.account_id, "acc1");
     }
@@ -206,15 +225,60 @@ mod tests {
     fn test_semantic_snippet_strips_subject_prefix() {
         let conn = setup_db();
         insert_mail_with_embedded_chunk(&conn, "m1", "照明", "件名: 照明\n灯体を3台追加します", 0);
-        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), 10).unwrap();
+        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), None, 10).unwrap();
         assert_eq!(results[0].snippet, "灯体を3台追加します");
     }
 
     #[test]
     fn test_semantic_search_empty_index_returns_empty() {
         let conn = setup_db();
-        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), 10).unwrap();
+        let results = search_mails_semantic(&conn, "acc1", &axis_vec(0), None, 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_semantic_search_scoped_to_subtree() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn, "other", "acc1", "別件", None, None, None,
+        )
+        .unwrap();
+
+        insert_mail_with_embedded_chunk(&conn, "m1", "S1", "件名: S1\n本文1", 0);
+        insert_mail_with_embedded_chunk(&conn, "m2", "S2", "件名: S2\n本文2", 0);
+        insert_mail_with_embedded_chunk(&conn, "m3", "S3", "件名: S3\n本文3", 0);
+        crate::db::assignments::assign_mail(&conn, "m1", "leaf", "user", None).unwrap();
+        crate::db::assignments::assign_mail(&conn, "m2", "other", "user", None).unwrap();
+        // m3 は未分類のまま
+
+        // スコープなし: 3件
+        let all = search_mails_semantic(&conn, "acc1", &axis_vec(0), None, 10).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // root スコープ: サブツリー内の m1 のみ（未分類 m3・別件 m2 は含まれない）
+        let scoped = search_mails_semantic(&conn, "acc1", &axis_vec(0), Some("root"), 10).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].mail.id, "m1");
     }
 
     #[test]

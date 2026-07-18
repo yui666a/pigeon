@@ -19,12 +19,13 @@ pub async fn search_mails(
     sync_locks: State<'_, SyncLocks>,
     account_id: String,
     query: String,
+    project_id: Option<String>,
 ) -> Result<Vec<SearchResult>, AppError> {
     let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
     let out = dispatch(
         &registry,
         "search_mails",
-        serde_json::json!({ "account_id": account_id, "query": query }),
+        serde_json::json!({ "account_id": account_id, "query": query, "project_id": project_id }),
         &ctx,
     )
     .await?;
@@ -47,6 +48,7 @@ pub async fn semantic_search(
     sync_locks: State<'_, SyncLocks>,
     account_id: String,
     query: String,
+    project_id: Option<String>,
 ) -> Result<Vec<SearchResult>, String> {
     let (embedder, prefix) = db
         .with_conn(|conn| {
@@ -70,7 +72,7 @@ pub async fn semantic_search(
     let out = dispatch(
         &registry,
         "semantic_search_mails",
-        serde_json::json!({ "account_id": account_id, "embedding": embedding }),
+        serde_json::json!({ "account_id": account_id, "embedding": embedding, "project_id": project_id }),
         &ctx,
     )
     .await

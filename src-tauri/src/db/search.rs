@@ -42,6 +42,7 @@ pub fn search_mails(
     conn: &Connection,
     account_id: &str,
     query: &str,
+    project_id: Option<&str>,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
     let norm_query = crate::search_normalize::normalize_for_search(query.trim());
@@ -50,10 +51,27 @@ pub fn search_mails(
     }
 
     if is_fts_eligible(&norm_query) {
-        search_fts(conn, account_id, &norm_query, limit)
+        search_fts(conn, account_id, &norm_query, project_id, limit)
     } else {
-        search_like(conn, account_id, &norm_query, limit)
+        search_like(conn, account_id, &norm_query, project_id, limit)
     }
+}
+
+/// 案件サブツリースコープの共通 WHERE 述語。`?N` は呼び出し側の
+/// バインド番号に合わせて渡す（同一パラメータを2箇所で使う）。
+/// スコープ未指定（NULL）時は常に真になり、指定時のみサブツリー内の
+/// project_id に絞り込む（未分類メールは対象外）。
+fn scope_predicate(param_num: usize) -> String {
+    format!(
+        "(?{param_num} IS NULL OR mpa.project_id IN (
+            WITH RECURSIVE scope(id) AS (
+                SELECT id FROM projects WHERE id = ?{param_num}
+                UNION ALL
+                SELECT p2.id FROM projects p2 JOIN scope s ON p2.parent_id = s.id
+            )
+            SELECT id FROM scope
+        ))"
+    )
 }
 
 /// FTS5 trigram search for queries with 3+ characters (post-normalization).
@@ -62,6 +80,7 @@ fn search_fts(
     conn: &Connection,
     account_id: &str,
     norm_query: &str,
+    project_id: Option<&str>,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
     let safe_query = sanitize_fts_query(norm_query);
@@ -74,13 +93,15 @@ fn search_fts(
          LEFT JOIN projects p ON mpa.project_id = p.id
          WHERE fts_mails MATCH ?1
            AND m.account_id = ?2
+           AND {}
          ORDER BY rank
-         LIMIT ?3",
-        *MAIL_COLUMNS_PREFIXED
+         LIMIT ?4",
+        *MAIL_COLUMNS_PREFIXED,
+        scope_predicate(3)
     ))?;
 
     let results = stmt
-        .query_map(params![safe_query, account_id, limit], |row| {
+        .query_map(params![safe_query, account_id, project_id, limit], |row| {
             let mail = row_to_mail(row)?;
             let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
             let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
@@ -122,6 +143,7 @@ fn search_like(
     conn: &Connection,
     account_id: &str,
     norm_query: &str,
+    project_id: Option<&str>,
     limit: u32,
 ) -> Result<Vec<SearchResult>, AppError> {
     let like_pattern = format!("%{}%", escape_like(norm_query));
@@ -134,18 +156,23 @@ fn search_like(
          LEFT JOIN projects p ON mpa.project_id = p.id
          WHERE m.account_id = ?1
            AND (fts.subject LIKE ?2 ESCAPE '\\' OR fts.body_text LIKE ?2 ESCAPE '\\' OR fts.from_addr LIKE ?2 ESCAPE '\\' OR fts.to_addr LIKE ?2 ESCAPE '\\')
+           AND {}
          ORDER BY m.date DESC
-         LIMIT ?3",
-        *MAIL_COLUMNS_PREFIXED
+         LIMIT ?4",
+        *MAIL_COLUMNS_PREFIXED,
+        scope_predicate(3)
     ))?;
 
     let results = stmt
-        .query_map(params![account_id, like_pattern, limit], |row| {
-            let mail = row_to_mail(row)?;
-            let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
-            let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
-            Ok((mail, project_id, project_name))
-        })?
+        .query_map(
+            params![account_id, like_pattern, project_id, limit],
+            |row| {
+                let mail = row_to_mail(row)?;
+                let project_id: Option<String> = row.get(MAIL_COLUMN_COUNT)?;
+                let project_name: Option<String> = row.get(MAIL_COLUMN_COUNT + 1)?;
+                Ok((mail, project_id, project_name))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     Ok(results
@@ -250,7 +277,7 @@ mod tests {
         // 4 chars — uses FTS trigram。索引には search_normalize::normalize_for_search
         // 適用後のテキストが入る（ひらがな→カタカナ折り畳み）。クエリ側も同じ正規化を
         // 適用してから照合するため、生ひらがなのクエリでカタカナ索引にヒットする。
-        let results = search_mails(&conn, "acc1", "見積もり", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "見積もり", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.id, "m1");
     }
@@ -263,7 +290,7 @@ mod tests {
         mails::insert_mail(&conn, &m1).unwrap();
 
         // 2 chars — uses LIKE fallback
-        let results = search_mails(&conn, "acc1", "予算", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "予算", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.id, "m1");
     }
@@ -275,7 +302,7 @@ mod tests {
         m1.from_addr = "tanaka@example.com".into();
         mails::insert_mail(&conn, &m1).unwrap();
 
-        let results = search_mails(&conn, "acc1", "tanaka", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "tanaka", None, 50).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -285,7 +312,7 @@ mod tests {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-04-13T10:00:00");
         mails::insert_mail(&conn, &m1).unwrap();
 
-        let results = search_mails(&conn, "acc1", "zzzznonexistent", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "zzzznonexistent", None, 50).unwrap();
         assert!(results.is_empty());
     }
 
@@ -315,7 +342,7 @@ mod tests {
         mails::insert_mail(&conn, &m1).unwrap();
         mails::insert_mail(&conn, &m2).unwrap();
 
-        let results = search_mails(&conn, "acc1", "SharedKeyword", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "SharedKeyword", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.account_id, "acc1");
     }
@@ -341,7 +368,7 @@ mod tests {
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "m1", &proj.id, "ai", Some(0.9)).unwrap();
 
-        let results = search_mails(&conn, "acc1", "AlphaMail", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "AlphaMail", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].project_id, Some(proj.id));
         assert_eq!(results[0].project_name, Some("Project Alpha".into()));
@@ -358,7 +385,7 @@ mod tests {
         );
         mails::insert_mail(&conn, &m1).unwrap();
 
-        let results = search_mails(&conn, "acc1", "OrphanMail", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "OrphanMail", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].project_id.is_none());
         assert!(results[0].project_name.is_none());
@@ -377,7 +404,7 @@ mod tests {
             mails::insert_mail(&conn, &m).unwrap();
         }
 
-        let results = search_mails(&conn, "acc1", "CommonKeyword", 3).unwrap();
+        let results = search_mails(&conn, "acc1", "CommonKeyword", None, 3).unwrap();
         assert_eq!(results.len(), 3);
     }
 
@@ -388,7 +415,7 @@ mod tests {
         m1.body_text = Some("The quarterly revenue report shows growth in Q1".into());
         mails::insert_mail(&conn, &m1).unwrap();
 
-        let results = search_mails(&conn, "acc1", "revenue", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "revenue", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert!(!results[0].snippet.is_empty());
     }
@@ -399,7 +426,7 @@ mod tests {
         let m1 = make_mail("m1", "<msg1@ex.com>", "Hello", "2026-04-13T10:00:00");
         mails::insert_mail(&conn, &m1).unwrap();
 
-        let results = search_mails(&conn, "acc1", "", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "", None, 50).unwrap();
         assert!(results.is_empty());
     }
 
@@ -410,7 +437,7 @@ mod tests {
         mails::insert_mail(&conn, &m1).unwrap();
 
         // These should NOT cause FTS5 syntax errors
-        let results = search_mails(&conn, "acc1", "foo-bar", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "foo-bar", None, 50).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -421,7 +448,7 @@ mod tests {
         mails::insert_mail(&conn, &m1).unwrap();
 
         // FTS5 operators like AND, OR, NOT should be treated as literals
-        let results = search_mails(&conn, "acc1", "AND OR NOT", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "AND OR NOT", None, 50).unwrap();
         assert!(results.is_empty());
     }
 
@@ -442,7 +469,7 @@ mod tests {
         mails::insert_mail(&conn, &m2).unwrap();
 
         // 2 chars → LIKE fallback, should still be scoped to account
-        let results = search_mails(&conn, "acc1", "予算", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "予算", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.account_id, "acc1");
     }
@@ -454,7 +481,7 @@ mod tests {
         m1.body_text = Some("本文の内容".into());
         mails::insert_mail(&conn, &m1).unwrap();
 
-        let results = search_mails(&conn, "acc1", "件名", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "件名", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         // LIKE フォールバック経路でも件名マッチが <b> ハイライトされる
         assert_eq!(results[0].snippet, "<b>件名</b>");
@@ -473,7 +500,7 @@ mod tests {
         );
         mails::insert_mail(&conn, &m).unwrap();
 
-        let results = search_mails(&conn, "acc1", "sato", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "sato", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].mail.id, "m1");
     }
@@ -485,7 +512,7 @@ mod tests {
         m.body_text = Some("サトー様のプリンターについて".into());
         mails::insert_mail(&conn, &m).unwrap();
 
-        let results = search_mails(&conn, "acc1", "さとー", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "さとー", None, 50).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -497,7 +524,7 @@ mod tests {
         mails::insert_mail(&conn, &m).unwrap();
 
         // 2 文字 → LIKE フォールバック側でも正規化照合される（ｻﾄ→サト）
-        let results = search_mails(&conn, "acc1", "さと", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "さと", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         // スニペットは本文の原文表記（半角カナのまま）でハイライトされる
         assert_eq!(results[0].snippet, "<b>ｻﾄ</b>ｰの予算");
@@ -510,9 +537,116 @@ mod tests {
         m.body_text = Some("ＳＡＴＯ商事より見積書が届きました".into());
         mails::insert_mail(&conn, &m).unwrap();
 
-        let results = search_mails(&conn, "acc1", "sato", 50).unwrap();
+        let results = search_mails(&conn, "acc1", "sato", None, 50).unwrap();
         assert_eq!(results.len(), 1);
         // スニペットは正規化テキストでなく原文（全角のまま）で返る
         assert!(results[0].snippet.contains("<b>ＳＡＴＯ</b>"));
+    }
+
+    // --- project scope tests ---
+
+    #[test]
+    fn test_search_scoped_to_subtree() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn, "other", "acc1", "別件", None, None, None,
+        )
+        .unwrap();
+
+        for (mid, pid, subj) in [
+            ("m1", Some("leaf"), "スピーカー設営の件"),
+            ("m2", Some("other"), "スピーカー購入の件"),
+            ("m3", None, "スピーカー無関係未分類"),
+        ] {
+            let mut m = crate::test_helpers::make_mail(
+                mid,
+                &format!("<{mid}@ex>"),
+                subj,
+                "2026-07-18T10:00:00",
+            );
+            m.body_text = Some("スピーカー".into());
+            // insert_mail が内部で index_mail を呼ぶため（v17でトリガー同期廃止）、
+            // ここでの明示的な index_mail 呼び出しは不要（二重登録になる）
+            crate::db::mails::insert_mail(&conn, &m).unwrap();
+            if let Some(pid) = pid {
+                crate::db::assignments::assign_mail(&conn, mid, pid, "user", None).unwrap();
+            }
+        }
+
+        // スコープなし: 3件
+        let all = search_mails(&conn, "acc1", "スピーカー", None, 50).unwrap();
+        assert_eq!(all.len(), 3);
+        // root スコープ: サブツリー内の m1 のみ（未分類 m3 は含まれない）
+        let scoped = search_mails(&conn, "acc1", "スピーカー", Some("root"), 50).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].mail.id, "m1");
+    }
+
+    #[test]
+    fn test_search_scoped_to_subtree_2char_like() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn, "other", "acc1", "別件", None, None, None,
+        )
+        .unwrap();
+
+        for (mid, pid) in [("m1", Some("leaf")), ("m2", Some("other")), ("m3", None)] {
+            let mut m = crate::test_helpers::make_mail(
+                mid,
+                &format!("<{mid}@ex>"),
+                "件名",
+                "2026-07-18T10:00:00",
+            );
+            m.body_text = Some("予算の件".into());
+            crate::db::mails::insert_mail(&conn, &m).unwrap();
+            if let Some(pid) = pid {
+                crate::db::assignments::assign_mail(&conn, mid, pid, "user", None).unwrap();
+            }
+        }
+
+        // 2 chars → LIKE フォールバック経路でもスコープが効く
+        let scoped = search_mails(&conn, "acc1", "予算", Some("root"), 50).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].mail.id, "m1");
     }
 }

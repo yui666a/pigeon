@@ -11,6 +11,8 @@ use crate::usecase::{Registry, Risk, UseCase};
 pub struct SearchMailsInput {
     pub account_id: String,
     pub query: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// 全文検索の read 系 UseCase（バスに載せる最初の実例）。
@@ -30,7 +32,15 @@ impl UseCase for SearchMailsUseCase {
     }
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
-        ctx.with_conn(|conn| search::search_mails(conn, &input.account_id, &input.query, 100))
+        ctx.with_conn(|conn| {
+            search::search_mails(
+                conn,
+                &input.account_id,
+                &input.query,
+                input.project_id.as_deref(),
+                100,
+            )
+        })
     }
 }
 
@@ -40,6 +50,8 @@ impl UseCase for SearchMailsUseCase {
 pub struct SemanticSearchInput {
     pub account_id: String,
     pub embedding: Vec<f32>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// セマンティック検索の read 系 UseCase。DB 読みは必ずバス経由という
@@ -61,7 +73,13 @@ impl UseCase for SemanticSearchUseCase {
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
         ctx.with_conn(|conn| {
-            vec_search::search_mails_semantic(conn, &input.account_id, &input.embedding, 100)
+            vec_search::search_mails_semantic(
+                conn,
+                &input.account_id,
+                &input.embedding,
+                input.project_id.as_deref(),
+                100,
+            )
         })
     }
 }
@@ -112,6 +130,7 @@ mod tests {
         let input = SearchMailsInput {
             account_id: "acc1".into(),
             query: "hello".into(),
+            project_id: None,
         };
         assert_eq!(uc.risk(&input, &ctx).unwrap(), Risk::Read);
         assert_eq!(uc.name(), "search_mails");
@@ -171,6 +190,7 @@ mod tests {
         let input = SemanticSearchInput {
             account_id: "acc1".into(),
             embedding: axis_vec(0),
+            project_id: None,
         };
         assert_eq!(uc.risk(&input, &ctx).unwrap(), Risk::Read);
         assert_eq!(uc.name(), "semantic_search_mails");
