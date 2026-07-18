@@ -14,6 +14,7 @@ pub mod project_contexts;
 pub mod project_files;
 pub mod projects;
 pub mod repository;
+pub mod saved_searches;
 pub mod search;
 pub mod sent_sync;
 pub mod settings;

@@ -172,6 +172,7 @@ const MIGRATIONS: &[Migration] = &[
     (16, migrate_v16),
     (17, migrate_v17),
     (18, migrate_v18),
+    (19, migrate_v19),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -509,6 +510,23 @@ fn migrate_v18(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v19: スマートビュー（保存検索）。クエリとモードをセットで保存する（設計書 Phase 3）。
+fn migrate_v19(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS saved_searches (
+            id         INTEGER PRIMARY KEY,
+            name       TEXT NOT NULL,
+            query      TEXT NOT NULL,
+            mode       TEXT NOT NULL CHECK (mode IN ('fulltext', 'semantic')),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,7 +572,7 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((19, migrate_broken_partial));
+        with_broken.push((20, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -567,7 +585,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            18,
+            19,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -579,17 +597,17 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((19, migrate_broken_partial));
+        with_broken.push((20, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((19, migrate_fixed));
+        with_fixed.push((20, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 19);
+        assert_eq!(schema_version(&conn), 20);
     }
 
     #[test]
@@ -598,21 +616,21 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((19, migrate_broken_partial));
+        with_broken.push((20, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v18）はコミット済みのまま
+        // 成功済みバージョン（v1〜v19）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            18,
+            19,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 18);
+        assert_eq!(schema_version(&conn), 19);
     }
 
     #[test]
@@ -731,7 +749,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -942,7 +960,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -969,7 +987,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1124,7 +1142,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1331,7 +1349,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1427,7 +1445,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1546,7 +1564,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1674,7 +1692,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1695,7 +1713,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 
     #[test]
@@ -1828,7 +1846,7 @@ mod tests {
 
         // 残りのマイグレーション（v17）を適用
         apply_migrations(&conn, MIGRATIONS).unwrap();
-        assert_eq!(schema_version(&conn), 18);
+        assert_eq!(schema_version(&conn), 19);
 
         let trigger_count: i32 = conn
             .query_row(
