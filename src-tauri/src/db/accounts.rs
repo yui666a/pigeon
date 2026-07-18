@@ -96,6 +96,7 @@ pub fn delete_account(conn: &Connection, id: &str) -> Result<(), AppError> {
     //   fts_mails は db::fts::remove_account_mails で先に削除する（v17 でトリガー廃止）
     let tx = conn.unchecked_transaction()?;
     crate::db::fts::remove_account_mails(&tx, id)?;
+    crate::db::chunks::remove_account_vectors(&tx, id)?;
     tx.execute("DELETE FROM mails WHERE account_id = ?1", params![id])?;
     tx.execute("DELETE FROM projects WHERE account_id = ?1", params![id])?;
     let affected = tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])?;

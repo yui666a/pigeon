@@ -239,6 +239,7 @@ pub fn update_flag_state(
 pub fn delete_mail(conn: &Connection, mail_id: &str) -> Result<(), AppError> {
     // 行削除と FTS 索引削除の2文を原子化する
     crate::db::tx::with_tx(conn, |conn| {
+        crate::db::chunks::remove_mail_vectors(conn, mail_id)?;
         let affected = conn.execute("DELETE FROM mails WHERE id = ?1", params![mail_id])?;
         if affected == 0 {
             return Err(AppError::MailNotFound(mail_id.to_string()));

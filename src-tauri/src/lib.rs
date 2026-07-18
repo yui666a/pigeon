@@ -39,6 +39,7 @@ pub fn run() {
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
     let db_path = data_dir.join("pigeon.db");
+    db::vec_ext::register();
     let conn = Connection::open(&db_path).expect("Failed to open database");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("Failed to enable foreign keys");
