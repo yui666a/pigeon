@@ -105,6 +105,7 @@ mod tests {
                 name: "Proj".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             };
             Ok(projects::insert_project(conn, &req)?.id)
         })

@@ -425,7 +425,7 @@ mod tests {
 
     /// Creates a project with a specific ID.
     fn create_project(conn: &Connection, id: &str, account_id: &str, name: &str) {
-        projects::insert_project_with_id(conn, id, account_id, name, None, None).unwrap();
+        projects::insert_project_with_id(conn, id, account_id, name, None, None, None).unwrap();
     }
 
     fn make_mail(id: &str, account_id: &str, subject: &str, date: &str) -> Mail {

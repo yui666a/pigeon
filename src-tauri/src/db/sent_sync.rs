@@ -328,6 +328,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
@@ -374,6 +375,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
@@ -420,6 +422,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();
@@ -474,6 +477,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "s1", &proj.id, "user", None).unwrap();

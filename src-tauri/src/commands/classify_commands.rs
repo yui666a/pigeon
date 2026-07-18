@@ -135,6 +135,7 @@ pub fn approve_new_project(
             name: project_name,
             description,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&tx, &req)?;
 
@@ -316,6 +317,7 @@ mod tests {
             name: "Project Alpha".into(),
             description: Some("First project".into()),
             color: None,
+            parent_id: None,
         };
         projects::insert_project(&conn, &req).unwrap();
         let summaries = projects::build_project_summaries(&conn, "acc1", false).unwrap();
@@ -338,6 +340,7 @@ mod tests {
             name: "New Project".into(),
             description: Some("Auto-created".into()),
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&tx, &req).unwrap();
         assignments::assign_mail(&tx, "m1", &project.id, "user", Some(1.0)).unwrap();
@@ -365,6 +368,7 @@ mod tests {
             name: "Will Rollback".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let _project = projects::insert_project(&tx, &req).unwrap();
         // Drop tx without committing — should rollback
@@ -451,6 +455,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "m1", &proj.id, "user", Some(1.0)).unwrap();
@@ -498,6 +503,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "m1", &proj.id, "ai", Some(0.9)).unwrap();
@@ -519,12 +525,14 @@ mod tests {
             name: "Project A".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let req2 = CreateProjectRequest {
             account_id: "acc1".into(),
             name: "Project B".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj_a = projects::insert_project(&conn, &req1).unwrap();
         let proj_b = projects::insert_project(&conn, &req2).unwrap();
@@ -558,6 +566,7 @@ mod tests {
             name: name.into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         projects::insert_project(conn, &req).unwrap()
     }

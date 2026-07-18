@@ -12,12 +12,14 @@ pub fn create_project(
     name: String,
     description: Option<String>,
     color: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<Project, AppError> {
     let req = CreateProjectRequest {
         account_id,
         name,
         description,
         color,
+        parent_id,
     };
     state.with_conn(|conn| projects::insert_project(conn, &req))
 }
@@ -78,6 +80,7 @@ mod tests {
             name: "Alpha".into(),
             description: Some("First".into()),
             color: Some("#ff0000".into()),
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
         assert_eq!(project.name, "Alpha");
@@ -96,6 +99,7 @@ mod tests {
             name: "Old Name".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
 
@@ -117,6 +121,7 @@ mod tests {
             name: "To Archive".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
         projects::archive_project(&conn, &project.id).unwrap();
@@ -134,6 +139,7 @@ mod tests {
             name: "To Delete".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
         projects::delete_project(&conn, &project.id).unwrap();
@@ -156,12 +162,14 @@ mod tests {
             name: "Acc1 Project".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let req2 = CreateProjectRequest {
             account_id: "acc2".into(),
             name: "Acc2 Project".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         projects::insert_project(&conn, &req1).unwrap();
         projects::insert_project(&conn, &req2).unwrap();

@@ -511,6 +511,7 @@ mod tests {
             name: name.into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         projects::insert_project(conn, &req).unwrap()
     }
@@ -806,6 +807,7 @@ mod tests {
             name: "他人の案件".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let other = projects::insert_project(&conn, &req).unwrap();
 

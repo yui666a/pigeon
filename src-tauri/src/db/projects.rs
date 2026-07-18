@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 /// projects テーブルの1行を Project へ変換する共通マッパー。
 /// カラム順は SELECT 句の
-/// `id, account_id, name, description, color, is_archived, created_at, updated_at`
+/// `id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at`
 /// に一致させること。
 fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -17,8 +17,9 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         description: row.get(3)?,
         color: row.get(4)?,
         is_archived: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        parent_id: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
@@ -29,11 +30,20 @@ pub fn insert_project_with_id(
     name: &str,
     description: Option<&str>,
     color: Option<&str>,
+    parent_id: Option<&str>,
 ) -> Result<Project, AppError> {
+    if let Some(pid) = parent_id {
+        let parent = get_project(conn, pid)?;
+        if parent.is_archived {
+            return Err(AppError::Validation(
+                "アーカイブ済みの案件の下には作成できません".into(),
+            ));
+        }
+    }
     conn.execute(
-        "INSERT INTO projects (id, account_id, name, description, color)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id, account_id, name, description, color],
+        "INSERT INTO projects (id, account_id, name, description, color, parent_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, account_id, name, description, color, parent_id],
     )?;
     get_project(conn, id)
 }
@@ -47,12 +57,13 @@ pub fn insert_project(conn: &Connection, req: &CreateProjectRequest) -> Result<P
         &req.name,
         req.description.as_deref(),
         req.color.as_deref(),
+        req.parent_id.as_deref(),
     )
 }
 
 pub fn get_project(conn: &Connection, id: &str) -> Result<Project, AppError> {
     conn.query_row(
-        "SELECT id, account_id, name, description, color, is_archived, created_at, updated_at
+        "SELECT id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at
          FROM projects WHERE id = ?1",
         params![id],
         row_to_project,
@@ -62,7 +73,7 @@ pub fn get_project(conn: &Connection, id: &str) -> Result<Project, AppError> {
 
 pub fn list_projects(conn: &Connection, account_id: &str) -> Result<Vec<Project>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, account_id, name, description, color, is_archived, created_at, updated_at
+        "SELECT id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at
          FROM projects
          WHERE account_id = ?1 AND is_archived = FALSE
          ORDER BY created_at",
@@ -71,6 +82,85 @@ pub fn list_projects(conn: &Connection, account_id: &str) -> Result<Vec<Project>
         .query_map(params![account_id], row_to_project)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(projects)
+}
+
+/// 自分+全子孫の ID を深い順（depth DESC）で返す。
+/// 深い順は delete_project の葉先行削除の前提（FK CASCADE の再帰上限を踏まない）。
+/// 存在しない id は空 Vec（呼び出し側で ProjectNotFound にする）。
+pub fn subtree_ids(conn: &Connection, id: &str) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE subtree(id, depth) AS (
+             SELECT id, 0 FROM projects WHERE id = ?1
+             UNION ALL
+             SELECT p.id, s.depth + 1 FROM projects p JOIN subtree s ON p.parent_id = s.id
+         )
+         SELECT id FROM subtree ORDER BY depth DESC, id",
+    )?;
+    let ids = stmt
+        .query_map(params![id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids)
+}
+
+/// ルート→自ノード順の祖先パス（自分を含む）。
+pub fn ancestor_path(conn: &Connection, id: &str) -> Result<Vec<Project>, AppError> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE anc(id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at, depth) AS (
+             SELECT id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at, 0
+             FROM projects WHERE id = ?1
+             UNION ALL
+             SELECT p.id, p.account_id, p.name, p.description, p.color, p.is_archived, p.parent_id, p.created_at, p.updated_at, a.depth + 1
+             FROM projects p JOIN anc a ON p.id = a.parent_id
+         )
+         SELECT id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at
+         FROM anc ORDER BY depth DESC",
+    )?;
+    let projects = stmt
+        .query_map(params![id], row_to_project)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(projects)
+}
+
+/// 「ツアー > 会場 > 音響」形式のパス文字列（パンくず・LLM・訂正ログスナップショット用）。
+pub fn project_path_string(conn: &Connection, id: &str) -> Result<String, AppError> {
+    let path = ancestor_path(conn, id)?;
+    if path.is_empty() {
+        return Err(AppError::ProjectNotFound(id.to_string()));
+    }
+    Ok(path
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" > "))
+}
+
+/// 親の付け替え。DB トリガーが最終防衛線だが、ユーザー向けの日本語エラーは
+/// ここで返す（存在・同一アカウント・循環・アーカイブ済み親）。
+pub fn set_parent(conn: &Connection, id: &str, new_parent: Option<&str>) -> Result<(), AppError> {
+    let project = get_project(conn, id)?;
+    if let Some(parent_id) = new_parent {
+        let parent = get_project(conn, parent_id)?;
+        if parent.account_id != project.account_id {
+            return Err(AppError::Validation(
+                "親案件は同じアカウントに属している必要があります".into(),
+            ));
+        }
+        if parent.is_archived {
+            return Err(AppError::Validation(
+                "アーカイブ済みの案件の下には移動できません".into(),
+            ));
+        }
+        if subtree_ids(conn, id)?.contains(&parent_id.to_string()) {
+            return Err(AppError::Validation(
+                "自分自身または配下の案件を親にはできません".into(),
+            ));
+        }
+    }
+    conn.execute(
+        "UPDATE projects SET parent_id = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+        params![new_parent, id],
+    )?;
+    Ok(())
 }
 
 pub fn update_project(
@@ -195,7 +285,12 @@ mod tests {
             name: "Test Project".into(),
             description: Some("A test project".into()),
             color: Some("#FF5733".into()),
+            parent_id: None,
         }
+    }
+
+    fn insert_child(conn: &Connection, id: &str, name: &str, parent: Option<&str>) -> Project {
+        insert_project_with_id(conn, id, "acc1", name, None, None, parent).unwrap()
     }
 
     #[test]
@@ -232,6 +327,7 @@ mod tests {
                 name: "Project 2".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -342,6 +438,7 @@ mod tests {
                 name: "Source".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -352,6 +449,7 @@ mod tests {
                 name: "Target".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -393,6 +491,7 @@ mod tests {
                 name: "Empty Source".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -403,6 +502,7 @@ mod tests {
                 name: "Target".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -430,6 +530,7 @@ mod tests {
                 name: "Target".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -449,6 +550,7 @@ mod tests {
                 name: "Source".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -468,6 +570,7 @@ mod tests {
                 name: "Source".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -478,6 +581,7 @@ mod tests {
                 name: "Target".into(),
                 description: None,
                 color: None,
+                parent_id: None,
             },
         )
         .unwrap();
@@ -497,5 +601,63 @@ mod tests {
 
         let target_mails = assignments::get_mails_by_project(&conn, &target.id).unwrap();
         assert_eq!(target_mails.len(), 2);
+    }
+
+    #[test]
+    fn test_subtree_ids_returns_deepest_first() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        insert_child(&conn, "leaf", "音響", Some("mid"));
+        insert_child(&conn, "other", "別件", None);
+
+        let ids = subtree_ids(&conn, "root").unwrap();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.last().unwrap(), "root", "自分が最後（最浅）");
+        assert!(ids.iter().position(|i| i == "leaf") < ids.iter().position(|i| i == "mid"));
+        assert!(subtree_ids(&conn, "nonexistent").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_ancestor_path_and_path_string() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        insert_child(&conn, "leaf", "音響", Some("mid"));
+
+        let path = ancestor_path(&conn, "leaf").unwrap();
+        let names: Vec<&str> = path.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["ツアー", "埼玉", "音響"]);
+        assert_eq!(
+            project_path_string(&conn, "leaf").unwrap(),
+            "ツアー > 埼玉 > 音響"
+        );
+    }
+
+    #[test]
+    fn test_set_parent_validations() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        insert_child(&conn, "arch", "旧公演", None);
+        archive_project(&conn, "arch").unwrap();
+
+        // 正常系: ルート化と付け替え
+        set_parent(&conn, "mid", None).unwrap();
+        set_parent(&conn, "mid", Some("root")).unwrap();
+        // 自分自身・子孫は拒否（アプリ層エラー）
+        assert!(set_parent(&conn, "root", Some("root")).is_err());
+        assert!(set_parent(&conn, "root", Some("mid")).is_err());
+        // アーカイブ済み親は拒否
+        assert!(set_parent(&conn, "mid", Some("arch")).is_err());
+    }
+
+    #[test]
+    fn test_create_project_under_archived_parent_is_rejected() {
+        let conn = setup_db();
+        insert_child(&conn, "arch", "旧公演", None);
+        archive_project(&conn, "arch").unwrap();
+        let result = insert_project_with_id(&conn, "c1", "acc1", "子", None, None, Some("arch"));
+        assert!(result.is_err());
     }
 }

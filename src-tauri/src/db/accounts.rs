@@ -220,8 +220,10 @@ mod tests {
             "2026-04-13T10:00:00",
         );
         crate::db::mails::insert_mail(conn, &mail).unwrap();
-        crate::db::projects::insert_project_with_id(conn, "proj1", "acc1", "Proj", None, None)
-            .unwrap();
+        crate::db::projects::insert_project_with_id(
+            conn, "proj1", "acc1", "Proj", None, None, None,
+        )
+        .unwrap();
         crate::db::assignments::assign_mail(conn, "m1", "proj1", "user", None).unwrap();
         conn.execute(
             "INSERT INTO drafts (id, account_id, subject) VALUES ('d1', 'acc1', 'Draft')",
