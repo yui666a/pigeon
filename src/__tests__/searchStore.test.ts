@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useSearchStore } from "../stores/searchStore";
+import { useSearchStore, SEARCH_MODE_KEY } from "../stores/searchStore";
 import type { SearchResult, Mail } from "../types/mail";
 
+const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
+  invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 function makeMail(id: string): Mail {
@@ -115,5 +116,51 @@ describe("searchStore: selectedIndex navigation", () => {
     useSearchStore.setState({ results: makeResults(["a", "b"]) });
     useSearchStore.getState().setSelectedIndex(1);
     expect(useSearchStore.getState().selectedIndex).toBe(1);
+  });
+});
+
+describe("search mode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSearchStore.setState({
+      mode: "fulltext",
+      query: "",
+      results: [],
+      searching: false,
+      selectedIndex: -1,
+    });
+    mockInvoke.mockResolvedValue([]);
+  });
+
+  it("デフォルトは fulltext で search_mails を呼ぶ", async () => {
+    await useSearchStore.getState().search("acc1", "照明");
+    expect(mockInvoke).toHaveBeenCalledWith("search_mails", {
+      accountId: "acc1",
+      query: "照明",
+    });
+  });
+
+  it("semantic モードでは semantic_search を呼ぶ", async () => {
+    useSearchStore.getState().setMode("semantic");
+    await useSearchStore.getState().search("acc1", "照明");
+    expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
+      accountId: "acc1",
+      query: "照明",
+    });
+  });
+
+  it("setMode は localStorage に永続化する", () => {
+    useSearchStore.getState().setMode("semantic");
+    expect(localStorage.getItem(SEARCH_MODE_KEY)).toBe("semantic");
+    useSearchStore.getState().setMode("fulltext");
+    expect(localStorage.getItem(SEARCH_MODE_KEY)).toBe("fulltext");
+  });
+
+  it("不正な保存値は fulltext にフォールバックする", () => {
+    localStorage.setItem(SEARCH_MODE_KEY, "garbage");
+    expect(useSearchStore.getState().loadPersistedMode()).toBe("fulltext");
+    localStorage.setItem(SEARCH_MODE_KEY, "semantic");
+    expect(useSearchStore.getState().loadPersistedMode()).toBe("semantic");
   });
 });
