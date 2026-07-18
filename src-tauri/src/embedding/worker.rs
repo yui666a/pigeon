@@ -7,11 +7,13 @@
 //! 同じチャンクが恒常的に失敗するとキューが進まなくなる制限がある
 //! （「既知の制限」参照。v1 はモデル・次元が固定のため許容）。
 
+use tauri::{AppHandle, Manager};
+
 use crate::db::chunks;
 use crate::embedding::Embedder;
 use crate::error::AppError;
 use crate::mail_chunker::chunk_mail;
-use crate::state::DbState;
+use crate::state::{DbState, EmbeddingRunGuard};
 
 const CHUNKING_BATCH: u32 = 100;
 const EMBED_BATCH: u32 = 16;
@@ -71,6 +73,46 @@ pub async fn run_embedding_pass(
         on_progress(done, total);
     }
     Ok(done)
+}
+
+/// 埋め込みキュー消化パスを1回 spawn する共通処理（起動時パス／同期後パス共用）。
+/// 多重起動は EmbeddingRunGuard で防ぐ（両呼び出し元は排他）。
+/// Ollama 接続エラーは run_embedding_pass 内で Ok 打ち切りになるため、
+/// ここではエラーを飲み込んで eprintln! するだけで良い。
+/// guard.finish() は try_begin 成功後の全ての退出経路で必ず呼ぶ。
+pub fn spawn_embedding_pass(
+    app: &AppHandle,
+    mut on_progress: impl FnMut(u64, u64) + Send + 'static,
+) {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let guard = app_handle.state::<EmbeddingRunGuard>();
+        if !guard.try_begin() {
+            return;
+        }
+        let db = app_handle.state::<DbState>();
+        let (embedder, doc_prefix) = match db.with_conn(|conn| {
+            let embedder = crate::embedding::OllamaEmbedder::from_settings(conn)?;
+            let doc_prefix =
+                crate::db::settings::get_or_default(conn, "embedding_document_prefix", "")?;
+            Ok((embedder, doc_prefix))
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[warn] embedding pass: setup failed: {}", e);
+                guard.finish();
+                return;
+            }
+        };
+        let result = run_embedding_pass(&db, &embedder, &doc_prefix, &mut |done, total| {
+            on_progress(done, total)
+        })
+        .await;
+        if let Err(e) = result {
+            eprintln!("[warn] embedding pass failed: {}", e);
+        }
+        guard.finish();
+    });
 }
 
 #[cfg(test)]

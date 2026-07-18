@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::context::Ctx;
@@ -11,7 +11,7 @@ use crate::mail_sync::sync_service;
 use crate::mail_sync::{imap_client, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::{Mail, Thread, UnreadCounts};
-use crate::state::{DbState, EmbeddingRunGuard, SecureStoreState, SyncLocks};
+use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 /// sync-progress イベントの payload
 #[derive(Clone, serde::Serialize)]
@@ -31,41 +31,12 @@ struct EmbedProgressEvent {
 /// 同期成功後に埋め込みキューの消化パスを1回 spawn する。
 /// 多重起動は EmbeddingRunGuard で防ぐ（起動時パスと排他）。
 /// Ollama 接続エラーは run_embedding_pass 内で Ok 打ち切りになるため、
-/// ここではエラーを飲み込んで eprintln! するだけで良い。
+/// ここではエラーを飲み込んで eprintln! するだけで良い（共通処理は
+/// embedding::worker::spawn_embedding_pass に集約）。
 fn spawn_embedding_pass(app: &AppHandle) {
     let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let guard = app_handle.state::<EmbeddingRunGuard>();
-        if !guard.try_begin() {
-            return;
-        }
-        let db = app_handle.state::<DbState>();
-        let (embedder, doc_prefix) = match db.with_conn(|conn| {
-            let embedder = crate::embedding::OllamaEmbedder::from_settings(conn)?;
-            let doc_prefix =
-                crate::db::settings::get_or_default(conn, "embedding_document_prefix", "")?;
-            Ok((embedder, doc_prefix))
-        }) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[warn] post-sync embedding pass: setup failed: {}", e);
-                guard.finish();
-                return;
-            }
-        };
-        let result = crate::embedding::worker::run_embedding_pass(
-            &db,
-            &embedder,
-            &doc_prefix,
-            &mut |done, total| {
-                let _ = app_handle.emit("embed-progress", EmbedProgressEvent { done, total });
-            },
-        )
-        .await;
-        if let Err(e) = result {
-            eprintln!("[warn] post-sync embedding pass failed: {}", e);
-        }
-        guard.finish();
+    crate::embedding::worker::spawn_embedding_pass(app, move |done, total| {
+        let _ = app_handle.emit("embed-progress", EmbedProgressEvent { done, total });
     });
 }
 
