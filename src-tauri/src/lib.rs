@@ -4,6 +4,7 @@ pub mod context;
 pub mod db;
 pub mod env_config;
 pub mod error;
+pub mod mail_chunker;
 pub mod mail_sync;
 pub mod models;
 pub mod project_context;
