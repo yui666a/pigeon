@@ -202,6 +202,9 @@ function ProjectListInner({
         }
       }
       setChildFormParentId(null);
+    } catch {
+      // createProject は projectStore 内で errorStore へ通知済み。
+      // フォームは開いたままにし、内容を直して再作成できるようにする
     } finally {
       setStructuralActionInFlight(false);
     }
@@ -308,8 +311,13 @@ function ProjectListInner({
             sourceProject={sourceProject}
             candidates={candidates}
             onMerge={async (targetId) => {
-              await mergeProject(mergeSourceId, targetId);
-              setMergeSourceId(null);
+              try {
+                await mergeProject(mergeSourceId, targetId);
+                setMergeSourceId(null);
+              } catch {
+                // mergeProject は projectStore 内で errorStore へ通知済み。
+                // ダイアログは開いたままにし、別のマージ先を選び直せるようにする
+              }
             }}
             onCancel={() => setMergeSourceId(null)}
           />

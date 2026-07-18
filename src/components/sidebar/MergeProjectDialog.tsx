@@ -5,7 +5,7 @@ import type { Project } from "../../types/project";
 interface MergeProjectDialogProps {
   sourceProject: Project;
   candidates: Project[];
-  onMerge: (targetId: string) => void;
+  onMerge: (targetId: string) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -16,6 +16,17 @@ export function MergeProjectDialog({
   onCancel,
 }: MergeProjectDialogProps) {
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleMerge = async () => {
+    if (!selectedTargetId || submitting) return;
+    setSubmitting(true);
+    try {
+      await onMerge(selectedTargetId);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <Modal
@@ -60,8 +71,8 @@ export function MergeProjectDialog({
           キャンセル
         </button>
         <button
-          onClick={() => selectedTargetId && onMerge(selectedTargetId)}
-          disabled={!selectedTargetId}
+          onClick={() => void handleMerge()}
+          disabled={!selectedTargetId || submitting}
           className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700 disabled:opacity-40"
         >
           マージ

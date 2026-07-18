@@ -127,4 +127,76 @@ describe("ProjectTree nested rendering", () => {
     expect(rootOption).toBeDisabled();
     expect(midOption).toBeDisabled();
   });
+
+  it("親変更が失敗してもunhandled rejectionにならずダイアログは開いたままになる", async () => {
+    mockInvoke.mockImplementation((cmd: unknown) => {
+      switch (cmd) {
+        case "get_projects":
+          return Promise.resolve([root, mid]);
+        case "get_project_directory":
+          return Promise.resolve(null);
+        case "get_unclassified_threads":
+          return Promise.resolve([]);
+        case "get_unread_counts":
+          return Promise.resolve({ by_project: {}, unclassified: 0 });
+        case "set_project_parent":
+          return Promise.reject(new Error("failed"));
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    render(<ProjectTree onSelectUnclassified={() => {}} onSelectProject={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByText("中間案件")).toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(screen.getByText("中間案件"));
+    fireEvent.click(await screen.findByText("親を変更..."));
+    const dialog = await screen.findByRole("dialog", { name: /親を変更/ });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "ルート（親なし）" }));
+    fireEvent.click(within(dialog).getByText("変更"));
+
+    await waitFor(() => {
+      expect(useErrorStore.getState().toasts.length).toBeGreaterThan(0);
+    });
+    // 失敗時はダイアログを閉じない
+    expect(screen.getByRole("dialog", { name: /親を変更/ })).toBeInTheDocument();
+  });
+
+  it("子案件作成が失敗してもunhandled rejectionにならずフォームは開いたままになる", async () => {
+    mockInvoke.mockImplementation((cmd: unknown) => {
+      switch (cmd) {
+        case "get_projects":
+          return Promise.resolve([root, mid]);
+        case "get_project_directory":
+          return Promise.resolve(null);
+        case "get_unclassified_threads":
+          return Promise.resolve([]);
+        case "get_unread_counts":
+          return Promise.resolve({ by_project: {}, unclassified: 0 });
+        case "create_project":
+          return Promise.reject(new Error("failed"));
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    render(<ProjectTree onSelectUnclassified={() => {}} onSelectProject={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByText("ルート案件")).toBeInTheDocument();
+    });
+
+    fireEvent.contextMenu(screen.getByText("ルート案件"));
+    fireEvent.click(await screen.findByText("＋ 子案件を作成"));
+    const nameInput = await screen.findByPlaceholderText("案件名を入力");
+    fireEvent.change(nameInput, { target: { value: "新しい子案件" } });
+    fireEvent.click(screen.getByText("作成"));
+
+    await waitFor(() => {
+      expect(useErrorStore.getState().toasts.length).toBeGreaterThan(0);
+    });
+    // 失敗時はフォームを閉じない
+    expect(screen.getByPlaceholderText("案件名を入力")).toBeInTheDocument();
+  });
 });

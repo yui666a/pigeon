@@ -47,6 +47,9 @@ export function MoveProjectDialog({ projectId, onClose }: MoveProjectDialogProps
     try {
       await setProjectParent(projectId, selectedParentId);
       onClose();
+    } catch {
+      // setProjectParent は projectStore 内で errorStore へ通知済み。
+      // ダイアログは開いたままにし、別の親を選び直せるようにする
     } finally {
       setSubmitting(false);
     }
