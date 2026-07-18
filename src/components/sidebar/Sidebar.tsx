@@ -12,6 +12,7 @@ import { AccountList } from "./AccountList";
 const BACKFILL_LIMIT = 5000;
 import { AccountForm } from "./AccountForm";
 import { SearchBar } from "./SearchBar";
+import { SearchModeToggle } from "./SearchModeToggle";
 import { ProjectTree } from "./ProjectTree";
 import { ProjectForm } from "./ProjectForm";
 import { ScanIndicator } from "./ScanIndicator";
@@ -134,6 +135,7 @@ export function Sidebar() {
         />
       )}
       <SearchBar onSearch={handleSearch} onClear={handleClearSearch} />
+      <SearchModeToggle accountId={selectedAccountId} />
       <div className="flex-1 overflow-y-auto">
         <AccountList
           accounts={accounts}
