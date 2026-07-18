@@ -194,7 +194,7 @@ mod tests {
         insert_chunks(&conn, "m1", &["c1".into()]).unwrap();
         let chunk_id = pending_chunks(&conn, 1).unwrap()[0].id;
         // 次元不一致の埋め込みは vec0 が拒否する → embedded_at も立たないこと
-        assert!(store_embedding(&conn, chunk_id, &vec![0.5f32; 4]).is_err());
+        assert!(store_embedding(&conn, chunk_id, &[0.5f32; 4]).is_err());
         assert_eq!(pending_chunks(&conn, 10).unwrap().len(), 1, "キューに残る");
     }
 

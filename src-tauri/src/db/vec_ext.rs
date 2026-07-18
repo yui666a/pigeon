@@ -4,14 +4,22 @@
 //! 注意: rusqlite を 0.34+ に上げる際は register_auto_extension API への
 //! 書き換えが必要（sqlite-vec issue #206）。
 
-use rusqlite::ffi::sqlite3_auto_extension;
+use rusqlite::ffi::{sqlite3, sqlite3_api_routines, sqlite3_auto_extension};
 use sqlite_vec::sqlite3_vec_init;
+use std::os::raw::{c_char, c_int};
 use std::sync::Once;
 
 static REGISTER: Once = Once::new();
 
 pub fn register() {
     REGISTER.call_once(|| unsafe {
-        sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+        sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut sqlite3,
+                *mut *const c_char,
+                *const sqlite3_api_routines,
+            ) -> c_int,
+        >(sqlite3_vec_init as *const ())));
     });
 }
