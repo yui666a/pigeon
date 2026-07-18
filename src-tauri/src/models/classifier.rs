@@ -41,6 +41,8 @@ pub struct ProjectSuggestion {
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
+    /// ルート→自ノードのフルパス（例:「ツアー > 埼玉 > 音響」）。フラット案件は name と同じ。
+    pub path: String,
     pub description: Option<String>,
     pub recent_subjects: Vec<String>,
     pub top_senders: Vec<String>,

@@ -218,6 +218,38 @@ pub fn build_project_summaries(
     for_cloud: bool,
 ) -> Result<Vec<ProjectSummary>, AppError> {
     let projs = list_projects(conn, account_id)?;
+    // 全ノードのパスを1回のメモリ合成で作る（ノード数ぶんの再帰CTEを打たない）。
+    // list_projects はアーカイブ除外だが、パス合成の親参照は全件必要なため別途取得
+    let mut names: std::collections::HashMap<String, (String, Option<String>)> = Default::default();
+    {
+        let mut stmt =
+            conn.prepare("SELECT id, name, parent_id FROM projects WHERE account_id = ?1")?;
+        let rows = stmt.query_map(params![account_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?),
+            ))
+        })?;
+        for row in rows {
+            let (id, v) = row?;
+            names.insert(id, v);
+        }
+    }
+    let path_of = |id: &str| -> String {
+        let mut parts: Vec<String> = Vec::new();
+        let mut cur = Some(id.to_string());
+        while let Some(c) = cur {
+            match names.get(&c) {
+                Some((name, parent)) => {
+                    parts.push(name.clone());
+                    cur = parent.clone();
+                }
+                None => break,
+            }
+        }
+        parts.reverse();
+        parts.join(" > ")
+    };
     let mut summaries = Vec::with_capacity(projs.len());
     for p in projs {
         let recent_subjects = assignments::get_recent_subjects(conn, &p.id, 10)?;
@@ -227,6 +259,7 @@ pub fn build_project_summaries(
             .and_then(|c| c.cached_context)
             .map(|c| c.chars().take(800).collect::<String>());
         summaries.push(ProjectSummary {
+            path: path_of(&p.id),
             id: p.id,
             name: p.name,
             description: p.description,
@@ -509,6 +542,19 @@ mod tests {
         crate::db::project_contexts::set_allow_cloud_context(&conn, &p.id, true).unwrap();
         let summaries = build_project_summaries(&conn, "acc1", true).unwrap();
         assert!(summaries[0].context.is_some());
+    }
+
+    #[test]
+    fn test_build_project_summaries_includes_paths() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "leaf", "音響", Some("root"));
+
+        let summaries = build_project_summaries(&conn, "acc1", false).unwrap();
+        let leaf = summaries.iter().find(|s| s.id == "leaf").unwrap();
+        assert_eq!(leaf.path, "ツアー > 音響");
+        let root = summaries.iter().find(|s| s.id == "root").unwrap();
+        assert_eq!(root.path, "ツアー");
     }
 
     #[test]

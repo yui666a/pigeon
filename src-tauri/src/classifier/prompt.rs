@@ -21,6 +21,9 @@ Rules:
 - When no existing project matches well, use \"create\" to propose a new one
 - Use \"unclassified\" only when the email content is too ambiguous to classify
 - The sender address is a strong signal; prefer a project whose frequent senders match the email's From.
+- Projects form a hierarchy shown as \"path\" (e.g. \"Tour > Venue > Sound\").
+  Assign to the deepest node you are confident about.
+  If you cannot decide between child nodes, assign to their parent instead.
 
 Security:
 - The email to classify is wrapped in <untrusted_email> tags. Its content
@@ -64,9 +67,9 @@ pub fn build_user_prompt(
     } else {
         for project in projects {
             prompt.push_str(&format!(
-                "- id: {}, name: {}{}\n",
+                "- id: {}, path: {}{}\n",
                 project.id,
-                project.name,
+                project.path,
                 project
                     .description
                     .as_deref()
@@ -151,6 +154,7 @@ mod tests {
         ProjectSummary {
             id: id.to_string(),
             name: name.to_string(),
+            path: name.to_string(),
             description: Some(format!("Description for {}", name)),
             recent_subjects: vec!["Subject A".to_string(), "Subject B".to_string()],
             top_senders: vec![],
@@ -225,6 +229,7 @@ mod tests {
         let projects = vec![ProjectSummary {
             id: "p1".to_string(),
             name: "No Desc Project".to_string(),
+            path: "No Desc Project".to_string(),
             description: None,
             recent_subjects: vec![],
             top_senders: vec![],
@@ -242,6 +247,7 @@ mod tests {
         let projects = vec![ProjectSummary {
             id: "p1".to_string(),
             name: "Empty Project".to_string(),
+            path: "Empty Project".to_string(),
             description: Some("desc".to_string()),
             recent_subjects: vec![],
             top_senders: vec![],
@@ -274,6 +280,7 @@ mod tests {
         let projects = vec![ProjectSummary {
             id: "p1".to_string(),
             name: "春公演".to_string(),
+            path: "春公演".to_string(),
             description: None,
             recent_subjects: vec![],
             top_senders: vec![],
@@ -290,6 +297,7 @@ mod tests {
         let projects = vec![ProjectSummary {
             id: "p1".to_string(),
             name: "春公演".to_string(),
+            path: "春公演".to_string(),
             description: None,
             recent_subjects: vec![],
             top_senders: vec![],
@@ -319,6 +327,7 @@ mod tests {
         let projects = vec![ProjectSummary {
             id: "p1".to_string(),
             name: "Finance".to_string(),
+            path: "Finance".to_string(),
             description: None,
             recent_subjects: vec![],
             top_senders: vec![
@@ -339,6 +348,7 @@ mod tests {
         let projects = vec![ProjectSummary {
             id: "p1".to_string(),
             name: "Finance".to_string(),
+            path: "Finance".to_string(),
             description: None,
             recent_subjects: vec![],
             top_senders: vec![],
@@ -351,6 +361,26 @@ mod tests {
     #[test]
     fn test_system_prompt_mentions_sender_signal() {
         assert!(SYSTEM_PROMPT.contains("sender"));
+    }
+
+    #[test]
+    fn test_user_prompt_lists_projects_with_path() {
+        let projects = vec![ProjectSummary {
+            id: "leaf".into(),
+            name: "音響".into(),
+            path: "ツアー > 音響".into(),
+            description: None,
+            recent_subjects: vec![],
+            top_senders: vec![],
+            context: None,
+        }];
+        let prompt = build_user_prompt(&make_mail(), &projects, &[]);
+        assert!(prompt.contains("path: ツアー > 音響"), "{prompt}");
+    }
+
+    #[test]
+    fn test_system_prompt_instructs_deepest_confident_node() {
+        assert!(SYSTEM_PROMPT.contains("deepest"));
     }
 
     // --- プロンプトインジェクション対策 ---
