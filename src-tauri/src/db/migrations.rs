@@ -1719,4 +1719,80 @@ mod tests {
             "メール削除で除外トゥームストーンもCASCADE削除される"
         );
     }
+
+    #[test]
+    fn test_v17_upgrade_normalizes_existing_fts_rows() {
+        // 実際のアップグレードパスの再現: v16 時点の DB（トリガー同期・
+        // 非正規化 FTS 索引）にデータがある状態から v17 を適用する
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        let upto_v16: Vec<Migration> = MIGRATIONS
+            .iter()
+            .copied()
+            .filter(|(version, _)| *version <= 16)
+            .collect();
+        apply_migrations(&conn, &upto_v16).unwrap();
+        assert_eq!(schema_version(&conn), 16);
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type)
+             VALUES ('acc1', 'Test', 't@example.com', 'imap.example.com', 'smtp.example.com', 'plain')",
+            [],
+        )
+        .unwrap();
+        // 生 SQL 挿入 → v4 の INSERT トリガーが原文のまま FTS に索引する
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr, subject, body_text, date, uid)
+             VALUES ('m1', 'acc1', 'INBOX', '<m1@ex.com>', 'sender@example.com', 'me@example.com',
+                     'ＳＡＴＯ様 みつもり', 'ｻﾄｰの端末', '2026-07-17T10:00:00', 1)",
+            [],
+        )
+        .unwrap();
+        let pre: String = conn
+            .query_row(
+                "SELECT subject FROM fts_mails WHERE mail_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pre, "ＳＡＴＯ様 みつもり",
+            "v16 時点では非正規化のまま索引される"
+        );
+
+        // 残りのマイグレーション（v17）を適用
+        apply_migrations(&conn, MIGRATIONS).unwrap();
+        assert_eq!(schema_version(&conn), 17);
+
+        let trigger_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'trigger' AND name LIKE 'trg_fts_mails%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger_count, 0, "v17 でトリガーは廃止される");
+
+        let subject: String = conn
+            .query_row(
+                "SELECT subject FROM fts_mails WHERE mail_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            subject, "sato様 ミツモリ",
+            "既存行が正規化済みで再構築される"
+        );
+        let body: String = conn
+            .query_row(
+                "SELECT body_text FROM fts_mails WHERE mail_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(body, "サトーノ端末");
+    }
 }
