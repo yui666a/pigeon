@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectTree, aggregateUnread } from "../stores/projectTree";
+import { buildProjectTree, aggregateUnread, projectPathString } from "../stores/projectTree";
 import type { Project } from "../types/project";
 
 const p = (id: string, parent: string | null): Project => ({
@@ -28,5 +28,27 @@ describe("aggregateUnread", () => {
     const projects = [p("root", null), p("mid", "root"), p("leaf", "mid")];
     const agg = aggregateUnread(projects, { root: 1, mid: 2, leaf: 3 });
     expect(agg).toEqual({ root: 6, mid: 5, leaf: 3 });
+  });
+});
+
+describe("projectPathString", () => {
+  it("joins ancestor names root-first with ' > '", () => {
+    const projects = [p("root", null), p("mid", "root"), p("leaf", "mid")];
+    expect(projectPathString(projects, "leaf")).toBe("root > mid > leaf");
+  });
+
+  it("returns just the name for a root project", () => {
+    const projects = [p("root", null)];
+    expect(projectPathString(projects, "root")).toBe("root");
+  });
+
+  it("returns empty string for an unknown id", () => {
+    const projects = [p("root", null)];
+    expect(projectPathString(projects, "missing")).toBe("");
+  });
+
+  it("stops at an orphan parent_id not present in the array", () => {
+    const projects = [p("child", "gone")];
+    expect(projectPathString(projects, "child")).toBe("child");
   });
 });

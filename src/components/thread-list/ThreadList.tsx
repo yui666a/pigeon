@@ -3,6 +3,7 @@ import { useAccountStore } from "../../stores/accountStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSelectionStore } from "../../stores/selectionStore";
+import { projectPathString } from "../../stores/projectTree";
 import { ThreadItem } from "./ThreadItem";
 import { BulkActionBar } from "./BulkActionBar";
 import { NewProjectFromSelectionForm } from "./NewProjectFromSelectionForm";
@@ -99,8 +100,21 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   if (threads.length === 0) {
     return <EmptyState message="メールがありません" />;
   }
+  const breadcrumb =
+    viewMode === "project" && selectedProjectId
+      ? projectPathString(projects, selectedProjectId)
+      : "";
+
   return (
     <div className="flex h-full flex-col">
+      {breadcrumb && (
+        <nav
+          aria-label="案件のパンくずリスト"
+          className="border-b bg-gray-50 px-4 py-1.5 text-xs text-gray-500"
+        >
+          {breadcrumb}
+        </nav>
+      )}
       <BulkActionBar
         selectedCount={selectedCount}
         projects={projects}

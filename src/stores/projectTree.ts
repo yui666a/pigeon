@@ -19,6 +19,19 @@ export function buildProjectTree(projects: Project[]): ProjectTreeNode[] {
   return roots;
 }
 
+/** ストア上の projects からパンくず文字列を合成（" > " 区切り、ルート→自ノード順）。
+ * id が projects に無い場合は空文字。祖先が配列内に居ない場合（アーカイブ済み等）はそこで打ち切る。 */
+export function projectPathString(projects: Project[], id: string): string {
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  const parts: string[] = [];
+  let cur = byId.get(id);
+  while (cur) {
+    parts.unshift(cur.name);
+    cur = cur.parent_id ? byId.get(cur.parent_id) : undefined;
+  }
+  return parts.join(" > ");
+}
+
 /** ノード直接所属の未読数を、自分+子孫の合算へボトムアップ集約する。 */
 export function aggregateUnread(
   projects: Project[],
