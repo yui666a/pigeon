@@ -184,14 +184,22 @@ pub fn update_project(
     get_project(conn, id)
 }
 
+/// サブツリー一括アーカイブ（親だけ消えて子が宙に浮く状態を作らない）。
 pub fn archive_project(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let affected = conn.execute(
-        "UPDATE projects SET is_archived = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
-        params![id],
-    )?;
-    if affected == 0 {
+    let ids = subtree_ids(conn, id)?;
+    if ids.is_empty() {
         return Err(AppError::ProjectNotFound(id.to_string()));
     }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "UPDATE projects SET is_archived = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+        )?;
+        for pid in &ids {
+            stmt.execute(params![pid])?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -225,12 +233,36 @@ pub fn build_project_summaries(
     Ok(summaries)
 }
 
+/// サブツリーを葉先行で明示削除する。FK CASCADE（防御層）に深い再帰をさせない。
 pub fn delete_project(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let affected = conn.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
-    if affected == 0 {
+    let ids = subtree_ids(conn, id)?;
+    if ids.is_empty() {
         return Err(AppError::ProjectNotFound(id.to_string()));
     }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare("DELETE FROM projects WHERE id = ?1")?;
+        for pid in &ids {
+            stmt.execute(params![pid])?;
+        }
+    }
+    tx.commit()?;
     Ok(())
+}
+
+/// サブツリー配下の所属メール数（削除確認ダイアログ用）。
+pub fn count_subtree_mails(conn: &Connection, id: &str) -> Result<u32, AppError> {
+    let count: u32 = conn.query_row(
+        "WITH RECURSIVE subtree(id) AS (
+             SELECT id FROM projects WHERE id = ?1
+             UNION ALL
+             SELECT p.id FROM projects p JOIN subtree s ON p.parent_id = s.id
+         )
+         SELECT COUNT(*) FROM mail_project_assignments WHERE project_id IN (SELECT id FROM subtree)",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(count)
 }
 
 /// Merge source project into target project within a transaction.
@@ -659,5 +691,82 @@ mod tests {
         archive_project(&conn, "arch").unwrap();
         let result = insert_project_with_id(&conn, "c1", "acc1", "子", None, None, Some("arch"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_project_removes_subtree_and_unassigns_mails() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "S", "2026-07-18T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m).unwrap();
+        assignments::assign_mail(&conn, "m1", "mid", "user", None).unwrap();
+
+        delete_project(&conn, "root").unwrap();
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        let assigned: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mail_project_assignments", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(assigned, 0, "メールは未分類に戻る");
+    }
+
+    #[test]
+    fn test_delete_deep_subtree_leaf_first_avoids_cascade_limit() {
+        // FK CASCADE の再帰上限（既定1000）を踏まないことの回帰テスト
+        let conn = setup_db();
+        conn.execute(
+            "WITH RECURSIVE nums(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM nums WHERE n < 1100)
+             INSERT INTO projects (id, account_id, name, parent_id)
+             SELECT 'd' || n, 'acc1', 'N' || n, CASE WHEN n = 1 THEN NULL ELSE 'd' || (n - 1) END
+             FROM nums",
+            [],
+        )
+        .unwrap();
+        delete_project(&conn, "d1").unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn test_archive_project_archives_subtree() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        archive_project(&conn, "root").unwrap();
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE is_archived = FALSE",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 0, "親だけ消えて子が宙に浮く状態を作らない");
+    }
+
+    #[test]
+    fn test_count_subtree_mails() {
+        let conn = setup_db();
+        insert_child(&conn, "root", "ツアー", None);
+        insert_child(&conn, "mid", "埼玉", Some("root"));
+        for (mid, pid) in [("m1", "root"), ("m2", "mid")] {
+            let m = crate::test_helpers::make_mail(
+                mid,
+                &format!("<{mid}@ex>"),
+                "S",
+                "2026-07-18T10:00:00",
+            );
+            crate::db::mails::insert_mail(&conn, &m).unwrap();
+            assignments::assign_mail(&conn, mid, pid, "user", None).unwrap();
+        }
+        assert_eq!(count_subtree_mails(&conn, "root").unwrap(), 2);
+        assert_eq!(count_subtree_mails(&conn, "mid").unwrap(), 1);
     }
 }
