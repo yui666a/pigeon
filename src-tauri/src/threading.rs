@@ -193,6 +193,7 @@ pub fn build_threads(mails: Vec<Mail>) -> Vec<Thread> {
                 mail_count: thread_mails.len(),
                 from_addrs,
                 mails: thread_mails,
+                projects: Vec::new(),
             }
         })
         .collect()

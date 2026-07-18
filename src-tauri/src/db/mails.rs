@@ -371,13 +371,47 @@ pub fn get_unread_counts(conn: &Connection, account_id: &str) -> Result<UnreadCo
     })
 }
 
+/// 案件のスレッド一覧を、選択ノード配下のサブツリーごと集約して返す。
+/// サブツリー内の他案件に直接所属するスレッドには、選択ノードからの相対パスを
+/// `Thread.projects` に注釈する（選択ノード直属は注釈なし）。
 pub fn get_threads_by_project(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<Thread>, AppError> {
-    let mails = assignments::get_mails_by_project(conn, project_id)?;
-    // 所有権を渡してクローンなしでスレッドへ組み立てる
-    Ok(crate::threading::build_threads(mails))
+    let ids = crate::db::projects::subtree_ids(conn, project_id)?;
+    if ids.is_empty() {
+        return Err(AppError::ProjectNotFound(project_id.to_string()));
+    }
+    let mails = assignments::get_mails_by_projects(conn, &ids)?;
+    let assignment_map = assignments::get_assignment_map(conn, &ids)?;
+
+    // 選択ノードからの相対パス表（選択ノード自身は注釈対象外）
+    let selected_path = crate::db::projects::project_path_string(conn, project_id)?;
+    let prefix = format!("{selected_path} > ");
+    let mut rel_paths: HashMap<String, String> = HashMap::new();
+    for pid in ids.iter().filter(|pid| pid.as_str() != project_id) {
+        let full = crate::db::projects::project_path_string(conn, pid)?;
+        let rel = full.strip_prefix(&prefix).unwrap_or(&full).to_string();
+        rel_paths.insert(pid.clone(), rel);
+    }
+
+    let mut threads = crate::threading::build_threads(mails);
+    for thread in &mut threads {
+        let mut seen = std::collections::HashSet::new();
+        for mail in &thread.mails {
+            if let Some(pid) = assignment_map.get(&mail.id) {
+                if pid != project_id && seen.insert(pid.clone()) {
+                    if let Some(rel) = rel_paths.get(pid) {
+                        thread.projects.push(crate::models::mail::ThreadProjectRef {
+                            project_id: pid.clone(),
+                            display_path: rel.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(threads)
 }
 
 /// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す（date DESC）。
@@ -961,6 +995,69 @@ mod tests {
         );
         assert_eq!(metas[0].subject, "Sent Mail");
         assert_eq!(metas[0].date, "2026-04-13T11:00:00");
+    }
+
+    #[test]
+    fn test_get_threads_by_project_aggregates_subtree_with_relative_paths() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "mid",
+            "acc1",
+            "埼玉",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("mid"),
+        )
+        .unwrap();
+
+        for (mid, pid, subj) in [("m1", "root", "全体連絡"), ("m2", "leaf", "音響仕込み")]
+        {
+            let m = crate::test_helpers::make_mail(
+                mid,
+                &format!("<{mid}@ex>"),
+                subj,
+                "2026-07-18T10:00:00",
+            );
+            crate::db::mails::insert_mail(&conn, &m).unwrap();
+            crate::db::assignments::assign_mail(&conn, mid, pid, "user", None).unwrap();
+        }
+
+        // root 選択: 両方のメールが見え、leaf 所属スレッドには相対パスチップ
+        let threads = get_threads_by_project(&conn, "root").unwrap();
+        assert_eq!(threads.len(), 2);
+        let leaf_thread = threads.iter().find(|t| t.subject == "音響仕込み").unwrap();
+        assert_eq!(leaf_thread.projects.len(), 1);
+        assert_eq!(leaf_thread.projects[0].display_path, "埼玉 > 音響");
+        let root_thread = threads.iter().find(|t| t.subject == "全体連絡").unwrap();
+        assert!(
+            root_thread.projects.is_empty(),
+            "選択ノード直属はチップなし"
+        );
+
+        // leaf 選択: 自分の1通のみ
+        let threads = get_threads_by_project(&conn, "leaf").unwrap();
+        assert_eq!(threads.len(), 1);
     }
 
     #[test]

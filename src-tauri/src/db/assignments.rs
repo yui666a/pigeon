@@ -158,17 +158,54 @@ pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec
 
 /// Get mails assigned to a specific project.
 pub fn get_mails_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Mail>, AppError> {
-    let mut stmt = conn.prepare(&format!(
+    get_mails_by_projects(conn, std::slice::from_ref(&project_id.to_string()))
+}
+
+/// 複数案件（サブツリー展開済み ID 集合）に所属するメールを一括取得する。
+/// 集約表示（`mails::get_threads_by_project`）が選択ノード配下の全メールを
+/// 1クエリで読むために使う。
+pub fn get_mails_by_projects(
+    conn: &Connection,
+    project_ids: &[String],
+) -> Result<Vec<Mail>, AppError> {
+    if project_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; project_ids.len()].join(",");
+    let sql = format!(
         "SELECT {} FROM mails m
-             JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
-             WHERE mpa.project_id = ?1
-             ORDER BY m.date DESC",
+         JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
+         WHERE mpa.project_id IN ({placeholders})
+         ORDER BY m.date DESC",
         *MAIL_COLUMNS_PREFIXED
-    ))?;
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let mails = stmt
-        .query_map(params![project_id], row_to_mail)?
+        .query_map(rusqlite::params_from_iter(project_ids.iter()), row_to_mail)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
+}
+
+/// mail_id → 直接所属 project_id の対応表（集約表示の注釈用）。
+/// `project_ids` に含まれる案件に直接割り当てられたメールのみを対象にする。
+pub fn get_assignment_map(
+    conn: &Connection,
+    project_ids: &[String],
+) -> Result<HashMap<String, String>, AppError> {
+    if project_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = vec!["?"; project_ids.len()].join(",");
+    let sql = format!(
+        "SELECT mail_id, project_id FROM mail_project_assignments WHERE project_id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let map = stmt
+        .query_map(rusqlite::params_from_iter(project_ids.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+    Ok(map)
 }
 
 /// Get recent mail subjects for a project (used as LLM context for classification).
@@ -327,7 +364,7 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<Vec<St
     // 以前は本文込み全メールのロード + メール毎の get_assignment_info 発行（N+1）だった
     let metas = mails::get_thread_metas_by_account(conn, account_id)?;
     let thread_mail_ids = mails::group_mail_ids_into_threads(&metas);
-    let assigned = get_assignment_map(conn, account_id)?;
+    let assigned = get_assignment_map_by_account(conn, account_id)?;
     // ユーザーが却下したメールは追従の対象外（トゥームストーン）
     let excluded = get_follow_exclusions(conn, account_id)?;
 
@@ -368,7 +405,7 @@ pub fn auto_follow_threads(conn: &Connection, account_id: &str) -> Result<Vec<St
 /// アカウント配下メールの割り当てを一括で読み出す（mail_id → project_id）。
 /// `auto_follow_threads` がメール毎に `get_assignment_info` を発行する N+1 を
 /// 避けるための先読み用。
-fn get_assignment_map(
+fn get_assignment_map_by_account(
     conn: &Connection,
     account_id: &str,
 ) -> Result<HashMap<String, String>, AppError> {
