@@ -221,6 +221,10 @@ pub fn get_assignment_info(
 }
 
 /// Record a user correction in the correction_log table.
+///
+/// 暫定: from_path/to_path (NOT NULL) は projects.name のサブクエリで埋める。
+/// Task 4（correction_log 消費コードのパススナップショット化）で呼び出し元から
+/// フルパス（祖先を含む " > " 区切り）を受け取る形に置き換える。
 pub fn insert_correction(
     conn: &Connection,
     mail_id: &str,
@@ -228,8 +232,11 @@ pub fn insert_correction(
     to_project: &str,
 ) -> Result<(), AppError> {
     conn.execute(
-        "INSERT INTO correction_log (mail_id, from_project, to_project)
-         VALUES (?1, ?2, ?3)",
+        "INSERT INTO correction_log (mail_id, from_project, from_path, to_project, to_path)
+         VALUES (?1, ?2,
+                 (SELECT name FROM projects WHERE id = ?2),
+                 ?3,
+                 COALESCE((SELECT name FROM projects WHERE id = ?3), ''))",
         params![mail_id, from_project, to_project],
     )?;
     Ok(())
@@ -702,6 +709,31 @@ mod tests {
             Some("Project Alpha".to_string())
         );
         assert_eq!(corrections[0].to_project, "Project Beta");
+    }
+
+    #[test]
+    fn test_insert_correction_snapshots_path_columns() {
+        // 暫定実装: insert_correction が内部で projects.name をサブクエリ解決して
+        // correction_log.from_path/to_path (NOT NULL) を埋めることを検証する。
+        // Task 4 で呼び出し元からフルパスを受け取る形に置き換わるまでの橋渡し。
+        let conn = setup_db();
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        create_project(&conn, "proj2", "acc1", "Project Beta");
+
+        let m1 = make_mail("m1", "acc1", "Mail Subject", "2026-04-13T10:00:00");
+        insert_mail(&conn, &m1);
+
+        insert_correction(&conn, "m1", Some("proj1"), "proj2").unwrap();
+
+        let (from_path, to_path): (Option<String>, String) = conn
+            .query_row(
+                "SELECT from_path, to_path FROM correction_log WHERE mail_id = 'm1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(from_path.as_deref(), Some("Project Alpha"));
+        assert_eq!(to_path, "Project Beta");
     }
 
     #[test]
