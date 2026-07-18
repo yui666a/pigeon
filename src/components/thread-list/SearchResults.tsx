@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import { useSearchStore } from "../../stores/searchStore";
 import { useSavedSearchStore } from "../../stores/savedSearchStore";
@@ -78,10 +78,13 @@ export function SearchResults() {
   // 表示配列。selectedIndex（j/k ナビ）と右ペイン同期の両方が
   // この単一の配列を参照することで、表示順と選択対象の不一致を防ぐ。
   // 日付順は mail.date の ISO 文字列を降順（localeCompare）で並べる。
-  const displayResults =
-    sortBy === "date"
-      ? [...results].sort((a, b) => b.mail.date.localeCompare(a.mail.date))
-      : results;
+  const displayResults = useMemo(
+    () =>
+      sortBy === "date"
+        ? [...results].sort((a, b) => b.mail.date.localeCompare(a.mail.date))
+        : results,
+    [results, sortBy],
+  );
 
   // j/k ナビによる selectedIndex の変化を右ペインに反映する
   // （クリック選択と同じ経路。selectThread(null) が先でないと
