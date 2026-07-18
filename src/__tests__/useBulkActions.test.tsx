@@ -43,6 +43,7 @@ const threads: Thread[] = [
     mail_count: 2,
     from_addrs: ["a@example.com"],
     mails: [mail("m1"), mail("m2")],
+    projects: [],
   },
 ];
 

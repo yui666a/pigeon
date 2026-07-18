@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const project: Project = {
   id: "p1", account_id: "acc1", name: "春公演", description: null,
-  color: null, is_archived: false, created_at: "", updated_at: "",
+  color: null, is_archived: false, parent_id: null, created_at: "", updated_at: "",
 };
 const directory: ProjectDirectory = {
   id: "d1", project_id: "p1", path: "/tmp/stage-a", is_primary: true,

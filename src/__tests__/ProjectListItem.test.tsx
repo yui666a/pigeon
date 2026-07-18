@@ -12,6 +12,7 @@ const project: Project = {
   description: null,
   color: "#3E617F",
   is_archived: false,
+  parent_id: null,
   created_at: "",
   updated_at: "",
 };

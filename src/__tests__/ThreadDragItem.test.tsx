@@ -42,6 +42,7 @@ const thread = (mails: Mail[]): Thread => ({
   mail_count: mails.length,
   from_addrs: mails.map((m) => m.from_addr),
   mails,
+  projects: [],
 });
 
 describe("ThreadDragItem", () => {

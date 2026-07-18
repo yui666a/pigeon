@@ -83,6 +83,15 @@ export interface Thread {
   mail_count: number;
   from_addrs: string[];
   mails: Mail[];
+  /** 集約表示（サブツリー展開）でのみ埋まる。選択ノード自身を除く所属案件の集合 */
+  projects: ThreadProjectRef[];
+}
+
+/** 集約表示でスレッドに付ける「どの案件のメールか」の注釈 */
+export interface ThreadProjectRef {
+  project_id: string;
+  /** 選択ノードからの相対パス（例: "埼玉 > 音響"） */
+  display_path: string;
 }
 
 /** 一括操作（bulk_delete_mails 等）の結果。1件の失敗で残りは止めない */

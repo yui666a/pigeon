@@ -22,8 +22,23 @@ describe("projectApi", () => {
       name: "案件A",
       description: null,
       color: null,
+      parentId: null,
     });
     expect(created).toEqual(project);
+  });
+
+  it("createProject は parentId を渡す", async () => {
+    mockInvoke.mockResolvedValue({ id: "p2", name: "子案件" });
+
+    await projectApi.createProject("acc1", "子案件", undefined, undefined, "p1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("create_project", {
+      accountId: "acc1",
+      name: "子案件",
+      description: null,
+      color: null,
+      parentId: "p1",
+    });
   });
 
   it("updateProject は省略項目を null に変換して渡す", async () => {
@@ -49,5 +64,53 @@ describe("projectApi", () => {
       targetId: "dst",
     });
     expect(moved).toBe(3);
+  });
+
+  it("setProjectParent は set_project_parent を呼ぶ", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await projectApi.setProjectParent("p1", "p2");
+
+    expect(mockInvoke).toHaveBeenCalledWith("set_project_parent", {
+      projectId: "p1",
+      parentId: "p2",
+    });
+  });
+
+  it("setProjectParent は null でルートへ移動できる", async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await projectApi.setProjectParent("p1", null);
+
+    expect(mockInvoke).toHaveBeenCalledWith("set_project_parent", {
+      projectId: "p1",
+      parentId: null,
+    });
+  });
+
+  it("getProjectDeleteImpact は get_project_delete_impact を呼び、結果を返す", async () => {
+    const impact = { projects: 3, mails: 42 };
+    mockInvoke.mockResolvedValue(impact);
+
+    const result = await projectApi.getProjectDeleteImpact("p1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_project_delete_impact", {
+      projectId: "p1",
+    });
+    expect(result).toEqual(impact);
+  });
+
+  it("getEffectiveContext は get_effective_context を呼び、結果を返す", async () => {
+    const entries = [
+      { project_id: "p1", project_name: "A", is_self: true, directory_path: null, context: null },
+    ];
+    mockInvoke.mockResolvedValue(entries);
+
+    const result = await projectApi.getEffectiveContext("p1");
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_effective_context", {
+      projectId: "p1",
+    });
+    expect(result).toEqual(entries);
   });
 });

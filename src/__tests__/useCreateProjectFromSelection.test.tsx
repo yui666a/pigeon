@@ -22,6 +22,7 @@ const makeProject = (id: string): Project => ({
   description: null,
   color: null,
   is_archived: false,
+  parent_id: null,
   created_at: "2026-07-17T00:00:00",
   updated_at: "2026-07-17T00:00:00",
 });

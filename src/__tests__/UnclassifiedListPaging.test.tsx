@@ -44,6 +44,7 @@ const threadOf = (m: Mail): Thread => ({
   mail_count: 1,
   from_addrs: [m.from_addr],
   mails: [m],
+  projects: [],
 });
 
 describe("UnclassifiedList paging", () => {
