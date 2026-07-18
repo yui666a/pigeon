@@ -14,6 +14,7 @@ import { AccountForm } from "./AccountForm";
 import { SearchBar } from "./SearchBar";
 import { SearchModeToggle } from "./SearchModeToggle";
 import { ProjectTree } from "./ProjectTree";
+import { SmartViewList } from "./SmartViewList";
 import { ProjectForm } from "./ProjectForm";
 import { ScanIndicator } from "./ScanIndicator";
 import { SyncIndicator } from "./SyncIndicator";
@@ -151,6 +152,7 @@ export function Sidebar() {
           onSelectUnclassified={() => setViewMode("unclassified")}
           onSelectProject={() => setViewMode("project")}
         />
+        <SmartViewList accountId={selectedAccountId} />
       </div>
       {selectedAccountId && (
         <div className="border-t">
