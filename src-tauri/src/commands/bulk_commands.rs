@@ -180,6 +180,7 @@ mod tests {
             action: ClassifyAction::Create {
                 project_name: "Suggested".into(),
                 description: "desc".into(),
+                parent_project_id: None,
             },
             confidence: 0.8,
             reason: "test".into(),

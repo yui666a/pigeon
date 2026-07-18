@@ -10,7 +10,7 @@ Respond with ONLY a JSON object in one of these formats:
 {\"action\": \"assign\", \"project_id\": \"<id>\", \"confidence\": 0.85, \"reason\": \"...\"}
 
 2. Propose new project:
-{\"action\": \"create\", \"project_name\": \"<name>\", \"description\": \"<desc>\", \"confidence\": 0.78, \"reason\": \"...\"}
+{\"action\": \"create\", \"project_name\": \"<name>\", \"description\": \"<desc>\", \"parent_project_id\": \"<existing project id or omit for a root project>\", \"confidence\": 0.78, \"reason\": \"...\"}
 
 3. Cannot classify:
 {\"action\": \"unclassified\", \"confidence\": 0.30, \"reason\": \"...\"}
@@ -19,6 +19,7 @@ Rules:
 - confidence is a float between 0.0 and 1.0
 - reason is a brief explanation in Japanese
 - When no existing project matches well, use \"create\" to propose a new one
+- If the email is a subtopic of an existing project, you may \"create\" it as a child of that project by setting parent_project_id.
 - Use \"unclassified\" only when the email content is too ambiguous to classify
 - The sender address is a strong signal; prefer a project whose frequent senders match the email's From.
 - Projects form a hierarchy shown as \"path\" (e.g. \"Tour > Venue > Sound\").
