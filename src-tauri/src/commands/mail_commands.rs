@@ -21,6 +21,25 @@ struct SyncProgressEvent {
     total: usize,
 }
 
+/// embed-progress イベントの payload（同期後に走る埋め込みパスの進捗）
+#[derive(Clone, serde::Serialize)]
+struct EmbedProgressEvent {
+    done: u64,
+    total: u64,
+}
+
+/// 同期成功後に埋め込みキューの消化パスを1回 spawn する。
+/// 多重起動は EmbeddingRunGuard で防ぐ（起動時パスと排他）。
+/// Ollama 接続エラーは run_embedding_pass 内で Ok 打ち切りになるため、
+/// ここではエラーを飲み込んで eprintln! するだけで良い（共通処理は
+/// embedding::worker::spawn_embedding_pass に集約）。
+fn spawn_embedding_pass(app: &AppHandle) {
+    let app_handle = app.clone();
+    crate::embedding::worker::spawn_embedding_pass(app, move |done, total| {
+        let _ = app_handle.emit("embed-progress", EmbedProgressEvent { done, total });
+    });
+}
+
 #[tauri::command]
 pub async fn sync_account(
     app: AppHandle,
@@ -49,7 +68,7 @@ async fn sync_account_locked(
     account_id: &str,
 ) -> Result<u32, AppError> {
     let account = state.with_conn(|conn| accounts::get_account(conn, account_id))?;
-    sync_service::sync_account(
+    let result = sync_service::sync_account(
         state,
         &account,
         || resolve_imap_credentials(&account, secure_store),
@@ -65,7 +84,13 @@ async fn sync_account_locked(
             );
         },
     )
-    .await
+    .await;
+    if result.is_ok() {
+        // 新規取り込みメールをチャンク化・埋め込みするパスを非同期で開始する
+        // （検索索引の更新。同期そのものの成否・速度には影響させない）
+        spawn_embedding_pass(app);
+    }
+    result
 }
 
 /// backfill-progress イベントの payload。sync-progress とは別イベントにしている

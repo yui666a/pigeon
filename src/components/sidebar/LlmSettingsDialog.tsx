@@ -55,6 +55,7 @@ export function LlmSettingsDialog({ onClose }: Props) {
     vertexModel: s.vertex_model,
     vertexSaJson: saJsonInput === "" ? null : saJsonInput,
     geminiModel: s.gemini_model,
+    embeddingModel: s.embedding_model,
   });
 
   const handleSave = async () => {

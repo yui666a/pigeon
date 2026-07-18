@@ -18,6 +18,7 @@ const baseSettings = {
   vertex_model: "claude-haiku-4-5@20251001",
   vertex_sa_json_set: false,
   gemini_model: "gemini-3.5-flash",
+  embedding_model: "bge-m3",
 };
 
 beforeEach(() => {

@@ -13,6 +13,7 @@ const VERTEX_SA_JSON: &str = "vertex_sa_json";
 const DEFAULT_VERTEX_LOCATION: &str = "global";
 const DEFAULT_VERTEX_MODEL: &str = "claude-haiku-4-5@20251001";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash";
+const DEFAULT_EMBEDDING_MODEL: &str = "bge-m3";
 
 /// SecureStore に非空の値が保存されているかを返す。
 fn secret_is_set(store: &SecureStore, key: &str) -> Result<bool, AppError> {
@@ -46,6 +47,11 @@ pub(crate) fn load_llm_settings(
         vertex_model: settings::get_or_default(conn, "vertex_model", DEFAULT_VERTEX_MODEL)?,
         vertex_sa_json_set: secret_is_set(store, VERTEX_SA_JSON)?,
         gemini_model: settings::get_or_default(conn, "gemini_model", DEFAULT_GEMINI_MODEL)?,
+        embedding_model: settings::get_or_default(
+            conn,
+            "embedding_model",
+            DEFAULT_EMBEDDING_MODEL,
+        )?,
     })
 }
 
@@ -63,6 +69,7 @@ pub(crate) fn store_llm_settings(
     vertex_model: &str,
     vertex_sa_json: Option<String>,
     gemini_model: &str,
+    embedding_model: &str,
 ) -> Result<(), AppError> {
     settings::set(conn, "llm_provider", provider)?;
     settings::set(conn, "ollama_endpoint", ollama_endpoint)?;
@@ -72,6 +79,7 @@ pub(crate) fn store_llm_settings(
     settings::set(conn, "vertex_location", vertex_location)?;
     settings::set(conn, "vertex_model", vertex_model)?;
     settings::set(conn, "gemini_model", gemini_model)?;
+    settings::set(conn, "embedding_model", embedding_model)?;
     // 空文字は「変更しない」。既存の秘密情報を保持する。
     store_secret_if_present(store, CLAUDE_API_KEY, claude_api_key)?;
     store_secret_if_present(store, VERTEX_SA_JSON, vertex_sa_json)?;
@@ -115,6 +123,7 @@ pub fn set_llm_settings(
     vertex_model: String,
     vertex_sa_json: Option<String>,
     gemini_model: String,
+    embedding_model: String,
 ) -> Result<(), AppError> {
     db.with_conn(|conn| {
         store_llm_settings(
@@ -130,6 +139,7 @@ pub fn set_llm_settings(
             &vertex_model,
             vertex_sa_json,
             &gemini_model,
+            &embedding_model,
         )
     })
 }
@@ -177,6 +187,7 @@ mod tests {
     use crate::db::migrations::run_migrations;
 
     fn setup() -> (Connection, SecureStore) {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         // InMemory SecureStore は実 Stronghold のスナップショット I/O（1 回 55 秒）を
@@ -192,6 +203,7 @@ mod tests {
         assert_eq!(s.provider, "ollama");
         assert_eq!(s.claude_model, "claude-haiku-4-5");
         assert!(!s.claude_api_key_set);
+        assert_eq!(s.embedding_model, "bge-m3");
     }
 
     #[test]
@@ -221,12 +233,14 @@ mod tests {
             "claude-haiku-4-5@20251001",
             None,
             "gemini-3.5-flash",
+            "nomic-embed-text",
         )
         .unwrap();
         let s = load_llm_settings(&conn, &store).unwrap();
         assert_eq!(s.provider, "claude");
         assert_eq!(s.claude_model, "claude-sonnet-5");
         assert!(s.claude_api_key_set);
+        assert_eq!(s.embedding_model, "nomic-embed-text");
     }
 
     #[test]
@@ -246,6 +260,7 @@ mod tests {
             "claude-haiku-4-5@20251001",
             None,
             "gemini-3.5-flash",
+            "bge-m3",
         )
         .unwrap();
         // 空文字入力では既存キーが保持される
@@ -269,6 +284,7 @@ mod tests {
             "claude-sonnet-5",
             Some("{\"type\":\"service_account\"}".to_string()),
             "gemini-3.5-flash",
+            "bge-m3",
         )
         .unwrap();
         let s = load_llm_settings(&conn, &store).unwrap();
@@ -295,6 +311,7 @@ mod tests {
             "claude-haiku-4-5@20251001",
             Some("".to_string()),
             "gemini-3.5-flash",
+            "bge-m3",
         )
         .unwrap();
         // 空文字入力では既存 SA JSON が保持される

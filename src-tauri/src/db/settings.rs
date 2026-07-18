@@ -37,6 +37,7 @@ mod tests {
     use crate::db::migrations::run_migrations;
 
     fn setup_db() -> Connection {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         conn

@@ -15,6 +15,7 @@ use rusqlite::Connection;
 /// bundled SQLite は SQLITE_DEFAULT_FOREIGN_KEYS=1 でビルドされるためデフォルトでも
 /// ON になるが、ビルド設定に依存せず本番と同じ挙動を保証するため明示する。
 pub fn setup_db() -> Connection {
+    crate::db::vec_ext::register();
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     migrations::run_migrations(&conn).unwrap();

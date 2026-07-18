@@ -18,4 +18,6 @@ export interface LlmSettings {
   vertex_sa_json_set: boolean;
   // Gemini on Vertex AI (gemini_vertex)。SA/project/location は上記と共通
   gemini_model: string;
+  // 埋め込みモデル（セマンティック検索用）。次元・プレフィックスは v1 では非公開
+  embedding_model: string;
 }

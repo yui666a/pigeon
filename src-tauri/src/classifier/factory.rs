@@ -168,6 +168,7 @@ mod tests {
     use crate::db::migrations::run_migrations;
 
     fn setup() -> (Connection, SecureStore) {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         // InMemory SecureStore は実 Stronghold のスナップショット I/O（1 回 55 秒）を

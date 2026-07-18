@@ -2,8 +2,10 @@ pub mod classifier;
 pub mod commands;
 pub mod context;
 pub mod db;
+pub mod embedding;
 pub mod env_config;
 pub mod error;
+pub mod mail_chunker;
 pub mod mail_sync;
 pub mod models;
 pub mod project_context;
@@ -21,6 +23,7 @@ use db::migrations;
 use mail_sync::oauth::OAuthStateStore;
 use rusqlite::Connection;
 use state::DbState;
+use state::EmbeddingRunGuard;
 use state::IdleWatchers;
 use state::SecureStoreState;
 use state::SyncLocks;
@@ -39,6 +42,7 @@ pub fn run() {
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
     let db_path = data_dir.join("pigeon.db");
+    db::vec_ext::register();
     let conn = Connection::open(&db_path).expect("Failed to open database");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("Failed to enable foreign keys");
@@ -87,6 +91,7 @@ pub fn run() {
         .manage(IdleWatchers::new())
         .manage(classifier::service::PendingClassifications::new())
         .manage(classifier::service::ClassifyBatches::new())
+        .manage(EmbeddingRunGuard::new())
         .setup(|app| {
             // Register deep link handler for OAuth callback
             #[cfg(not(target_os = "android"))]
@@ -202,6 +207,10 @@ pub fn run() {
                     }
                 });
             }
+
+            // 起動時: 埋め込みキューの消化パスを1回走らせる（v18 埋め込み基盤）。
+            // Ollama 停止中でも起動は妨げない（with_conn 内・pass 内のエラーは eprintln! のみ）。
+            embedding::worker::spawn_embedding_pass(app.handle(), |_done, _total| {});
 
             Ok(())
         })

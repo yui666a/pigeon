@@ -171,9 +171,15 @@ const MIGRATIONS: &[Migration] = &[
     (15, migrate_v15),
     (16, migrate_v16),
     (17, migrate_v17),
+    (18, migrate_v18),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
+    // 保険: 通常は Connection::open の前に register() 済みだが、直接
+    // Connection::open_in_memory() してから run_migrations を呼ぶ経路もあるため
+    // ここでも呼ぶ（Once なので冪等。ただし初回接続には効かない場合がある——
+    // 詳細は vec_ext のドキュメント参照）。
+    crate::db::vec_ext::register();
     apply_migrations(conn, MIGRATIONS)
 }
 
@@ -477,6 +483,32 @@ fn migrate_v17(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v18: ベクトル検索用のチャンクテーブルと sqlite-vec 索引を作成する。
+/// vec_chunks の次元 1024 は埋め込みモデル（bge-m3）に対応する。
+/// モデル変更時は両テーブルを作り直して全再埋め込みする（設計書参照）。
+fn migrate_v18(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS mail_chunks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            mail_id     TEXT NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+            chunk_index INTEGER NOT NULL,
+            content     TEXT NOT NULL,
+            embedded_at TEXT,
+            UNIQUE(mail_id, chunk_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mail_chunks_pending
+            ON mail_chunks(embedded_at) WHERE embedded_at IS NULL;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
+            chunk_id INTEGER PRIMARY KEY,
+            embedding float[1024] distance_metric=cosine
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,11 +549,12 @@ mod tests {
 
     #[test]
     fn test_failed_migration_rolls_back_partial_changes() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((18, migrate_broken_partial));
+        with_broken.push((19, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -534,54 +567,57 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            17,
+            18,
             "失敗したバージョンに schema_version は進まない"
         );
     }
 
     #[test]
     fn test_rerun_after_failure_completes_without_duplicate_column() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((18, migrate_broken_partial));
+        with_broken.push((19, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((18, migrate_fixed));
+        with_fixed.push((19, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 18);
+        assert_eq!(schema_version(&conn), 19);
     }
 
     #[test]
     fn test_earlier_versions_stay_committed_when_later_version_fails() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((18, migrate_broken_partial));
+        with_broken.push((19, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v17）はコミット済みのまま
+        // 成功済みバージョン（v1〜v18）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            17,
+            18,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 17);
+        assert_eq!(schema_version(&conn), 18);
     }
 
     #[test]
     fn test_run_migrations_creates_tables() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
@@ -601,6 +637,7 @@ mod tests {
 
     #[test]
     fn test_run_migrations_is_idempotent() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap();
@@ -608,6 +645,7 @@ mod tests {
 
     #[test]
     fn test_v2_migration_adds_provider_column() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
@@ -631,6 +669,7 @@ mod tests {
 
     #[test]
     fn test_v2_migration_provider_check_constraint() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
@@ -652,6 +691,7 @@ mod tests {
 
     #[test]
     fn test_foreign_keys_enabled() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -670,6 +710,7 @@ mod tests {
 
     #[test]
     fn test_v3_migration_creates_projects_and_assignments() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -690,11 +731,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_v3_migration_account_trigger_prevents_cross_account() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -739,6 +781,7 @@ mod tests {
 
     #[test]
     fn test_v3_migration_same_account_assignment_succeeds() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -773,6 +816,7 @@ mod tests {
 
     #[test]
     fn test_v3_cascade_delete_project() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -829,6 +873,7 @@ mod tests {
 
     #[test]
     fn test_v2_migration_on_existing_v1_database() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
 
         // Simulate a V1 database (tables created without provider column)
@@ -897,11 +942,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_v4_migration_creates_fts_table() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -923,11 +969,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_v4_migration_backfills_existing_mails() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
 
@@ -1056,6 +1103,7 @@ mod tests {
 
     #[test]
     fn test_v5_migration_creates_directory_tables() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1076,11 +1124,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_v5_cascade_delete_from_project() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1139,6 +1188,7 @@ mod tests {
 
     #[test]
     fn test_v5_unique_path_prevents_double_link() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1180,6 +1230,7 @@ mod tests {
 
     #[test]
     fn test_v5_one_primary_per_project() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1213,6 +1264,7 @@ mod tests {
 
     #[test]
     fn test_v7_adds_is_read_column_with_default_zero() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1241,6 +1293,7 @@ mod tests {
 
     #[test]
     fn test_v7_existing_rows_become_unread() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         // v6 までを適用した状態で既存メールを仕込む
@@ -1278,11 +1331,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_v10_adds_uid_confirmed_defaulting_to_one() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1313,6 +1367,7 @@ mod tests {
 
     #[test]
     fn test_v10_backfills_existing_sent_rows_as_unconfirmed() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         // v8 までを適用した状態（Sent 同期が存在しなかった時代）で既存メールを仕込む
@@ -1372,11 +1427,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_v6_unique_index_rejects_duplicate_uid() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1416,6 +1472,7 @@ mod tests {
 
     #[test]
     fn test_v6_dedupes_existing_duplicates_preferring_assigned_rows() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1473,6 +1530,7 @@ mod tests {
 
     #[test]
     fn test_migrate_v8_creates_attachments_table() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
@@ -1488,11 +1546,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_attachments_cascade_on_mail_delete() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1526,6 +1585,7 @@ mod tests {
 
     #[test]
     fn test_v9_adds_is_flagged_column_with_default_zero() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1553,6 +1613,7 @@ mod tests {
 
     #[test]
     fn test_v9_backfills_is_flagged_from_existing_flags_column() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         // v8 までを適用した状態で既存メールを仕込む（flags 列にサーバーフラグ文字列がある想定）
@@ -1613,11 +1674,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_migrate_v12_creates_drafts_table() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
 
@@ -1633,11 +1695,12 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
     }
 
     #[test]
     fn test_drafts_defaults_and_cascade_on_account_delete() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1677,6 +1740,7 @@ mod tests {
 
     #[test]
     fn test_v14_follow_exclusions_table_and_cascade() {
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         run_migrations(&conn).unwrap();
@@ -1724,6 +1788,7 @@ mod tests {
     fn test_v17_upgrade_normalizes_existing_fts_rows() {
         // 実際のアップグレードパスの再現: v16 時点の DB（トリガー同期・
         // 非正規化 FTS 索引）にデータがある状態から v17 を適用する
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
 
@@ -1763,7 +1828,7 @@ mod tests {
 
         // 残りのマイグレーション（v17）を適用
         apply_migrations(&conn, MIGRATIONS).unwrap();
-        assert_eq!(schema_version(&conn), 17);
+        assert_eq!(schema_version(&conn), 18);
 
         let trigger_count: i32 = conn
             .query_row(
