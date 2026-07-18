@@ -35,6 +35,11 @@ export function NewProjectProposal({
   const [parentId, setParentId] = useState(parentProjectId ?? "");
 
   const targetPath = parentId ? projectPathString(projects, parentId) : "";
+  const sortedProjects = [...projects].sort((a, b) =>
+    projectPathString(projects, a.id).localeCompare(
+      projectPathString(projects, b.id),
+    ),
+  );
 
   return (
     <div className="rounded border border-yellow-300 bg-yellow-50 p-3">
@@ -63,9 +68,9 @@ export function NewProjectProposal({
             className="min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
           >
             <option value="">ルート（親なし）</option>
-            {projects.map((p) => (
+            {sortedProjects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {projectPathString(projects, p.id)}
               </option>
             ))}
           </select>

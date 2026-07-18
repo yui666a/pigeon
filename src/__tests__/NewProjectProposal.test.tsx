@@ -98,6 +98,40 @@ describe("NewProjectProposal", () => {
     expect(screen.getByRole("option", { name: "別案件" })).toBeInTheDocument();
   });
 
+  it("labels parent options with their full path so same-named projects under different parents are distinguishable", () => {
+    const projects = [
+      p("tour", "ツアー", null),
+      p("a", "案件X", "tour"),
+      p("other", "別案件", null),
+      p("b", "案件X", "other"),
+    ];
+    render(
+      <NewProjectProposal
+        {...defaultProps}
+        parentProjectId="tour"
+        projects={projects}
+      />,
+    );
+    const select = screen.getByLabelText("作成先の親案件");
+    expect(
+      screen.getByRole("option", { name: "ツアー > 案件X" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "別案件 > 案件X" }),
+    ).toBeInTheDocument();
+    // ソートはパス文字列順
+    const optionTexts = Array.from(select.querySelectorAll("option")).map(
+      (o) => o.textContent,
+    );
+    expect(optionTexts).toEqual([
+      "ルート（親なし）",
+      "ツアー",
+      "ツアー > 案件X",
+      "別案件",
+      "別案件 > 案件X",
+    ]);
+  });
+
   it("changing the parent dropdown updates the displayed target path and passed parentProjectId", () => {
     const onApprove = vi.fn();
     const projects = [p("tour", "ツアー", null), p("other", "別案件", null)];

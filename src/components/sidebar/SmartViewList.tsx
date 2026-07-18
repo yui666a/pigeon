@@ -3,6 +3,7 @@ import { ContextMenu } from "../common/ContextMenu";
 import { useSavedSearchStore } from "../../stores/savedSearchStore";
 import { useSearchStore } from "../../stores/searchStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useProjectStore } from "../../stores/projectStore";
 
 interface SmartViewListProps {
   accountId: string | null;
@@ -21,6 +22,7 @@ export function SmartViewList({ accountId }: SmartViewListProps) {
   const setMode = useSearchStore((s) => s.setMode);
   const search = useSearchStore((s) => s.search);
   const setViewMode = useUiStore((s) => s.setViewMode);
+  const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
   const [menu, setMenu] = useState<{ x: number; y: number; id: number } | null>(
     null,
   );
@@ -38,7 +40,7 @@ export function SmartViewList({ accountId }: SmartViewListProps) {
     const s = savedSearches.find((v) => v.id === id);
     if (!s || !accountId) return;
     setMode(s.mode);
-    void search(accountId, s.query);
+    void search(accountId, s.query, selectedProjectId ?? undefined);
     setViewMode("search");
   };
 
