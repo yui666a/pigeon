@@ -676,6 +676,7 @@ mod tests {
             name: "Proj".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         assignments::assign_mail(&conn, "m1", &proj.id, "ai", Some(0.9)).unwrap();
@@ -694,6 +695,7 @@ mod tests {
             name: "Empty".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let proj = projects::insert_project(&conn, &req).unwrap();
         let threads = mails::get_threads_by_project(&conn, &proj.id).unwrap();

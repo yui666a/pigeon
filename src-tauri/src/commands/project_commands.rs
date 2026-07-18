@@ -12,12 +12,14 @@ pub fn create_project(
     name: String,
     description: Option<String>,
     color: Option<String>,
+    parent_id: Option<String>,
 ) -> Result<Project, AppError> {
     let req = CreateProjectRequest {
         account_id,
         name,
         description,
         color,
+        parent_id,
     };
     state.with_conn(|conn| projects::insert_project(conn, &req))
 }
@@ -61,7 +63,18 @@ pub fn merge_projects(
     source_id: String,
     target_id: String,
 ) -> Result<u32, AppError> {
-    state.with_conn_mut(|conn| projects::merge_projects(conn, &source_id, &target_id))
+    state.with_conn(|conn| projects::merge_projects(conn, &source_id, &target_id))
+}
+
+/// 案件の祖先パス（ルート→自ノード）に沿った加算的な有効コンテキストを返す。
+/// 各エントリの定義元ノードが明示されるので、クラウド送信可否は呼び出し側が
+/// 定義元ノードの `allow_cloud_context` に従って個別判定する（ルールの合成はしない）。
+#[tauri::command]
+pub fn get_effective_context(
+    state: State<DbState>,
+    project_id: String,
+) -> Result<Vec<projects::EffectiveContextEntry>, AppError> {
+    state.with_conn(|conn| projects::build_effective_context(conn, &project_id))
 }
 
 #[cfg(test)]
@@ -78,6 +91,7 @@ mod tests {
             name: "Alpha".into(),
             description: Some("First".into()),
             color: Some("#ff0000".into()),
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
         assert_eq!(project.name, "Alpha");
@@ -96,6 +110,7 @@ mod tests {
             name: "Old Name".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
 
@@ -117,6 +132,7 @@ mod tests {
             name: "To Archive".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
         projects::archive_project(&conn, &project.id).unwrap();
@@ -134,6 +150,7 @@ mod tests {
             name: "To Delete".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let project = projects::insert_project(&conn, &req).unwrap();
         projects::delete_project(&conn, &project.id).unwrap();
@@ -156,12 +173,14 @@ mod tests {
             name: "Acc1 Project".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         let req2 = CreateProjectRequest {
             account_id: "acc2".into(),
             name: "Acc2 Project".into(),
             description: None,
             color: None,
+            parent_id: None,
         };
         projects::insert_project(&conn, &req1).unwrap();
         projects::insert_project(&conn, &req2).unwrap();

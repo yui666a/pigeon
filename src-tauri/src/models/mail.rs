@@ -53,4 +53,16 @@ pub struct Thread {
     pub mail_count: usize,
     pub from_addrs: Vec<String>,
     pub mails: Vec<Mail>,
+    /// 集約表示（サブツリー展開）でのみ埋まる。メンバーメールの直接所属案件のうち、
+    /// 選択ノード自身を除いたものの集合。選択ノード直属のみのスレッドは空。
+    pub projects: Vec<ThreadProjectRef>,
+}
+
+/// 集約表示でスレッドに付ける「どの案件のメールか」の注釈。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadProjectRef {
+    pub project_id: String,
+    /// 選択ノードからの相対パス（例: 選択が「ツアー」なら "埼玉 > 音響"）。
+    /// 階層内では同名案件が共存し得るため単一 name ではなくパスにする。
+    pub display_path: String,
 }

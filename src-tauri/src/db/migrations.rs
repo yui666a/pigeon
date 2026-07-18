@@ -173,6 +173,7 @@ const MIGRATIONS: &[Migration] = &[
     (17, migrate_v17),
     (18, migrate_v18),
     (19, migrate_v19),
+    (20, migrate_v20),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -181,6 +182,13 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
     // ここでも呼ぶ（Once なので冪等。ただし初回接続には効かない場合がある——
     // 詳細は vec_ext のドキュメント参照）。
     crate::db::vec_ext::register();
+    // FK 未強制の接続でスキーマだけ進む事故を防ぐ（トリガー・CASCADE が全て前提にする）
+    let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    if fk != 1 {
+        return Err(AppError::Validation(
+            "PRAGMA foreign_keys must be ON before running migrations".into(),
+        ));
+    }
     apply_migrations(conn, MIGRATIONS)
 }
 
@@ -527,6 +535,100 @@ fn migrate_v19(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v20: 案件の階層化。
+/// - projects.parent_id（自己参照FK。CASCADE は防御層で、削除の正常経路は
+///   db::projects::delete_project の葉先行明示削除——SQLite の FK CASCADE は
+///   トリガー再帰深度上限（既定1000）に服するため）
+/// - 階層不変条件のトリガー（循環禁止・同一アカウント・account_id 不変）。
+///   アプリ層検証の迂回経路（修復スクリプト等）に対する最終防衛線
+/// - correction_log をパススナップショット化（from_path/to_path）し FK を両方
+///   SET NULL に再構築。マージ・削除で few-shot 学習例が変質・消滅する既存バグの根治
+fn migrate_v20(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE projects ADD COLUMN parent_id TEXT REFERENCES projects(id) ON DELETE CASCADE;
+        CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_id);
+
+        CREATE TRIGGER trg_projects_no_cycle
+        BEFORE UPDATE OF parent_id ON projects
+        WHEN NEW.parent_id IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'project hierarchy cycle')
+            WHERE NEW.parent_id = NEW.id
+               OR NEW.parent_id IN (
+                    WITH RECURSIVE desc_ids(id) AS (
+                        SELECT id FROM projects WHERE parent_id = NEW.id
+                        UNION ALL
+                        SELECT p.id FROM projects p JOIN desc_ids d ON p.parent_id = d.id
+                    )
+                    SELECT id FROM desc_ids
+               );
+        END;
+
+        CREATE TRIGGER trg_projects_parent_account_insert
+        BEFORE INSERT ON projects
+        WHEN NEW.parent_id IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'parent project not found in same account')
+            WHERE NOT EXISTS (
+                SELECT 1 FROM projects pp
+                WHERE pp.id = NEW.parent_id AND pp.account_id = NEW.account_id
+            );
+        END;
+
+        -- SQLite は同一イベントの複数トリガーを「作成順の逆順」で発火するため、
+        -- このトリガーを account チェックより後に定義することで自己参照 INSERT 時に
+        -- cycle エラーを account エラーより先に出す（両条件が同時に真になるケースがある）
+        CREATE TRIGGER trg_projects_no_cycle_insert
+        BEFORE INSERT ON projects
+        WHEN NEW.parent_id IS NOT NULL AND NEW.parent_id = NEW.id
+        BEGIN
+            SELECT RAISE(ABORT, 'project hierarchy cycle');
+        END;
+
+        CREATE TRIGGER trg_projects_parent_account_update
+        BEFORE UPDATE OF parent_id ON projects
+        WHEN NEW.parent_id IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'parent project not found in same account')
+            WHERE NOT EXISTS (
+                SELECT 1 FROM projects pp
+                WHERE pp.id = NEW.parent_id AND pp.account_id = NEW.account_id
+            );
+        END;
+
+        CREATE TRIGGER trg_projects_account_immutable
+        BEFORE UPDATE OF account_id ON projects
+        WHEN NEW.account_id != OLD.account_id
+        BEGIN
+            SELECT RAISE(ABORT, 'project account_id is immutable');
+        END;
+
+        CREATE TABLE correction_log_new (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            mail_id      TEXT NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+            from_project TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            from_path    TEXT,
+            to_project   TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            to_path      TEXT NOT NULL,
+            corrected_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO correction_log_new (id, mail_id, from_project, from_path, to_project, to_path, corrected_at)
+        SELECT cl.id, cl.mail_id, cl.from_project, fp.name, cl.to_project, COALESCE(tp.name, ''), cl.corrected_at
+        FROM correction_log cl
+        LEFT JOIN projects fp ON cl.from_project = fp.id
+        LEFT JOIN projects tp ON cl.to_project = tp.id;
+        UPDATE sqlite_sequence
+        SET seq = (SELECT seq FROM sqlite_sequence WHERE name = 'correction_log')
+        WHERE name = 'correction_log_new'
+          AND (SELECT seq FROM sqlite_sequence WHERE name = 'correction_log') > seq;
+        DROP TABLE correction_log;
+        ALTER TABLE correction_log_new RENAME TO correction_log;
+        "#,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,13 +668,176 @@ mod tests {
     }
 
     #[test]
+    fn test_v20_projects_parent_fk_exists() {
+        let conn = crate::test_helpers::setup_db();
+        // 自己参照FKが宣言されている
+        let fk_table: String = conn
+            .query_row(
+                "SELECT \"table\" FROM pragma_foreign_key_list('projects') WHERE \"from\" = 'parent_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fk_table, "projects");
+    }
+
+    #[test]
+    fn test_v20_cycle_triggers_reject() {
+        let conn = crate::test_helpers::setup_db();
+        conn.execute_batch(
+            "INSERT INTO projects (id, account_id, name) VALUES ('a', 'acc1', 'A');
+             INSERT INTO projects (id, account_id, name) VALUES ('b', 'acc1', 'B');
+             UPDATE projects SET parent_id = 'a' WHERE id = 'b';",
+        )
+        .unwrap();
+        // 自分を親に
+        let err = conn
+            .execute("UPDATE projects SET parent_id = 'a' WHERE id = 'a'", [])
+            .unwrap_err();
+        assert!(err.to_string().contains("project hierarchy cycle"), "{err}");
+        // 子孫を親に
+        let err = conn
+            .execute("UPDATE projects SET parent_id = 'b' WHERE id = 'a'", [])
+            .unwrap_err();
+        assert!(err.to_string().contains("project hierarchy cycle"), "{err}");
+        // INSERT の自己参照
+        let err = conn
+            .execute(
+                "INSERT INTO projects (id, account_id, name, parent_id) VALUES ('c', 'acc1', 'C', 'c')",
+                [],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("project hierarchy cycle"), "{err}");
+    }
+
+    #[test]
+    fn test_v20_parent_account_and_immutability_triggers() {
+        let conn = crate::test_helpers::setup_db();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'o@ex.com', 'imap.ex.com', 'smtp.ex.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, account_id, name) VALUES ('a1p', 'acc1', 'P1');
+             INSERT INTO projects (id, account_id, name) VALUES ('a2p', 'acc2', 'P2');",
+        )
+        .unwrap();
+        // 異アカウントの親
+        let err = conn
+            .execute("UPDATE projects SET parent_id = 'a1p' WHERE id = 'a2p'", [])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("parent project not found in same account"),
+            "{err}"
+        );
+        // account_id の更新
+        let err = conn
+            .execute(
+                "UPDATE projects SET account_id = 'acc2' WHERE id = 'a1p'",
+                [],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("account_id is immutable"), "{err}");
+    }
+
+    #[test]
+    fn test_v20_correction_log_has_path_columns_and_set_null_fk() {
+        let conn = crate::test_helpers::setup_db();
+        let cols: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('correction_log')")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<String>>>()
+                .unwrap()
+        };
+        assert!(cols.contains(&"from_path".to_string()));
+        assert!(cols.contains(&"to_path".to_string()));
+        // to_project の FK が SET NULL になっている
+        let on_delete: String = conn
+            .query_row(
+                "SELECT on_delete FROM pragma_foreign_key_list('correction_log') WHERE \"from\" = 'to_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(on_delete, "SET NULL");
+    }
+
+    #[test]
+    fn test_v20_correction_log_rebuild_preserves_rows_and_sequence() {
+        // v19 状態の DB を作り、correction_log に行を入れてから v20 を適用する
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        crate::db::vec_ext::register();
+        apply_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        // テストデータ: acc1 は setup_db 相当を手で入れる
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc1', 'T', 't@ex.com', 'i', 's', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'acc1', '照明');
+             INSERT INTO projects (id, account_id, name) VALUES ('p2', 'acc1', '音響');",
+        )
+        .unwrap();
+        let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "S", "2026-07-18T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m).unwrap();
+        conn.execute_batch(
+            "INSERT INTO correction_log (mail_id, from_project, to_project) VALUES ('m1', 'p1', 'p2');
+             INSERT INTO correction_log (mail_id, from_project, to_project) VALUES ('m1', NULL, 'p2');
+             DELETE FROM correction_log WHERE id = 2;",
+        )
+        .unwrap();
+        // v20 適用
+        apply_migrations(&conn, MIGRATIONS).unwrap();
+        // 行が保全され、名前がスナップショットに焼かれている
+        let (from_path, to_path): (Option<String>, String) = conn
+            .query_row(
+                "SELECT from_path, to_path FROM correction_log WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(from_path.as_deref(), Some("照明"));
+        assert_eq!(to_path, "音響");
+        // AUTOINCREMENT 高水位: 発行済み最大 id=2 が引き継がれ、次の挿入は 3
+        conn.execute(
+            "INSERT INTO correction_log (mail_id, from_project, from_path, to_project, to_path)
+             VALUES ('m1', 'p1', '照明', 'p2', '音響')",
+            [],
+        )
+        .unwrap();
+        let new_id: i64 = conn
+            .query_row("SELECT MAX(id) FROM correction_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_id, 3, "削除済み id=2 が再利用されないこと");
+    }
+
+    #[test]
+    fn test_run_migrations_requires_foreign_keys_on() {
+        crate::db::vec_ext::register();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        let err = run_migrations(&conn).unwrap_err();
+        assert!(err.to_string().contains("foreign_keys"), "{err}");
+    }
+
+    #[test]
     fn test_failed_migration_rolls_back_partial_changes() {
         crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((20, migrate_broken_partial));
+        with_broken.push((21, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -585,7 +850,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            19,
+            20,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -594,43 +859,45 @@ mod tests {
     fn test_rerun_after_failure_completes_without_duplicate_column() {
         crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((20, migrate_broken_partial));
+        with_broken.push((21, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((20, migrate_fixed));
+        with_fixed.push((21, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 20);
+        assert_eq!(schema_version(&conn), 21);
     }
 
     #[test]
     fn test_earlier_versions_stay_committed_when_later_version_fails() {
         crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((20, migrate_broken_partial));
+        with_broken.push((21, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v19）はコミット済みのまま
+        // 成功済みバージョン（v1〜v20）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            19,
+            20,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 19);
+        assert_eq!(schema_version(&conn), 20);
     }
 
     #[test]
@@ -749,7 +1016,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -960,7 +1227,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -987,7 +1254,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1142,7 +1409,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1349,7 +1616,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1445,7 +1712,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1564,7 +1831,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1692,7 +1959,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1713,7 +1980,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
     }
 
     #[test]
@@ -1846,7 +2113,7 @@ mod tests {
 
         // 残りのマイグレーション（v17）を適用
         apply_migrations(&conn, MIGRATIONS).unwrap();
-        assert_eq!(schema_version(&conn), 19);
+        assert_eq!(schema_version(&conn), 20);
 
         let trigger_count: i32 = conn
             .query_row(
