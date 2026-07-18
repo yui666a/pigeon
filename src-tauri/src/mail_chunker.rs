@@ -100,14 +100,23 @@ mod tests {
     #[test]
     fn test_short_mail_is_single_chunk_with_subject_prefix() {
         let chunks = chunk_mail("照明の件", Some("仕込み図を送ります"));
-        assert_eq!(chunks, vec!["件名: 照明の件\n仕込み図を送ります".to_string()]);
+        assert_eq!(
+            chunks,
+            vec!["件名: 照明の件\n仕込み図を送ります".to_string()]
+        );
     }
 
     #[test]
     fn test_empty_body_yields_subject_only_chunk() {
         // 本文なしでも必ず1チャンク返す（「処理済み」マーカーを兼ねるため空Vecは不可）
-        assert_eq!(chunk_mail("件名だけ", None), vec!["件名: 件名だけ".to_string()]);
-        assert_eq!(chunk_mail("件名だけ", Some("")), vec!["件名: 件名だけ".to_string()]);
+        assert_eq!(
+            chunk_mail("件名だけ", None),
+            vec!["件名: 件名だけ".to_string()]
+        );
+        assert_eq!(
+            chunk_mail("件名だけ", Some("")),
+            vec!["件名: 件名だけ".to_string()]
+        );
     }
 
     #[test]
@@ -116,7 +125,10 @@ mod tests {
         let chunks = chunk_mail("長文", Some(&body));
         assert!(chunks.len() >= 2, "2000文字は複数チャンクになる");
         for c in &chunks {
-            assert!(c.starts_with("件名: 長文\n"), "全チャンクに件名プレフィックス");
+            assert!(
+                c.starts_with("件名: 長文\n"),
+                "全チャンクに件名プレフィックス"
+            );
             let body_part = c.trim_start_matches("件名: 長文\n");
             assert!(body_part.chars().count() <= CHUNK_TARGET_CHARS);
         }
