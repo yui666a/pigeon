@@ -94,13 +94,10 @@ pub fn build_user_prompt(
     if !corrections.is_empty() {
         prompt.push_str("\n## Past corrections (user feedback)\n");
         for correction in corrections {
-            let from = correction
-                .from_project
-                .as_deref()
-                .unwrap_or("(unclassified)");
+            let from = correction.from_path.as_deref().unwrap_or("(unclassified)");
             prompt.push_str(&format!(
                 "- \"{}\" was moved from {} to {}\n",
-                correction.mail_subject, from, correction.to_project
+                correction.mail_subject, from, correction.to_path
             ));
         }
     }
@@ -202,13 +199,13 @@ mod tests {
         let corrections = vec![
             CorrectionEntry {
                 mail_subject: "Budget plan 2026".to_string(),
-                from_project: Some("proj-2".to_string()),
-                to_project: "proj-1".to_string(),
+                from_path: Some("proj-2".to_string()),
+                to_path: "proj-1".to_string(),
             },
             CorrectionEntry {
                 mail_subject: "Kickoff meeting".to_string(),
-                from_project: None,
-                to_project: "proj-1".to_string(),
+                from_path: None,
+                to_path: "proj-1".to_string(),
             },
         ];
 
@@ -260,8 +257,8 @@ mod tests {
         let corrections: Vec<CorrectionEntry> = (0..5)
             .map(|i| CorrectionEntry {
                 mail_subject: format!("Mail {}", i),
-                from_project: Some(format!("proj-{}", i)),
-                to_project: format!("proj-{}", i + 1),
+                from_path: Some(format!("proj-{}", i)),
+                to_path: format!("proj-{}", i + 1),
             })
             .collect();
         let prompt = build_user_prompt(&mail, &[], &corrections);

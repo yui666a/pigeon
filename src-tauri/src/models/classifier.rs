@@ -50,8 +50,9 @@ pub struct ProjectSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrectionEntry {
     pub mail_subject: String,
-    pub from_project: Option<String>,
-    pub to_project: String,
+    /// 訂正時点のパススナップショット。None = 未分類からの移動
+    pub from_path: Option<String>,
+    pub to_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

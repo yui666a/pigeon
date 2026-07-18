@@ -78,13 +78,23 @@ pub(crate) fn reassign_with_correction(
     from_project: &str,
     to_project: &str,
 ) -> Result<(), AppError> {
+    // パスの解決は行の更新前に行う（from がこの後の処理で消える場合に備える）
+    let from_path = crate::db::projects::project_path_string(conn, from_project)?;
+    let to_path = crate::db::projects::project_path_string(conn, to_project)?;
     conn.execute(
         "UPDATE mail_project_assignments
          SET project_id = ?1, assigned_by = 'user', corrected_from = ?2
          WHERE mail_id = ?3",
         params![to_project, from_project, mail_id],
     )?;
-    insert_correction(conn, mail_id, Some(from_project), to_project)?;
+    insert_correction(
+        conn,
+        mail_id,
+        Some(from_project),
+        Some(&from_path),
+        to_project,
+        &to_path,
+    )?;
     Ok(())
 }
 
@@ -220,43 +230,36 @@ pub fn get_assignment_info(
     Ok(info)
 }
 
-/// Record a user correction in the correction_log table.
-///
-/// 暫定: from_path/to_path (NOT NULL) は projects.name のサブクエリで埋める。
-/// Task 4（correction_log 消費コードのパススナップショット化）で呼び出し元から
-/// フルパス（祖先を含む " > " 区切り）を受け取る形に置き換える。
+/// 訂正を correction_log に記録する。from_path/to_path は訂正時点のパス
+/// スナップショット——案件が後で削除・改名されても few-shot の意味を保存する。
 pub fn insert_correction(
     conn: &Connection,
     mail_id: &str,
     from_project: Option<&str>,
+    from_path: Option<&str>,
     to_project: &str,
+    to_path: &str,
 ) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO correction_log (mail_id, from_project, from_path, to_project, to_path)
-         VALUES (?1, ?2,
-                 (SELECT name FROM projects WHERE id = ?2),
-                 ?3,
-                 COALESCE((SELECT name FROM projects WHERE id = ?3), ''))",
-        params![mail_id, from_project, to_project],
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![mail_id, from_project, from_path, to_project, to_path],
     )?;
     Ok(())
 }
 
 /// Get recent corrections for an account (used as few-shot examples in LLM prompts).
-/// Returns the last `limit` corrections with mail subjects and project names.
+/// Returns the last `limit` corrections with mail subjects and path snapshots.
 pub fn get_recent_corrections(
     conn: &Connection,
     account_id: &str,
     limit: u32,
 ) -> Result<Vec<crate::models::classifier::CorrectionEntry>, AppError> {
+    // projects への JOIN はしない: 参照先が削除された訂正もスナップショットで返す
     let mut stmt = conn.prepare(
-        "SELECT m.subject,
-                pf.name AS from_project_name,
-                pt.name AS to_project_name
+        "SELECT m.subject, cl.from_path, cl.to_path
          FROM correction_log cl
          JOIN mails m ON cl.mail_id = m.id
-         JOIN projects pt ON cl.to_project = pt.id
-         LEFT JOIN projects pf ON cl.from_project = pf.id
          WHERE m.account_id = ?1
          ORDER BY cl.corrected_at DESC, cl.id DESC
          LIMIT ?2",
@@ -265,8 +268,8 @@ pub fn get_recent_corrections(
         .query_map(params![account_id, limit], |row| {
             Ok(crate::models::classifier::CorrectionEntry {
                 mail_subject: row.get(0)?,
-                from_project: row.get(1)?,
-                to_project: row.get(2)?,
+                from_path: row.get(1)?,
+                to_path: row.get(2)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -294,7 +297,8 @@ pub fn move_mail_to_project(
         None => {
             // Unclassified — create new assignment and log
             assign_mail(&tx, mail_id, project_id, "user", Some(1.0))?;
-            insert_correction(&tx, mail_id, None, project_id)?;
+            let to_path = crate::db::projects::project_path_string(&tx, project_id)?;
+            insert_correction(&tx, mail_id, None, None, project_id, &to_path)?;
         }
     }
     // ユーザーが明示的に案件へ割り当てた＝過去の却下の意思を撤回したとみなし、
@@ -699,23 +703,27 @@ mod tests {
         let m1 = make_mail("m1", "acc1", "Mail Subject", "2026-04-13T10:00:00");
         insert_mail(&conn, &m1);
 
-        insert_correction(&conn, "m1", Some("proj1"), "proj2").unwrap();
+        insert_correction(
+            &conn,
+            "m1",
+            Some("proj1"),
+            Some("Project Alpha"),
+            "proj2",
+            "Project Beta",
+        )
+        .unwrap();
 
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert_eq!(corrections.len(), 1);
         assert_eq!(corrections[0].mail_subject, "Mail Subject");
-        assert_eq!(
-            corrections[0].from_project,
-            Some("Project Alpha".to_string())
-        );
-        assert_eq!(corrections[0].to_project, "Project Beta");
+        assert_eq!(corrections[0].from_path, Some("Project Alpha".to_string()));
+        assert_eq!(corrections[0].to_path, "Project Beta");
     }
 
     #[test]
     fn test_insert_correction_snapshots_path_columns() {
-        // 暫定実装: insert_correction が内部で projects.name をサブクエリ解決して
-        // correction_log.from_path/to_path (NOT NULL) を埋めることを検証する。
-        // Task 4 で呼び出し元からフルパスを受け取る形に置き換わるまでの橋渡し。
+        // insert_correction は呼び出し元から渡されたパススナップショットを
+        // そのまま correction_log.from_path/to_path (NOT NULL) に書き込む
         let conn = setup_db();
         create_project(&conn, "proj1", "acc1", "Project Alpha");
         create_project(&conn, "proj2", "acc1", "Project Beta");
@@ -723,7 +731,15 @@ mod tests {
         let m1 = make_mail("m1", "acc1", "Mail Subject", "2026-04-13T10:00:00");
         insert_mail(&conn, &m1);
 
-        insert_correction(&conn, "m1", Some("proj1"), "proj2").unwrap();
+        insert_correction(
+            &conn,
+            "m1",
+            Some("proj1"),
+            Some("Project Alpha"),
+            "proj2",
+            "Project Beta",
+        )
+        .unwrap();
 
         let (from_path, to_path): (Option<String>, String) = conn
             .query_row(
@@ -737,6 +753,76 @@ mod tests {
     }
 
     #[test]
+    fn test_corrections_survive_project_deletion() {
+        let conn = setup_db();
+        let from = crate::db::projects::insert_project_with_id(
+            &conn, "pf", "acc1", "照明", None, None, None,
+        )
+        .unwrap();
+        let to = crate::db::projects::insert_project_with_id(
+            &conn, "pt", "acc1", "音響", None, None, None,
+        )
+        .unwrap();
+        let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "仕込み図", "2026-07-18T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m).unwrap();
+        assign_mail(&conn, "m1", &from.id, "ai", Some(0.9)).unwrap();
+
+        reassign_with_correction(&conn, "m1", &from.id, &to.id).unwrap();
+        // from も to も消しても few-shot は生き残る
+        crate::db::projects::delete_project(&conn, &to.id).unwrap();
+        crate::db::projects::delete_project(&conn, &from.id).unwrap();
+
+        let corrections = get_recent_corrections(&conn, "acc1", 10).unwrap();
+        assert_eq!(corrections.len(), 1);
+        assert_eq!(corrections[0].from_path.as_deref(), Some("照明"));
+        assert_eq!(corrections[0].to_path, "音響");
+    }
+
+    #[test]
+    fn test_correction_snapshot_records_full_path() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf2",
+            "acc1",
+            "照明",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "S", "2026-07-18T10:00:00");
+        crate::db::mails::insert_mail(&conn, &m).unwrap();
+        assign_mail(&conn, "m1", "leaf", "ai", Some(0.9)).unwrap();
+
+        reassign_with_correction(&conn, "m1", "leaf", "leaf2").unwrap();
+
+        let c = &get_recent_corrections(&conn, "acc1", 1).unwrap()[0];
+        assert_eq!(c.from_path.as_deref(), Some("ツアー > 音響"));
+        assert_eq!(c.to_path, "ツアー > 照明");
+    }
+
+    #[test]
     fn test_correction_from_unclassified() {
         let conn = setup_db();
         create_project(&conn, "proj1", "acc1", "Project Alpha");
@@ -744,12 +830,12 @@ mod tests {
         let m1 = make_mail("m1", "acc1", "Subject", "2026-04-13T10:00:00");
         insert_mail(&conn, &m1);
 
-        insert_correction(&conn, "m1", None, "proj1").unwrap();
+        insert_correction(&conn, "m1", None, None, "proj1", "Project Alpha").unwrap();
 
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert_eq!(corrections.len(), 1);
-        assert!(corrections[0].from_project.is_none());
-        assert_eq!(corrections[0].to_project, "Project Alpha");
+        assert!(corrections[0].from_path.is_none());
+        assert_eq!(corrections[0].to_path, "Project Alpha");
     }
 
     #[test]
@@ -766,7 +852,15 @@ mod tests {
                 &format!("2026-04-13T1{}:00:00", i),
             );
             insert_mail(&conn, &m);
-            insert_correction(&conn, &format!("m{}", i), Some("proj1"), "proj2").unwrap();
+            insert_correction(
+                &conn,
+                &format!("m{}", i),
+                Some("proj1"),
+                Some("Project Alpha"),
+                "proj2",
+                "Project Beta",
+            )
+            .unwrap();
         }
 
         let corrections = get_recent_corrections(&conn, "acc1", 3).unwrap();
@@ -789,11 +883,8 @@ mod tests {
 
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert_eq!(corrections.len(), 1);
-        assert_eq!(
-            corrections[0].from_project,
-            Some("Project Alpha".to_string())
-        );
-        assert_eq!(corrections[0].to_project, "Project Beta");
+        assert_eq!(corrections[0].from_path, Some("Project Alpha".to_string()));
+        assert_eq!(corrections[0].to_path, "Project Beta");
     }
 
     #[test]
@@ -827,7 +918,7 @@ mod tests {
 
         let corrections = get_recent_corrections(&conn, "acc1", 20).unwrap();
         assert_eq!(corrections.len(), 1);
-        assert!(corrections[0].from_project.is_none());
+        assert!(corrections[0].from_path.is_none());
     }
 
     #[test]
