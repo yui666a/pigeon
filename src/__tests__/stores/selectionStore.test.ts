@@ -36,6 +36,7 @@ function makeThread(threadId: string, mailIds: string[]): Thread {
     mail_count: mails.length,
     from_addrs: [],
     mails,
+    projects: [],
   };
 }
 

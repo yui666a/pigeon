@@ -48,6 +48,7 @@ function makeThread(threadId: string, mails: Mail[]): Thread {
     mail_count: mails.length,
     from_addrs: [],
     mails,
+    projects: [],
   };
 }
 
@@ -97,6 +98,7 @@ describe("useKeyboardShortcuts: e = archive", () => {
         mail_count: 2,
         from_addrs: [],
         mails: [m1, m2],
+        projects: [],
       },
     });
     render(<Harness />);
@@ -407,6 +409,7 @@ describe("useKeyboardShortcuts: j/k = search results navigation", () => {
         mail_count: 2,
         from_addrs: [],
         mails,
+        projects: [],
       },
       selectedMail: mails[0],
       selectMail,
@@ -439,6 +442,7 @@ describe("useKeyboardShortcuts: j/k = search results navigation", () => {
         mail_count: 2,
         from_addrs: [],
         mails,
+        projects: [],
       },
       selectedMail: mails[0],
       selectMail,

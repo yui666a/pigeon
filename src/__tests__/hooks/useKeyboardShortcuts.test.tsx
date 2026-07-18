@@ -120,6 +120,7 @@ describe("useKeyboardShortcuts", () => {
       mail_count: 2,
       from_addrs: ["tanaka@example.com"],
       mails: [makeMail("m1"), makeMail("m2")],
+      projects: [],
     };
     useMailStore.setState({ selectedThread: thread });
     render(<ShortcutHost />);

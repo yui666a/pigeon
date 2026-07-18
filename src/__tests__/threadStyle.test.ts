@@ -36,6 +36,7 @@ function makeThread(mails: Mail[]): Thread {
     mail_count: mails.length,
     from_addrs: ["alice@example.com"],
     mails,
+    projects: [],
   };
 }
 

@@ -66,6 +66,18 @@ export const ThreadItem = memo(function ThreadItem({
             </span>
           )}
         </div>
+        {thread.projects.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {thread.projects.map((ref) => (
+              <span
+                key={ref.project_id}
+                className="truncate rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500"
+              >
+                {ref.display_path}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

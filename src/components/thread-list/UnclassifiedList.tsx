@@ -73,8 +73,13 @@ export function UnclassifiedList() {
 
   if (!selectedAccountId) return null;
 
-  const handleApproveNewProject = async (mailId: string, projectName: string, description?: string) => {
-    await approveNewProjectStore(mailId, projectName, description);
+  const handleApproveNewProject = async (
+    mailId: string,
+    projectName: string,
+    description?: string,
+    parentProjectId?: string,
+  ) => {
+    await approveNewProjectStore(mailId, projectName, description, parentProjectId);
     removeUnclassifiedMail(mailId);
   };
 
@@ -103,6 +108,8 @@ export function UnclassifiedList() {
               suggestedName={pendingProposal.project_name ?? ""}
               suggestedDescription={pendingProposal.description}
               reason={pendingProposal.reason}
+              parentProjectId={pendingProposal.parent_project_id}
+              projects={projects}
               onApprove={handleApproveNewProject}
               onReject={rejectClassification}
             />

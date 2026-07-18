@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SmartViewList } from "../components/sidebar/SmartViewList";
 import { useSavedSearchStore } from "../stores/savedSearchStore";
 import { useSearchStore } from "../stores/searchStore";
+import { useProjectStore } from "../stores/projectStore";
 import type { SavedSearch } from "../types/savedSearch";
 
 const mockInvoke = vi.fn();
@@ -30,7 +31,9 @@ describe("SmartViewList", () => {
       results: [],
       searching: false,
       selectedIndex: -1,
+      scopeToProject: false,
     });
+    useProjectStore.setState({ selectedProjectId: null });
   });
 
   it("保存済み検索を一覧表示する", () => {
@@ -53,6 +56,20 @@ describe("SmartViewList", () => {
       expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
         accountId: "acc1",
         query: "灯体",
+      });
+    });
+  });
+
+  it("案件内検索トグルON+案件選択中はスマートビュー実行時も検索範囲をその案件に限定する", async () => {
+    useSearchStore.setState({ scopeToProject: true });
+    useProjectStore.setState({ selectedProjectId: "proj-1" });
+    render(<SmartViewList accountId="acc1" />);
+    fireEvent.click(screen.getByText("照明"));
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("semantic_search", {
+        accountId: "acc1",
+        query: "灯体",
+        projectId: "proj-1",
       });
     });
   });

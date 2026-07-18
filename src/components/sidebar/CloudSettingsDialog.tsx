@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Project } from "../../types/project";
+import type { EffectiveContextEntry, Project } from "../../types/project";
 import type {
   CloudRule,
   ProjectContext,
@@ -7,6 +7,7 @@ import type {
   ProjectFile,
 } from "../../types/directory";
 import { directoryApi } from "../../api/directoryApi";
+import { projectApi } from "../../api/projectApi";
 import { errorMessage } from "../../api/errors";
 import { effectiveAllow, planToggle } from "../../utils/cloudPolicy";
 import { useErrorStore } from "../../stores/errorStore";
@@ -61,18 +62,21 @@ export function CloudSettingsDialog({
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [rules, setRules] = useState<CloudRule[]>([]);
   const [context, setContext] = useState<ProjectContext | null>(null);
+  const [effectiveContext, setEffectiveContext] = useState<EffectiveContextEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(async () => {
     try {
-      const [filesRes, rulesRes, contextRes] = await Promise.all([
+      const [filesRes, rulesRes, contextRes, effectiveContextRes] = await Promise.all([
         directoryApi.listProjectFiles(directory.id),
         directoryApi.fetchCloudRules(directory.id),
         directoryApi.fetchProjectContext(project.id),
+        projectApi.getEffectiveContext(project.id),
       ]);
       setFiles(filesRes);
       setRules(rulesRes);
       setContext(contextRes);
+      setEffectiveContext(effectiveContextRes);
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));
     } finally {
@@ -177,6 +181,19 @@ export function CloudSettingsDialog({
         <pre className="mb-4 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
           {context?.cached_context ?? "（コンテキスト未生成。再スキャンで生成されます）"}
         </pre>
+
+        {(effectiveContext ?? [])
+          .filter((entry) => !entry.is_self && entry.context)
+          .map((entry) => (
+            <div key={entry.project_id} className="mb-3">
+              <div className="mb-1 text-xs font-semibold text-gray-400">
+                継承: {entry.project_name}
+              </div>
+              <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+                {entry.context}
+              </pre>
+            </div>
+          ))}
 
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
           ファイルごとの送信許可

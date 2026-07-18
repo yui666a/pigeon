@@ -40,6 +40,7 @@ function makeThread(mails: Mail[]): Thread {
     mail_count: mails.length,
     from_addrs: [],
     mails,
+    projects: [],
   };
 }
 
@@ -141,7 +142,7 @@ describe("mailStore", () => {
   describe("fetchThreads", () => {
     it("sets threads on success", async () => {
       const threads = [
-        { thread_id: "t1", subject: "Thread A", last_date: "2026-04-13", mail_count: 2, from_addrs: ["a@b.com"], mails: [] },
+        { thread_id: "t1", subject: "Thread A", last_date: "2026-04-13", mail_count: 2, from_addrs: ["a@b.com"], mails: [], projects: [] },
       ];
       mockInvoke.mockResolvedValue(threads);
 
@@ -219,7 +220,7 @@ describe("mailStore", () => {
 
   describe("selectThread", () => {
     it("sets selectedThread and clears selectedMail", () => {
-      const thread = { thread_id: "t1", subject: "A", last_date: "", mail_count: 1, from_addrs: [], mails: [] };
+      const thread = { thread_id: "t1", subject: "A", last_date: "", mail_count: 1, from_addrs: [], mails: [], projects: [] };
       useMailStore.setState({ selectedMail: { id: "m1" } as never });
 
       useMailStore.getState().selectThread(thread);
@@ -342,7 +343,7 @@ describe("mailStore", () => {
       const m1 = { id: "m1", subject: "Re: Test" };
       const m2 = { id: "m2", subject: "Re: Test" };
       const threads = [
-        { thread_id: "t1", subject: "Re: Test", last_date: "", mail_count: 2, from_addrs: [], mails: [m1, m2] },
+        { thread_id: "t1", subject: "Re: Test", last_date: "", mail_count: 2, from_addrs: [], mails: [m1, m2], projects: [] },
       ];
       mockInvoke.mockResolvedValue(threads);
 

@@ -19,6 +19,7 @@ const thread = (i: number): Thread => ({
   mail_count: 1,
   from_addrs: ["a@example.com"],
   mails: [],
+  projects: [],
 });
 
 describe("ThreadList paging", () => {

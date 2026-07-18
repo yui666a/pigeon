@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 const project: Project = {
   id: "p1", account_id: "acc1", name: "春公演", description: null,
-  color: null, is_archived: false, created_at: "", updated_at: "",
+  color: null, is_archived: false, parent_id: null, created_at: "", updated_at: "",
 };
 const directory: ProjectDirectory = {
   id: "d1", project_id: "p1", path: "/tmp/stage-a", is_primary: true,
@@ -23,12 +23,17 @@ const files = [
   { id: "f2", directory_id: "d1", relative_path: "香盤表.md", size_bytes: 50, mtime: "", content_hash: "h", content_kind: "text", extract_status: "ok", indexed_at: "" },
 ];
 
-function setupInvoke(rules: unknown[] = [], context: unknown = null) {
+function setupInvoke(
+  rules: unknown[] = [],
+  context: unknown = null,
+  effectiveContext: unknown[] = [],
+) {
   mockInvoke.mockImplementation((cmd: unknown) => {
     switch (cmd) {
       case "list_project_files": return Promise.resolve(files);
       case "get_cloud_rules": return Promise.resolve(rules);
       case "get_project_context": return Promise.resolve(context);
+      case "get_effective_context": return Promise.resolve(effectiveContext);
       default: return Promise.resolve(null);
     }
   });
@@ -176,6 +181,45 @@ describe("CloudSettingsDialog", () => {
       relativePath: "香盤表.md",
       allow: false,
     });
+  });
+
+  it("shows inherited ancestor context read-only with a '継承: <ノード名>' label", async () => {
+    setupInvoke([], null, [
+      {
+        project_id: "root",
+        project_name: "埼玉",
+        is_self: false,
+        directory_path: "/tmp/saitama",
+        context: "会場: 県民ホール",
+      },
+      {
+        project_id: "p1",
+        project_name: "春公演",
+        is_self: true,
+        directory_path: "/tmp/stage-a",
+        context: "会場: 〇〇ホール",
+      },
+    ]);
+    render(<CloudSettingsDialog project={project} directory={directory} onClose={vi.fn()} />);
+
+    expect(await screen.findByText("継承: 埼玉")).toBeInTheDocument();
+    expect(screen.getByText(/会場: 県民ホール/)).toBeInTheDocument();
+  });
+
+  it("does not show inherited context for the node itself or when there is no ancestor context", async () => {
+    setupInvoke([], null, [
+      {
+        project_id: "p1",
+        project_name: "春公演",
+        is_self: true,
+        directory_path: "/tmp/stage-a",
+        context: "会場: 〇〇ホール",
+      },
+    ]);
+    render(<CloudSettingsDialog project={project} directory={directory} onClose={vi.fn()} />);
+
+    await screen.findByText(/香盤表\.md/);
+    expect(screen.queryByText(/継承:/)).not.toBeInTheDocument();
   });
 
   it("buildTree distinguishes a file and a directory sharing the same name", async () => {

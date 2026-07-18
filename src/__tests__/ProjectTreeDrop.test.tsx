@@ -27,6 +27,7 @@ const project: Project = {
   description: null,
   color: "#6b7280",
   is_archived: false,
+  parent_id: null,
   created_at: "",
   updated_at: "",
 };
@@ -61,6 +62,7 @@ const threadOf = (m: Mail): Thread => ({
   mail_count: 1,
   from_addrs: [m.from_addr],
   mails: [m],
+  projects: [],
 });
 
 const unclassified = [mail("m1"), mail("m2")];

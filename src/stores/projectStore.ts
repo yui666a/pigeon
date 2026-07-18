@@ -6,6 +6,59 @@ import { directoryApi } from "../api/directoryApi";
 import { errorMessage } from "../api/errors";
 import { useErrorStore } from "./errorStore";
 
+const EXPANDED_PROJECTS_KEY = "pigeon.expandedProjects";
+
+function loadExpandedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_PROJECTS_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((v) => typeof v === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveExpandedIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(EXPANDED_PROJECTS_KEY, JSON.stringify([...ids]));
+  } catch {
+    // localStorage 不可（プライベートモード等）は無視。永続化しないだけで機能は継続する
+  }
+}
+
+/** 構造変更操作の成功後: 一覧再取得、消えた案件IDのキャッシュ掃除、選択解除
+ *
+ * projects は常に単一アカウントにスコープされる（fetchProjects(accountId) 経由でのみ populate される）ため、
+ * 呼び出し側が accountId を持ち回さずとも既存の一覧から復元できる。
+ */
+async function refreshAfterStructuralChange(
+  accountId: string,
+  set: (partial: Partial<ProjectState>) => void,
+  get: () => ProjectState,
+): Promise<void> {
+  await get().fetchProjects(accountId);
+  const liveIds = new Set(get().projects.map((p) => p.id));
+
+  const pruneRecord = <T,>(record: Record<string, T>): Record<string, T> => {
+    const next: Record<string, T> = {};
+    for (const [id, value] of Object.entries(record)) {
+      if (liveIds.has(id)) next[id] = value;
+    }
+    return next;
+  };
+
+  set({
+    directories: pruneRecord(get().directories),
+    contexts: pruneRecord(get().contexts),
+    scanningProjects: pruneRecord(get().scanningProjects),
+    selectedProjectId:
+      get().selectedProjectId && !liveIds.has(get().selectedProjectId as string)
+        ? null
+        : get().selectedProjectId,
+  });
+}
+
 interface ProjectState {
   projects: Project[];
   selectedProjectId: string | null;
@@ -13,12 +66,14 @@ interface ProjectState {
   directories: Record<string, ProjectDirectory | null>;
   contexts: Record<string, ProjectContext | null>;
   scanningProjects: Record<string, boolean>;
+  expandedIds: Set<string>;
   fetchProjects: (accountId: string) => Promise<void>;
   createProject: (
     accountId: string,
     name: string,
     description?: string,
     color?: string,
+    parentId?: string | null,
   ) => Promise<Project>;
   updateProject: (
     id: string,
@@ -26,11 +81,13 @@ interface ProjectState {
     description?: string,
     color?: string,
   ) => Promise<void>;
+  setProjectParent: (projectId: string, parentId: string | null) => Promise<void>;
   archiveProject: (id: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   mergeProject: (sourceId: string, targetId: string) => Promise<number>;
   addProject: (project: Project) => void;
   selectProject: (id: string | null) => void;
+  toggleExpanded: (id: string) => void;
   fetchDirectory: (projectId: string) => Promise<void>;
   linkDirectory: (projectId: string, path: string) => Promise<void>;
   unlinkDirectory: (projectId: string) => Promise<void>;
@@ -46,6 +103,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   directories: {},
   contexts: {},
   scanningProjects: {},
+  expandedIds: loadExpandedIds(),
 
   fetchProjects: async (accountId) => {
     set({ loading: true });
@@ -61,7 +119,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  createProject: async (accountId, name, description, color) => {
+  createProject: async (accountId, name, description, color, parentId) => {
     set({ loading: true });
     try {
       const project = await projectApi.createProject(
@@ -69,9 +127,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         name,
         description,
         color,
+        parentId,
       );
       await get().fetchProjects(accountId);
       return project;
+    } catch (e) {
+      set({ loading: false });
+      useErrorStore.getState().addError(errorMessage(e));
+      throw e;
+    }
+  },
+
+  setProjectParent: async (projectId, parentId) => {
+    const accountId = get().projects.find((p) => p.id === projectId)?.account_id;
+    set({ loading: true });
+    try {
+      await projectApi.setProjectParent(projectId, parentId);
+      if (accountId) await get().fetchProjects(accountId);
+      else set({ loading: false });
     } catch (e) {
       set({ loading: false });
       useErrorStore.getState().addError(errorMessage(e));
@@ -101,15 +174,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   archiveProject: async (id) => {
+    const accountId = get().projects.find((p) => p.id === id)?.account_id;
     set({ loading: true });
     try {
       await projectApi.archiveProject(id);
-      set({
-        projects: get().projects.filter((p) => p.id !== id),
-        selectedProjectId:
-          get().selectedProjectId === id ? null : get().selectedProjectId,
-        loading: false,
-      });
+      if (accountId) await refreshAfterStructuralChange(accountId, set, get);
+      set({ loading: false });
     } catch (e) {
       set({ loading: false });
       useErrorStore.getState().addError(errorMessage(e));
@@ -117,15 +187,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   deleteProject: async (id) => {
+    const accountId = get().projects.find((p) => p.id === id)?.account_id;
     set({ loading: true });
     try {
       await projectApi.deleteProject(id);
-      set({
-        projects: get().projects.filter((p) => p.id !== id),
-        selectedProjectId:
-          get().selectedProjectId === id ? null : get().selectedProjectId,
-        loading: false,
-      });
+      if (accountId) await refreshAfterStructuralChange(accountId, set, get);
+      set({ loading: false });
     } catch (e) {
       set({ loading: false });
       useErrorStore.getState().addError(errorMessage(e));
@@ -133,15 +200,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   mergeProject: async (sourceId, targetId) => {
+    const accountId = get().projects.find((p) => p.id === sourceId)?.account_id;
     set({ loading: true });
     try {
       const moved = await projectApi.mergeProjects(sourceId, targetId);
-      set({
-        projects: get().projects.filter((p) => p.id !== sourceId),
-        selectedProjectId:
-          get().selectedProjectId === sourceId ? targetId : get().selectedProjectId,
-        loading: false,
-      });
+      if (accountId) await refreshAfterStructuralChange(accountId, set, get);
+      set({ loading: false });
       return moved;
     } catch (e) {
       set({ loading: false });
@@ -157,9 +221,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   selectProject: (id) => set({ selectedProjectId: id }),
 
+  toggleExpanded: (id) => {
+    const next = new Set(get().expandedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    saveExpandedIds(next);
+    set({ expandedIds: next });
+  },
+
   fetchDirectory: async (projectId) => {
     try {
       const dir = await directoryApi.fetchDirectory(projectId);
+      if (!get().projects.some((p) => p.id === projectId)) return;
       set({ directories: { ...get().directories, [projectId]: dir } });
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));
@@ -202,6 +275,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   fetchProjectContext: async (projectId) => {
     try {
       const context = await directoryApi.fetchProjectContext(projectId);
+      if (!get().projects.some((p) => p.id === projectId)) return;
       set({ contexts: { ...get().contexts, [projectId]: context } });
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));

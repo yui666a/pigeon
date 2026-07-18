@@ -37,6 +37,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     mail_count: 1,
     from_addrs: ["alice@example.com"],
     mails: [],
+    projects: [],
     ...overrides,
   };
 }

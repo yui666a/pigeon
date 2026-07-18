@@ -29,12 +29,18 @@ export const classifyApi = {
   cancelClassification: (accountId: string) =>
     invokeCommand<void>("cancel_classification", { accountId }),
 
-  /** 新規案件の提案を承認し、作成された案件を返す */
-  approveNewProject: (mailId: string, projectName: string, description?: string) =>
+  /** 新規案件の提案を承認し、作成された案件を返す。parentProjectId 省略時はルートに作成 */
+  approveNewProject: (
+    mailId: string,
+    projectName: string,
+    description?: string,
+    parentProjectId?: string,
+  ) =>
     invokeCommand<Project>("approve_new_project", {
       mailId,
       projectName,
       description: description ?? null,
+      parentProjectId: parentProjectId ?? null,
     }),
 
   rejectClassification: (mailId: string) =>
