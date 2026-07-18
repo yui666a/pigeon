@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::context::Ctx;
@@ -11,7 +11,7 @@ use crate::mail_sync::sync_service;
 use crate::mail_sync::{imap_client, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::{Mail, Thread, UnreadCounts};
-use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::state::{DbState, EmbeddingRunGuard, SecureStoreState, SyncLocks};
 
 /// sync-progress イベントの payload
 #[derive(Clone, serde::Serialize)]
@@ -19,6 +19,54 @@ struct SyncProgressEvent {
     account_id: String,
     done: usize,
     total: usize,
+}
+
+/// embed-progress イベントの payload（同期後に走る埋め込みパスの進捗）
+#[derive(Clone, serde::Serialize)]
+struct EmbedProgressEvent {
+    done: u64,
+    total: u64,
+}
+
+/// 同期成功後に埋め込みキューの消化パスを1回 spawn する。
+/// 多重起動は EmbeddingRunGuard で防ぐ（起動時パスと排他）。
+/// Ollama 接続エラーは run_embedding_pass 内で Ok 打ち切りになるため、
+/// ここではエラーを飲み込んで eprintln! するだけで良い。
+fn spawn_embedding_pass(app: &AppHandle) {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let guard = app_handle.state::<EmbeddingRunGuard>();
+        if !guard.try_begin() {
+            return;
+        }
+        let db = app_handle.state::<DbState>();
+        let (embedder, doc_prefix) = match db.with_conn(|conn| {
+            let embedder = crate::embedding::OllamaEmbedder::from_settings(conn)?;
+            let doc_prefix =
+                crate::db::settings::get_or_default(conn, "embedding_document_prefix", "")?;
+            Ok((embedder, doc_prefix))
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[warn] post-sync embedding pass: setup failed: {}", e);
+                guard.finish();
+                return;
+            }
+        };
+        let result = crate::embedding::worker::run_embedding_pass(
+            &db,
+            &embedder,
+            &doc_prefix,
+            &mut |done, total| {
+                let _ = app_handle.emit("embed-progress", EmbedProgressEvent { done, total });
+            },
+        )
+        .await;
+        if let Err(e) = result {
+            eprintln!("[warn] post-sync embedding pass failed: {}", e);
+        }
+        guard.finish();
+    });
 }
 
 #[tauri::command]
@@ -49,7 +97,7 @@ async fn sync_account_locked(
     account_id: &str,
 ) -> Result<u32, AppError> {
     let account = state.with_conn(|conn| accounts::get_account(conn, account_id))?;
-    sync_service::sync_account(
+    let result = sync_service::sync_account(
         state,
         &account,
         || resolve_imap_credentials(&account, secure_store),
@@ -65,7 +113,13 @@ async fn sync_account_locked(
             );
         },
     )
-    .await
+    .await;
+    if result.is_ok() {
+        // 新規取り込みメールをチャンク化・埋め込みするパスを非同期で開始する
+        // （検索索引の更新。同期そのものの成否・速度には影響させない）
+        spawn_embedding_pass(app);
+    }
+    result
 }
 
 /// backfill-progress イベントの payload。sync-progress とは別イベントにしている

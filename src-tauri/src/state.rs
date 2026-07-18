@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::async_runtime::JoinHandle;
@@ -136,6 +137,30 @@ impl IdleWatchers {
     }
 }
 
+/// 埋め込みパス（embedding::worker::run_embedding_pass）の多重起動ガード。
+/// 起動時スキャンと同期完了後の両方から spawn され得るため、片方が
+/// 走行中はもう片方を即 return させる（キューの奪い合い・二重 DB ロック待ちを防ぐ）。
+#[derive(Default, Clone)]
+pub struct EmbeddingRunGuard(std::sync::Arc<AtomicBool>);
+
+impl EmbeddingRunGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 開始できれば true（走行中フラグを立てる）。既に走行中なら false。
+    pub fn try_begin(&self) -> bool {
+        self.0
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// パス終了時に必ず呼ぶ（成功・失敗を問わず）。
+    pub fn finish(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +223,20 @@ mod tests {
         assert!(locks.try_begin("acc1"));
         locks.finish("acc1");
         assert!(locks.try_begin("acc1"), "終了後は再び開始できる");
+    }
+
+    #[test]
+    fn test_embedding_run_guard_rejects_second_begin_while_running() {
+        let guard = EmbeddingRunGuard::new();
+        assert!(guard.try_begin());
+        assert!(!guard.try_begin(), "走行中の多重起動は拒否");
+    }
+
+    #[test]
+    fn test_embedding_run_guard_finish_allows_next_run() {
+        let guard = EmbeddingRunGuard::new();
+        assert!(guard.try_begin());
+        guard.finish();
+        assert!(guard.try_begin(), "終了後は再び開始できる");
     }
 }

@@ -23,6 +23,7 @@ use db::migrations;
 use mail_sync::oauth::OAuthStateStore;
 use rusqlite::Connection;
 use state::DbState;
+use state::EmbeddingRunGuard;
 use state::IdleWatchers;
 use state::SecureStoreState;
 use state::SyncLocks;
@@ -90,6 +91,7 @@ pub fn run() {
         .manage(IdleWatchers::new())
         .manage(classifier::service::PendingClassifications::new())
         .manage(classifier::service::ClassifyBatches::new())
+        .manage(EmbeddingRunGuard::new())
         .setup(|app| {
             // Register deep link handler for OAuth callback
             #[cfg(not(target_os = "android"))]
@@ -203,6 +205,44 @@ pub fn run() {
                             eprintln!("[warn] startup scan failed for {}: {}", project_id, e);
                         }
                     }
+                });
+            }
+
+            // 起動時: 埋め込みキューの消化パスを1回走らせる（v18 埋め込み基盤）。
+            // Ollama 停止中でも起動は妨げない（with_conn 内・pass 内のエラーは eprintln! のみ）。
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let guard = app_handle.state::<EmbeddingRunGuard>();
+                    if !guard.try_begin() {
+                        return;
+                    }
+                    let db = app_handle.state::<DbState>();
+                    let (embedder, doc_prefix) = match db.with_conn(|conn| {
+                        let embedder = embedding::OllamaEmbedder::from_settings(conn)?;
+                        let doc_prefix =
+                            db::settings::get_or_default(conn, "embedding_document_prefix", "")?;
+                        Ok((embedder, doc_prefix))
+                    }) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("[warn] startup embedding pass: setup failed: {}", e);
+                            guard.finish();
+                            return;
+                        }
+                    };
+                    let result = embedding::worker::run_embedding_pass(
+                        &db,
+                        &embedder,
+                        &doc_prefix,
+                        &mut |_done, _total| {},
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        eprintln!("[warn] startup embedding pass failed: {}", e);
+                    }
+                    guard.finish();
                 });
             }
 
