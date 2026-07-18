@@ -80,4 +80,14 @@ describe("SmartViewList", () => {
       });
     });
   });
+
+  it("名前変更入力はフォーカス喪失で閉じる", () => {
+    render(<SmartViewList accountId="acc1" />);
+    fireEvent.contextMenu(screen.getByText("照明"));
+    fireEvent.click(screen.getByText("名前変更"));
+    const input = screen.getByDisplayValue("照明");
+    fireEvent.blur(input);
+    expect(screen.queryByDisplayValue("照明")).not.toBeInTheDocument();
+    expect(screen.getByText("照明")).toBeInTheDocument();
+  });
 });

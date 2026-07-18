@@ -65,6 +65,7 @@ export function SmartViewList({ accountId }: SmartViewListProps) {
                   }
                   if (e.key === "Escape") setRenaming(null);
                 }}
+                onBlur={() => setRenaming(null)}
               />
             ) : (
               <button
