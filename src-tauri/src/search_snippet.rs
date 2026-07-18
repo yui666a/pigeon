@@ -14,6 +14,8 @@ pub fn make_snippet(original: &str, query: &str) -> Option<String> {
         return None;
     }
     let norm = normalize_with_offsets(original);
+    // find はバイト単位の部分文字列検索。返るのはバイト位置なので、
+    // offsets 参照の前に必ず char 位置へ換算する（直下の chars().count()）
     let byte_start = norm.text.find(&norm_query)?;
 
     // 正規化テキスト内の char 位置に変換し、オフセット対応表で原文バイト位置へ
@@ -121,5 +123,30 @@ mod tests {
     fn test_short_text_no_ellipsis() {
         let snip = make_snippet("abc KEYWORD def", "keyword").unwrap();
         assert_eq!(snip, "abc <b>KEYWORD</b> def");
+    }
+
+    #[test]
+    fn test_match_at_string_start() {
+        assert_eq!(
+            make_snippet("KEYWORD のあと", "keyword"),
+            Some("<b>KEYWORD</b> のあと".into())
+        );
+    }
+
+    #[test]
+    fn test_match_at_string_end() {
+        assert_eq!(
+            make_snippet("まえ KEYWORD", "keyword"),
+            Some("まえ <b>KEYWORD</b>".into())
+        );
+    }
+
+    #[test]
+    fn test_emoji_in_original_text() {
+        // 4 バイト文字（絵文字）を含む原文でもバイト境界でパニックしない
+        assert_eq!(
+            make_snippet("🎭 照明の件 🎭", "照明"),
+            Some("🎭 <b>照明</b>の件 🎭".into())
+        );
     }
 }

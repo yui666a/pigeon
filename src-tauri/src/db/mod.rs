@@ -1,8 +1,8 @@
 pub mod accounts;
 pub mod approval_queue;
-pub mod audit_log;
 pub mod assignments;
 pub mod attachments;
+pub mod audit_log;
 pub mod cloud_rules;
 pub mod directories;
 pub mod drafts;
@@ -16,3 +16,4 @@ pub mod repository;
 pub mod search;
 pub mod sent_sync;
 pub mod settings;
+pub(crate) mod tx;

@@ -25,6 +25,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 /// 仮採番のため常に uid_confirmed=0 で保存する（Sent 同期の message_id マージで
 /// サーバー実 uid へ後追い確定される。設計書 2026-07-12-sent-sync-uidplus-design.md）。
 pub fn insert_sent_mail_with_next_uid(conn: &Connection, mail: &Mail) -> Result<u32, AppError> {
+    // uid 採番つき挿入と FTS 索引の複数文を原子化する
+    crate::db::tx::with_tx(conn, |conn| {
+        insert_sent_mail_with_next_uid_inner(conn, mail)
+    })
+}
+
+fn insert_sent_mail_with_next_uid_inner(conn: &Connection, mail: &Mail) -> Result<u32, AppError> {
     conn.execute(
         &format!(
             "INSERT INTO mails ({})
