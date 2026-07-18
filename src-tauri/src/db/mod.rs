@@ -19,3 +19,4 @@ pub mod sent_sync;
 pub mod settings;
 pub(crate) mod tx;
 pub mod vec_ext;
+pub mod vec_search;
