@@ -34,6 +34,11 @@ pub fn insert_project_with_id(
 ) -> Result<Project, AppError> {
     if let Some(pid) = parent_id {
         let parent = get_project(conn, pid)?;
+        if parent.account_id != account_id {
+            return Err(AppError::Validation(
+                "親案件は同じアカウントに属している必要があります".into(),
+            ));
+        }
         if parent.is_archived {
             return Err(AppError::Validation(
                 "アーカイブ済みの案件の下には作成できません".into(),
@@ -814,6 +819,62 @@ mod tests {
         archive_project(&conn, "arch").unwrap();
         let result = insert_project_with_id(&conn, "c1", "acc1", "子", None, None, Some("arch"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_insert_project_with_id_rejects_cross_account_parent() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        // acc2 の親案件
+        insert_project_with_id(
+            &conn,
+            "parent2",
+            "acc2",
+            "他アカウント案件",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let result = insert_project_with_id(&conn, "c1", "acc1", "子", None, None, Some("parent2"));
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "異アカウント親は Validation エラーで拒否されるはず: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_set_parent_rejects_cross_account_parent() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        insert_child(&conn, "c1", "acc1案件", None);
+        insert_project_with_id(
+            &conn,
+            "parent2",
+            "acc2",
+            "他アカウント案件",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let result = set_parent(&conn, "c1", Some("parent2"));
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "異アカウント親は Validation エラーで拒否されるはず: {result:?}"
+        );
     }
 
     #[test]
