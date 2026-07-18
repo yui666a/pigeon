@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
+pub mod worker;
+
 #[async_trait]
 pub trait Embedder: Send + Sync {
     fn dimensions(&self) -> usize;
