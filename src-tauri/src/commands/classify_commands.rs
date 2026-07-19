@@ -6,8 +6,7 @@ use crate::context::Ctx;
 use crate::db::{assignments, mails, projects};
 use crate::error::AppError;
 use crate::models::classifier::{ClassifyBatchOutcome, ClassifyResponse, ProjectSuggestion};
-use crate::models::mail::Mail;
-use crate::models::project::{CreateProjectRequest, Project};
+use crate::models::project::Project;
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 // ---------------------------------------------------------------------------
@@ -172,15 +171,6 @@ pub fn reject_classification(
     }
 }
 
-/// Get all mails that have not yet been assigned to a project.
-#[tauri::command]
-pub fn get_unclassified_mails(
-    db: State<DbState>,
-    account_id: String,
-) -> Result<Vec<Mail>, AppError> {
-    db.with_conn(|conn| assignments::get_unclassified_mails(conn, &account_id))
-}
-
 /// 未分類メールをスレッド単位で返す（未分類一覧のスレッド表示用）。
 /// 分類の実体はメール単位のまま（スレッドのD&Dは全メールIDを渡す）。
 ///
@@ -211,31 +201,9 @@ fn get_unclassified_threads_inner(
     Ok(crate::db::mails::build_threads(&mails))
 }
 
-/// Move a mail to a different project (used by D&D and context menu).
-/// dispatch バス経由（Reversible + 監査）。
-#[tauri::command]
-pub async fn move_mail(
-    registry: State<'_, crate::usecase::Registry>,
-    db: State<'_, DbState>,
-    secure_store: State<'_, crate::state::SecureStoreState>,
-    pending: State<'_, PendingClassifications>,
-    batches: State<'_, ClassifyBatches>,
-    sync_locks: State<'_, crate::state::SyncLocks>,
-    mail_id: String,
-    project_id: String,
-) -> Result<(), AppError> {
-    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
-    crate::usecase::dispatch(
-        &registry,
-        "move_mail",
-        serde_json::json!({ "mail_id": mail_id, "project_id": project_id }),
-        &ctx,
-    )
-    .await?;
-    Ok(())
-}
-
-/// `move_mail` の本体。`bulk_move_mails` からも1件ずつ再利用される。
+/// メール1件を案件へ割り当てる本体。`bulk_move_mails` から1件ずつ再利用される。
+/// 単件移動の入口は bulk に一本化しているため、この関数を直接呼ぶ command はない
+/// （設計判断: docs/adr/0004-ai-native-dispatch-architecture.md D12）。
 pub(crate) fn move_mail_inner(
     conn: &rusqlite::Connection,
     pending: &PendingClassifications,
@@ -245,12 +213,6 @@ pub(crate) fn move_mail_inner(
     assignments::move_mail_to_project(conn, mail_id, project_id)?;
     // 割り当てが確定したので、残っている提案があれば除去する
     pending.remove(mail_id)
-}
-
-/// Get all mails assigned to a specific project.
-#[tauri::command]
-pub fn get_mails_by_project(db: State<DbState>, project_id: String) -> Result<Vec<Mail>, AppError> {
-    db.with_conn(|conn| assignments::get_mails_by_project(conn, &project_id))
 }
 
 /// 選択された複数メールから、新規案件の名前・説明を LLM に提案させる。
@@ -282,6 +244,7 @@ pub async fn suggest_project_from_mails(
 mod tests {
     use super::*;
     use crate::models::classifier::{ClassifyAction, ClassifyResult};
+    use crate::models::project::CreateProjectRequest;
     use crate::test_helpers::{insert_test_mail, setup_db};
 
     // --- get_mail_by_id (now in db::mails) ---
