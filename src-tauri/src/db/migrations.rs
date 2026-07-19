@@ -2222,13 +2222,16 @@ mod tests {
         )
         .unwrap();
 
-        conn.execute("DELETE FROM projects WHERE id = 'p1'", []).unwrap();
+        conn.execute("DELETE FROM projects WHERE id = 'p1'", [])
+            .unwrap();
 
         let notes: i64 = conn
             .query_row("SELECT COUNT(*) FROM project_notes", [], |r| r.get(0))
             .unwrap();
         let hist: i64 = conn
-            .query_row("SELECT COUNT(*) FROM project_note_ai_history", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM project_note_ai_history", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(notes, 0, "案件削除で project_notes も消える");
         assert_eq!(hist, 0, "案件削除で履歴も消える");
