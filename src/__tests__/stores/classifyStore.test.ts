@@ -293,3 +293,96 @@ describe("classifyStore batch flow", () => {
     expect(remainingUnclassifiedIds()).toEqual(["mail-42", "mail-99"]);
   });
 });
+
+describe("approveClassification", () => {
+  function makeMail(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      account_id: "acc1",
+      folder: "INBOX",
+      message_id: `<${id}@example.com>`,
+      in_reply_to: null,
+      references: null,
+      from_addr: "a@example.com",
+      to_addr: "b@example.com",
+      cc_addr: null,
+      subject: "Subject",
+      body_text: null,
+      body_html: null,
+      date: "2026-07-19T10:00:00",
+      has_attachments: false,
+      raw_size: null,
+      uid: 1,
+      flags: null,
+      is_read: true,
+      is_flagged: false,
+      fetched_at: "2026-07-19T10:00:00",
+      assigned_by: "ai",
+      confidence: 0.55,
+      ...overrides,
+    };
+  }
+
+  function makeThread(mails: ReturnType<typeof makeMail>[]) {
+    return {
+      thread_id: "t1",
+      subject: "Subject",
+      last_date: "2026-07-19T10:00:00",
+      mail_count: mails.length,
+      from_addrs: ["a@example.com"],
+      mails,
+      projects: [],
+    };
+  }
+
+  it("承認すると assigned_by が user になり ⚠ が消える", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const thread = makeThread([makeMail("m1")]);
+    useMailStore.setState({
+      threads: [thread],
+      selectedThread: thread,
+      selectedMail: thread.mails[0],
+    });
+
+    await useClassifyStore.getState().approveClassification("m1", "p1");
+
+    expect(invokeMock).toHaveBeenCalledWith("approve_classification", {
+      mailId: "m1",
+      projectId: "p1",
+    });
+    const updated = useMailStore.getState().selectedThread!.mails[0];
+    expect(updated.assigned_by).toBe("user");
+    expect(useMailStore.getState().selectedMail!.assigned_by).toBe("user");
+  });
+
+  it("別案件へ修正した場合は案件ビューの一覧から取り除く", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    const thread = makeThread([makeMail("m1")]);
+    useMailStore.setState({
+      threads: [thread],
+      selectedThread: thread,
+      selectedMail: thread.mails[0],
+    });
+    useProjectStore.setState({ selectedProjectId: "p1" });
+
+    await useClassifyStore.getState().approveClassification("m1", "p2");
+
+    expect(useMailStore.getState().threads).toHaveLength(0);
+  });
+
+  it("失敗しても楽観更新を残さない", async () => {
+    invokeMock.mockRejectedValue("boom");
+    const thread = makeThread([makeMail("m1")]);
+    useMailStore.setState({
+      threads: [thread],
+      selectedThread: thread,
+      selectedMail: thread.mails[0],
+    });
+
+    await useClassifyStore.getState().approveClassification("m1", "p1");
+
+    expect(useMailStore.getState().selectedThread!.mails[0].assigned_by).toBe(
+      "ai",
+    );
+  });
+});

@@ -42,6 +42,8 @@ interface MailState {
   fetchUnreadCounts: (accountId: string) => Promise<void>;
   fetchUnclassified: (accountId: string) => Promise<void>;
   removeUnclassifiedMail: (mailId: string) => void;
+  /** AI分類の確定を表示へ反映する。案件が変わった場合は現在の案件ビューから取り除く */
+  applyAssignmentApproved: (mailId: string, projectId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
   initBackfillListener: () => Promise<() => void>;
@@ -143,6 +145,37 @@ function setFolderInState(
 }
 
 /** 削除・アーカイブ成功後に、表示用の全状態から該当メールを取り除く */
+function setAssignedByInMails(mails: Mail[], mailId: string, assignedBy: string): Mail[] {
+  return mails.map((m) => (m.id === mailId ? { ...m, assigned_by: assignedBy } : m));
+}
+
+function setAssignedByInThread(thread: Thread, mailId: string, assignedBy: string): Thread {
+  if (!thread.mails.some((m) => m.id === mailId)) return thread;
+  return { ...thread, mails: setAssignedByInMails(thread.mails, mailId, assignedBy) };
+}
+
+/** 分類の確定（assigned_by='user'）を表示用の全状態へ反映する */
+function setAssignedByInState(
+  state: MailState,
+  mailId: string,
+  assignedBy: string,
+): Partial<MailState> {
+  return {
+    threads: state.threads.map((t) => setAssignedByInThread(t, mailId, assignedBy)),
+    selectedThread: state.selectedThread
+      ? setAssignedByInThread(state.selectedThread, mailId, assignedBy)
+      : null,
+    selectedMail:
+      state.selectedMail?.id === mailId
+        ? { ...state.selectedMail, assigned_by: assignedBy }
+        : state.selectedMail,
+    unclassifiedMails: setAssignedByInMails(state.unclassifiedMails, mailId, assignedBy),
+    unclassifiedThreads: state.unclassifiedThreads.map((t) =>
+      setAssignedByInThread(t, mailId, assignedBy),
+    ),
+  };
+}
+
 function removeMailFromState(state: MailState, mailId: string): Partial<MailState> {
   return {
     threads: state.threads
@@ -412,6 +445,17 @@ export const useMailStore = create<MailState>((set, get) => ({
         .map((t) => removeMailFromThread(t, mailId))
         .filter((t): t is Thread => t !== null),
     }));
+  },
+
+  applyAssignmentApproved: (mailId, projectId) => {
+    const viewing = useProjectStore.getState().selectedProjectId;
+    // 別案件へ修正した場合、今見ている案件ビューにはもう属さないので取り除く
+    // （一括移動と同じ楽観更新の挙動に揃える）
+    if (viewing && viewing !== projectId) {
+      set((state) => removeMailFromState(state, mailId));
+      return;
+    }
+    set((state) => setAssignedByInState(state, mailId, "user"));
   },
 
   initSyncListener: async () => {

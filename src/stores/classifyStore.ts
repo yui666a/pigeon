@@ -34,6 +34,8 @@ interface ClassifyState {
     description?: string,
     parentProjectId?: string,
   ) => Promise<void>;
+  /** AI分類を確定する。projectId が現在と違えば「修正」として訂正が記録される */
+  approveClassification: (mailId: string, projectId: string) => Promise<void>;
   rejectClassification: (mailId: string) => Promise<void>;
   /** classify-progress イベントの購読を張る（ClassifyButton がマウント時に呼ぶ） */
   initProgressListener: () => Promise<() => void>;
@@ -130,6 +132,17 @@ export const useClassifyStore = create<ClassifyState>((set, get) => {
       set({ pendingProposal: null });
       const accountId = get()._accountId;
       if (accountId) await runBatch(accountId); // 新案件込みで続きから再開
+    },
+
+    approveClassification: async (mailId, projectId) => {
+      try {
+        await classifyApi.approveClassification(mailId, projectId);
+      } catch (e) {
+        // 確定できていないので表示は変えない（⚠ を残して再試行できる）
+        useErrorStore.getState().addError(errorMessage(e));
+        return;
+      }
+      useMailStore.getState().applyAssignmentApproved(mailId, projectId);
     },
 
     rejectClassification: async (mailId) => {

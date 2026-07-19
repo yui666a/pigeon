@@ -43,6 +43,14 @@ export const classifyApi = {
       parentProjectId: parentProjectId ?? null,
     }),
 
+  /**
+   * AI 分類をユーザーが確定する。`projectId` が現在の割り当てと同じなら
+   * 「正しい」の承認、違えば「修正」になり、Rust 側が corrected_from と
+   * correction_log に訂正を記録する（学習のフィードバックに使われる）。
+   */
+  approveClassification: (mailId: string, projectId: string) =>
+    invokeCommand<void>("approve_classification", { mailId, projectId }),
+
   rejectClassification: (mailId: string) =>
     invokeCommand<void>("reject_classification", { mailId }),
 

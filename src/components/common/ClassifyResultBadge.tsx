@@ -6,25 +6,44 @@ import {
 interface ClassifyResultBadgeProps {
   confidence: number;
   assignedBy: string;
+  /** 渡すとバッジがボタンになる。要確認の分類を承認/修正させる導線に使う。
+   * 一覧など操作を伴わない場所では省略して非対話の表示にする */
+  onClick?: () => void;
 }
 
 export function ClassifyResultBadge({
   confidence,
   assignedBy,
+  onClick,
 }: ClassifyResultBadgeProps) {
   if (assignedBy === "user") return null;
 
+  /** onClick があるときだけ button として描画する（無ければ span のまま） */
+  const wrap = (className: string, children: React.ReactNode) =>
+    onClick ? (
+      <button
+        type="button"
+        aria-label="AI分類を確認"
+        onClick={onClick}
+        className={`${className} hover:brightness-95`}
+      >
+        {children}
+      </button>
+    ) : (
+      <span className={className}>{children}</span>
+    );
+
   if (confidence >= CONFIDENCE_AUTO_ASSIGN) {
-    return (
-      <span className="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700">
-        AI
-      </span>
+    return wrap(
+      "inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700",
+      "AI",
     );
   }
 
   if (confidence >= CONFIDENCE_UNCERTAIN) {
-    return (
-      <span className="inline-flex items-center gap-0.5 rounded-full bg-yellow-100 px-1.5 py-0.5 text-xs font-medium text-yellow-700">
+    return wrap(
+      "inline-flex items-center gap-0.5 rounded-full bg-yellow-100 px-1.5 py-0.5 text-xs font-medium text-yellow-700",
+      <>
         <svg
           className="h-3 w-3"
           fill="none"
@@ -39,7 +58,7 @@ export function ClassifyResultBadge({
           />
         </svg>
         AI
-      </span>
+      </>,
     );
   }
 

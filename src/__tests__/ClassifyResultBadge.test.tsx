@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { ClassifyResultBadge } from "../components/common/ClassifyResultBadge";
 
 describe("ClassifyResultBadge", () => {
@@ -41,5 +41,23 @@ describe("ClassifyResultBadge", () => {
     render(<ClassifyResultBadge confidence={0.4} assignedBy="ai" />);
     const badge = screen.getByText("AI");
     expect(badge.className).toContain("bg-yellow-100");
+  });
+});
+
+describe("ClassifyResultBadge の操作", () => {
+  it("onClick を渡すとボタンになり、クリックで通知する", () => {
+    const onClick = vi.fn();
+    render(
+      <ClassifyResultBadge confidence={0.55} assignedBy="ai" onClick={onClick} />,
+    );
+
+    const button = screen.getByRole("button", { name: "AI分類を確認" });
+    fireEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("onClick を渡さなければボタンにしない", () => {
+    render(<ClassifyResultBadge confidence={0.55} assignedBy="ai" />);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });
