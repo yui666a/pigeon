@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useProjectNoteStore } from "../../stores/projectNoteStore";
+import { useErrorStore } from "../../stores/errorStore";
 
 vi.mock("../../api/projectNoteApi", () => ({
   projectNoteApi: {
@@ -31,8 +32,8 @@ describe("projectNoteStore", () => {
       history: [],
       loading: false,
       generating: false,
-      error: null,
     });
+    useErrorStore.setState({ toasts: [] });
   });
 
   it("load はノートをストアへ入れる", async () => {
@@ -97,7 +98,7 @@ describe("projectNoteStore", () => {
     expect(s.generating).toBe(false);
   });
 
-  it("generate 失敗時は error を立て既存 ai_md を保持する", async () => {
+  it("generate 失敗時はトースト通知を出し既存 ai_md を保持する", async () => {
     vi.mocked(projectNoteApi.fetchNote).mockResolvedValue({
       ...emptyNote,
       ai_md: "既存の要約",
@@ -108,9 +109,11 @@ describe("projectNoteStore", () => {
     await useProjectNoteStore.getState().generate("p1");
 
     const s = useProjectNoteStore.getState();
-    expect(s.error).toBeTruthy();
     expect(s.note?.ai_md).toBe("既存の要約");
     expect(s.generating).toBe(false);
+    const toasts = useErrorStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ kind: "error", message: "LLM失敗" });
   });
 
   it("loadHistory は履歴一覧をストアへ入れる", async () => {

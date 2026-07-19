@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { projectNoteApi } from "../api/projectNoteApi";
 import { errorMessage } from "../api/errors";
+import { useErrorStore } from "./errorStore";
 import type { AiHistoryEntry, ProjectNote } from "../types/projectNote";
 
 function emptyNote(projectId: string): ProjectNote {
@@ -19,7 +20,6 @@ interface ProjectNoteState {
   history: AiHistoryEntry[];
   loading: boolean;
   generating: boolean;
-  error: string | null;
   load: (projectId: string) => Promise<void>;
   saveUser: (projectId: string, userMd: string) => Promise<void>;
   saveAi: (projectId: string, aiMd: string) => Promise<void>;
@@ -33,15 +33,15 @@ export const useProjectNoteStore = create<ProjectNoteState>((set, get) => ({
   history: [],
   loading: false,
   generating: false,
-  error: null,
 
   load: async (projectId) => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       const note = await projectNoteApi.fetchNote(projectId);
       set({ note: note ?? emptyNote(projectId), loading: false });
     } catch (e) {
-      set({ error: errorMessage(e), loading: false });
+      set({ loading: false });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -49,9 +49,9 @@ export const useProjectNoteStore = create<ProjectNoteState>((set, get) => ({
     try {
       await projectNoteApi.saveUserNote(projectId, userMd);
       const cur = get().note ?? emptyNote(projectId);
-      set({ note: { ...cur, user_md: userMd }, error: null });
+      set({ note: { ...cur, user_md: userMd } });
     } catch (e) {
-      set({ error: errorMessage(e) });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -59,14 +59,14 @@ export const useProjectNoteStore = create<ProjectNoteState>((set, get) => ({
     try {
       await projectNoteApi.saveAiNote(projectId, aiMd);
       const cur = get().note ?? emptyNote(projectId);
-      set({ note: { ...cur, ai_md: aiMd, ai_edited: true }, error: null });
+      set({ note: { ...cur, ai_md: aiMd, ai_edited: true } });
     } catch (e) {
-      set({ error: errorMessage(e) });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   generate: async (projectId) => {
-    set({ generating: true, error: null });
+    set({ generating: true });
     try {
       const out = await projectNoteApi.generateAiNote(projectId);
       const cur = get().note ?? emptyNote(projectId);
@@ -76,16 +76,17 @@ export const useProjectNoteStore = create<ProjectNoteState>((set, get) => ({
       });
     } catch (e) {
       // 生成失敗時は既存の ai_md を保持する（LLM呼び出し失敗でユーザーの要約を消さない）
-      set({ error: errorMessage(e), generating: false });
+      set({ generating: false });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
   loadHistory: async (projectId) => {
     try {
       const history = await projectNoteApi.fetchAiHistory(projectId);
-      set({ history, error: null });
+      set({ history });
     } catch (e) {
-      set({ error: errorMessage(e) });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 
@@ -95,7 +96,7 @@ export const useProjectNoteStore = create<ProjectNoteState>((set, get) => ({
       await get().load(projectId);
       await get().loadHistory(projectId);
     } catch (e) {
-      set({ error: errorMessage(e) });
+      useErrorStore.getState().addError(errorMessage(e));
     }
   },
 }));
