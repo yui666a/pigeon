@@ -91,6 +91,21 @@ pub fn row_to_mail(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
         is_flagged: row.get(18)?,
         fetched_at: row.get(19)?,
         uid_confirmed: row.get(20)?,
+        // 割り当て注釈は mails テーブルに無い。JOIN するクエリだけが
+        // `row_to_mail_with_assignment` で埋める
+        assigned_by: None,
+        confidence: None,
+    })
+}
+
+/// `mail_project_assignments` を JOIN したクエリ用。`MAIL_COLUMNS` の直後に
+/// `mpa.assigned_by, mpa.confidence` を並べた SELECT を前提にする。
+/// LEFT JOIN で未割り当て行が混ざる場合は両方 `None` になる。
+pub fn row_to_mail_with_assignment(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mail> {
+    Ok(Mail {
+        assigned_by: row.get(MAIL_COLUMN_COUNT)?,
+        confidence: row.get(MAIL_COLUMN_COUNT + 1)?,
+        ..row_to_mail(row)?
     })
 }
 
@@ -156,12 +171,17 @@ pub fn get_mails_by_account(
     account_id: &str,
     folder: &str,
 ) -> Result<Vec<Mail>, AppError> {
+    // 未分類メールも返す必要があるため LEFT JOIN。割り当てが無い行では
+    // assigned_by / confidence が NULL になり、注釈は None になる
     let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM mails WHERE account_id = ?1 AND folder = ?2 ORDER BY date DESC",
-        *MAIL_COLUMNS
+        "SELECT {}, mpa.assigned_by, mpa.confidence FROM mails m
+         LEFT JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
+         WHERE m.account_id = ?1 AND m.folder = ?2
+         ORDER BY m.date DESC",
+        *MAIL_COLUMNS_PREFIXED
     ))?;
     let mails = stmt
-        .query_map(params![account_id, folder], row_to_mail)?
+        .query_map(params![account_id, folder], row_to_mail_with_assignment)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
@@ -486,6 +506,48 @@ mod tests {
         let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].subject, "Hello");
+    }
+
+    /// INBOX 一覧でも ⚠ を出せるよう割り当て注釈を載せる。未分類メールが
+    /// LEFT JOIN から漏れないこと・行が重複しないこともあわせて見る
+    #[test]
+    fn test_get_mails_by_account_carries_assignment_annotation() {
+        let conn = setup_db();
+        let project_id = crate::db::projects::insert_project(
+            &conn,
+            &crate::models::project::CreateProjectRequest {
+                account_id: "acc1".into(),
+                name: "Project Alpha".into(),
+                description: None,
+                color: None,
+                parent_id: None,
+            },
+        )
+        .unwrap()
+        .id;
+
+        insert_mail(
+            &conn,
+            &make_mail("m1", "<a@example.com>", "Assigned", "2026-04-13T10:00:00"),
+        )
+        .unwrap();
+        insert_mail(
+            &conn,
+            &make_mail("m2", "<b@example.com>", "Unassigned", "2026-04-13T09:00:00"),
+        )
+        .unwrap();
+        crate::db::assignments::assign_mail(&conn, "m1", &project_id, "ai", Some(0.55)).unwrap();
+
+        let mails = get_mails_by_account(&conn, "acc1", "INBOX").unwrap();
+
+        assert_eq!(mails.len(), 2, "未分類メールも1行だけ返る");
+        let m1 = mails.iter().find(|m| m.id == "m1").unwrap();
+        assert_eq!(m1.assigned_by.as_deref(), Some("ai"));
+        assert!((m1.confidence.unwrap() - 0.55).abs() < f64::EPSILON);
+
+        let m2 = mails.iter().find(|m| m.id == "m2").unwrap();
+        assert_eq!(m2.assigned_by, None, "未割り当ては注釈なし");
+        assert_eq!(m2.confidence, None);
     }
 
     #[test]

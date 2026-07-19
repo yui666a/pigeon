@@ -1,3 +1,8 @@
+import {
+  CONFIDENCE_AUTO_ASSIGN,
+  CONFIDENCE_UNCERTAIN,
+} from "../../utils/classifyConfidence";
+
 interface ClassifyResultBadgeProps {
   confidence: number;
   assignedBy: string;
@@ -9,7 +14,7 @@ export function ClassifyResultBadge({
 }: ClassifyResultBadgeProps) {
   if (assignedBy === "user") return null;
 
-  if (confidence >= 0.7) {
+  if (confidence >= CONFIDENCE_AUTO_ASSIGN) {
     return (
       <span className="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700">
         AI
@@ -17,7 +22,7 @@ export function ClassifyResultBadge({
     );
   }
 
-  if (confidence >= 0.4) {
+  if (confidence >= CONFIDENCE_UNCERTAIN) {
     return (
       <span className="inline-flex items-center gap-0.5 rounded-full bg-yellow-100 px-1.5 py-0.5 text-xs font-medium text-yellow-700">
         <svg
