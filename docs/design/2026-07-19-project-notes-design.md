@@ -1,7 +1,7 @@
 # 案件ノート（Project Notes） 設計書
 
 - 作成日: 2026-07-19
-- ステータス: レビュー中
+- ステータス: 実装済み（2026-07-19、実機目視確認は未実施）
 - 関連: `docs/design/2026-04-12-pigeon-design.md`（全体設計）、`docs/design/2026-07-09-project-directory-context-design.md`（案件ディレクトリ連携・PIGEON-CONTEXT.md）、`docs/design/2026-07-18-hierarchical-projects-design.md`（案件階層化）、`docs/adr/0002-cloud-llm-data-boundary.md`（クラウド送信境界）
 
 ## 1. 背景と目的
