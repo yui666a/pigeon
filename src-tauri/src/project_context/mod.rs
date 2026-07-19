@@ -5,7 +5,9 @@ pub mod extractor;
 pub mod scanner;
 
 use crate::classifier::TextGenerator;
-use crate::db::{cloud_rules, directories, project_contexts, project_files, projects};
+use crate::db::{
+    cloud_rules, directories, project_contexts, project_files, project_notes, projects,
+};
 use crate::error::AppError;
 use crate::models::directory::ProjectFileEntry;
 use chrono::Utc;
@@ -85,13 +87,10 @@ pub async fn rescan_project(
 
     // --- 4. 構成不変なら自己修復のみ（md外部編集の取り込み） ---
     if prev_inventory_hash.as_deref() == Some(scan.inventory_hash.as_str()) {
-        if let Some(md) = context_file::read_context_file(root)? {
-            let cached =
-                context_file::build_cached_context(&md, context_file::MAX_CACHED_CONTEXT_CHARS);
-            let hash = extractor::sha256_hex(md.as_bytes());
-            let conn = db.lock().map_err(AppError::lock_err)?;
-            project_contexts::update_cache_only(&conn, project_id, &cached, &hash)?;
-        }
+        let conn = db.lock().map_err(AppError::lock_err)?;
+        // 正本は project_notes。外部エディタでの md 編集を DB へ取り込んでからキャッシュを再生成する
+        crate::project_notes_sync::import_note_from_disk(&conn, project_id)?;
+        crate::project_notes_sync::refresh_cached_context(&conn, project_id)?;
         return Ok(RescanOutcome {
             status: "ok".to_string(),
             regenerated: false,
@@ -152,22 +151,42 @@ pub async fn rescan_project(
         }
     };
 
-    // --- 7. PIGEON-CONTEXT.md 更新（ユーザー欄不可侵） ---
-    let existing = context_file::read_context_file(root)?;
+    // --- 7. project_notes.ai_md 更新（正本はDB。ユーザー欄=user_mdは不可侵） ---
     let auto_body = format!(
         "## 案件コンテキスト（自動生成 {}）\n\n{}",
         Utc::now().format("%Y-%m-%d"),
         digest_body.trim()
     );
-    let new_md = context_file::upsert_auto_section(existing.as_deref(), &project_name, &auto_body);
-    context_file::write_context_file(root, &new_md)?;
 
-    // --- 8. キャッシュ更新（ロック内） ---
-    let cached =
-        context_file::build_cached_context(&new_md, context_file::MAX_CACHED_CONTEXT_CHARS);
-    let context_hash = extractor::sha256_hex(new_md.as_bytes());
+    // --- 8. DB更新（ロック内）: ai_md を履歴退避しつつ差し替え、キャッシュとファイルへ反映 ---
     {
-        let conn = db.lock().map_err(AppError::lock_err)?;
+        let mut conn = db.lock().map_err(AppError::lock_err)?;
+        // 構成変更に伴う再生成でも、直前に外部エディタで user_md 欄が編集されている可能性が
+        // ある（自己修復と同様）。ファイルを書き潰す前に取り込み、ユーザー欄を不可侵に保つ
+        crate::project_notes_sync::import_note_from_disk(&conn, project_id)?;
+
+        // ディレクトリ再スキャンによる差し替えも「AIがダイジェストを再生成した」ことと
+        // 同義なので、手編集と同じ履歴退避付きの差し替えを使う（generate_project_note_ai と同じ方針）
+        project_notes::replace_ai_md_with_history(&mut conn, project_id, &auto_body)?;
+
+        let note = project_notes::get_note(&conn, project_id)?;
+        let user_md = note.as_ref().map(|n| n.user_md.as_str()).unwrap_or("");
+        let composed = crate::project_notes_sync::compose_markdown(
+            user_md,
+            Some(auto_body.as_str()),
+            &project_name,
+        );
+        let cached =
+            context_file::build_cached_context(&composed, context_file::MAX_CACHED_CONTEXT_CHARS);
+        let context_hash = extractor::sha256_hex(composed.as_bytes());
+
+        // ファイルへの書き出しは sync_note_to_disk 経由のみ（書き込み経路を1つに保つ）。
+        // DBが正本なので、ミラー書き出しの失敗はDB側の更新（直後のupsert_generatedに
+        // よるinventory_hash更新）を止めてはいけない（コマンド呼び出し側と同じ方針）
+        if let Err(e) = crate::project_notes_sync::sync_note_to_disk(&conn, project_id) {
+            eprintln!("[warn] PIGEON-CONTEXT.md への書き出しに失敗: {}", e);
+        }
+
         project_contexts::upsert_generated(
             &conn,
             project_id,
@@ -291,6 +310,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rescan_self_repair_imports_external_edit_into_project_notes() {
+        // 構成不変の自己修復パス（§4）。外部エディタでの編集が project_notes（DB正本）へ
+        // 取り込まれることを検証する（現行はキャッシュのみ更新していた）。
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let db = setup(dir.path().to_str().unwrap());
+
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+
+        let md_path = dir.path().join("PIGEON-CONTEXT.md");
+        let md = std::fs::read_to_string(&md_path).unwrap();
+        let edited = md.replace("# 春公演", "# 春公演\n会場担当: 伊藤さん");
+        std::fs::write(&md_path, edited).unwrap();
+
+        // ファイル構成は変えず再スキャン → §4 自己修復のみ
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        assert!(!outcome.regenerated);
+
+        let conn = db.lock().unwrap();
+        let note = crate::db::project_notes::get_note(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        assert!(
+            note.user_md.contains("会場担当: 伊藤さん"),
+            "外部編集がDB正本(project_notes)へ取り込まれる"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rescan_regeneration_writes_ai_md_and_archives_previous_to_history() {
+        // 構成変更に伴う再生成（§7/§8）。ダイジェストは project_notes.ai_md に書き込まれ、
+        // 旧ダイジェストは履歴へ退避される（generate_project_note_ai と同じ差し替え方針）。
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let db = setup(dir.path().to_str().unwrap());
+
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        let first_ai_md = {
+            let conn = db.lock().unwrap();
+            crate::db::project_notes::get_note(&conn, "p1")
+                .unwrap()
+                .unwrap()
+                .ai_md
+                .unwrap()
+        };
+        assert!(first_ai_md.contains("〇〇ホール"));
+
+        // 構成変更 → 再生成
+        std::fs::write(dir.path().join("b.txt"), "y").unwrap();
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        assert!(outcome.regenerated);
+
+        let conn = db.lock().unwrap();
+        let note = crate::db::project_notes::get_note(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        assert!(
+            note.ai_md.unwrap().contains("〇〇ホール"),
+            "ダイジェストはproject_notes.ai_mdに書き込まれる"
+        );
+        assert!(!note.ai_edited, "自動生成はai_editedを立てない");
+
+        let history = crate::db::project_notes::list_ai_history(&conn, "p1").unwrap();
+        assert_eq!(history.len(), 1, "旧ダイジェストは履歴へ退避される");
+        assert_eq!(history[0].ai_md, first_ai_md);
+    }
+
+    #[tokio::test]
+    async fn test_rescan_regeneration_still_advances_inventory_hash() {
+        // §8 で upsert_generated を維持していること（refresh_cached_context には
+        // 置き換えていない）を確認する。inventory_hash が更新されないと§4の
+        // 「構成不変」判定が壊れ、毎回再生成してしまう。
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let db = setup(dir.path().to_str().unwrap());
+
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        let first_outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        assert!(
+            !first_outcome.regenerated,
+            "inventory_hashが更新されていれば構成不変で再生成しない"
+        );
+
+        std::fs::write(dir.path().join("b.txt"), "y").unwrap();
+        let outcome = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        assert!(outcome.regenerated);
+
+        let conn = db.lock().unwrap();
+        let ctx = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        assert!(ctx.inventory_hash.is_some());
+    }
+
+    #[tokio::test]
     async fn test_rescan_missing_directory_sets_status_and_keeps_cache() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "x").unwrap();
@@ -336,6 +464,76 @@ mod tests {
         assert!(
             md.contains("〇〇ホール"),
             "前回のautoセクションを維持（劣化しない）"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_rescan_survives_context_file_write_failure_and_advances_inventory_hash() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // §8: sync_note_to_disk はミラー書き出しに過ぎず、失敗してもDB側の正本更新
+        // (upsert_generated による inventory_hash 更新)を止めてはいけない。
+        // ここでは PIGEON-CONTEXT.md 自身を読み取り専用にし、「ディレクトリの
+        // スキャンは読めるが、そのファイルへの書き込みだけ失敗する」状況を
+        // 再現する（macOSでは既存ファイルの上書きはファイル自身のパーミッションで
+        // 決まり、ディレクトリを読み取り専用にしても上書きは防げないため）。
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let db = setup(dir.path().to_str().unwrap());
+
+        // 1回目: 通常に生成させ、PIGEON-CONTEXT.md を作らせておく
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        let context_path = dir.path().join("PIGEON-CONTEXT.md");
+        assert!(context_path.exists());
+
+        // PIGEON-CONTEXT.md を読み取り専用にする
+        std::fs::set_permissions(&context_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        // ファイル構成を変えて再生成を誘発する
+        std::fs::write(dir.path().join("b.txt"), "y").unwrap();
+
+        let result = rescan_project(&db, &MockGenerator, "p1", false).await;
+
+        // 後始末: 権限を戻さないとテスト自体のtempdir掃除が失敗する
+        std::fs::set_permissions(&context_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let outcome = result.unwrap_or_else(|e| {
+            panic!(
+                "PIGEON-CONTEXT.md書き出し失敗はDB側の正本更新を止めてはならない: {}",
+                e
+            )
+        });
+        assert!(outcome.regenerated, "DB側の再生成自体は成功する");
+
+        // inventory_hash が新しいスキャン結果まで進んでいること。
+        // 進んでいなければ、次回同一構成での再スキャンが再び「構成変更」と誤判定し、
+        // LLMを呼び直して履歴を消費し続けてしまう（バグの本体）。
+        let conn = db.lock().unwrap();
+        let ctx = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        let new_hash = ctx.inventory_hash.clone();
+        drop(conn);
+
+        // 3回目: 構成を変えずに再スキャン → inventory_hashが進んでいれば自己修復のみ
+        let third = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        assert!(
+            !third.regenerated,
+            "inventory_hashが更新されていれば同一構成の再スキャンで再生成しない"
+        );
+
+        let conn = db.lock().unwrap();
+        let ctx_after = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ctx_after.inventory_hash, new_hash,
+            "構成不変時はinventory_hashも変わらない"
         );
     }
 

@@ -5,5 +5,6 @@ pub mod directory;
 pub mod draft;
 pub mod mail;
 pub mod project;
+pub mod project_note;
 pub mod saved_search;
 pub mod settings;

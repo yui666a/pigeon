@@ -174,6 +174,7 @@ const MIGRATIONS: &[Migration] = &[
     (18, migrate_v18),
     (19, migrate_v19),
     (20, migrate_v20),
+    (21, migrate_v21),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -629,6 +630,33 @@ fn migrate_v20(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v21: 案件ノート。ディレクトリ連携の有無に関わらず全案件が持てる自由記述ノート。
+/// 正本は DB 側（PIGEON-CONTEXT.md はディレクトリ連携時のミラー）。
+fn migrate_v21(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS project_notes (
+            project_id      TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            user_md         TEXT NOT NULL DEFAULT '',
+            ai_md           TEXT,
+            ai_edited       BOOLEAN NOT NULL DEFAULT FALSE,
+            ai_generated_at DATETIME,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS project_note_ai_history (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            ai_md       TEXT NOT NULL,
+            replaced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_note_ai_history_project
+            ON project_note_ai_history(project_id);
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -771,10 +799,16 @@ mod tests {
     #[test]
     fn test_v20_correction_log_rebuild_preserves_rows_and_sequence() {
         // v19 状態の DB を作り、correction_log に行を入れてから v20 を適用する
+        crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        crate::db::vec_ext::register();
-        apply_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        let upto_v19: Vec<Migration> = MIGRATIONS
+            .iter()
+            .copied()
+            .filter(|(version, _)| *version < 20)
+            .collect();
+        apply_migrations(&conn, &upto_v19).unwrap();
+        assert_eq!(schema_version(&conn), 19);
         // テストデータ: acc1 は setup_db 相当を手で入れる
         conn.execute(
             "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
@@ -837,7 +871,7 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((21, migrate_broken_partial));
+        with_broken.push((22, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -850,7 +884,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            20,
+            21,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -863,17 +897,17 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((21, migrate_broken_partial));
+        with_broken.push((22, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((21, migrate_fixed));
+        with_fixed.push((22, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 21);
+        assert_eq!(schema_version(&conn), 22);
     }
 
     #[test]
@@ -883,21 +917,21 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((21, migrate_broken_partial));
+        with_broken.push((22, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v20）はコミット済みのまま
+        // 成功済みバージョン（v1〜v21）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            20,
+            21,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 20);
+        assert_eq!(schema_version(&conn), 21);
     }
 
     #[test]
@@ -1016,7 +1050,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1227,7 +1261,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1254,7 +1288,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1409,7 +1443,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1616,7 +1650,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1712,7 +1746,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1831,7 +1865,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1959,7 +1993,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -1980,7 +2014,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -2113,7 +2147,7 @@ mod tests {
 
         // 残りのマイグレーション（v17）を適用
         apply_migrations(&conn, MIGRATIONS).unwrap();
-        assert_eq!(schema_version(&conn), 20);
+        assert_eq!(schema_version(&conn), 21);
 
         let trigger_count: i32 = conn
             .query_row(
@@ -2144,5 +2178,94 @@ mod tests {
             )
             .unwrap();
         assert_eq!(body, "サトーノ端末");
+    }
+
+    #[test]
+    fn test_migration_creates_project_notes_tables() {
+        crate::db::vec_ext::register();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        // 両テーブルが存在する
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('project_notes', 'project_note_ai_history')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // 案件削除で CASCADE する
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('a1', 'T', 't@e.com', 'i', 's', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'a1', 'P')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_notes (project_id, user_md) VALUES ('p1', 'note')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_note_ai_history (id, project_id, ai_md)
+             VALUES ('h1', 'p1', 'old')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM projects WHERE id = 'p1'", [])
+            .unwrap();
+
+        let notes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM project_notes", [], |r| r.get(0))
+            .unwrap();
+        let hist: i64 = conn
+            .query_row("SELECT COUNT(*) FROM project_note_ai_history", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(notes, 0, "案件削除で project_notes も消える");
+        assert_eq!(hist, 0, "案件削除で履歴も消える");
+    }
+
+    #[test]
+    fn test_project_notes_defaults() {
+        crate::db::vec_ext::register();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('a1', 'T', 't@e.com', 'i', 's', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, account_id, name) VALUES ('p1', 'a1', 'P')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO project_notes (project_id) VALUES ('p1')", [])
+            .unwrap();
+
+        let (user_md, ai_md, ai_edited): (String, Option<String>, bool) = conn
+            .query_row(
+                "SELECT user_md, ai_md, ai_edited FROM project_notes WHERE project_id='p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(user_md, "");
+        assert_eq!(ai_md, None);
+        assert!(!ai_edited);
     }
 }

@@ -9,6 +9,8 @@ pub mod mail_chunker;
 pub mod mail_sync;
 pub mod models;
 pub mod project_context;
+pub mod project_note_digest;
+pub mod project_notes_sync;
 pub mod search_normalize;
 pub mod search_snippet;
 pub mod secure_store;
@@ -273,6 +275,12 @@ pub fn run() {
             commands::directory_commands::get_cloud_rules,
             commands::directory_commands::set_allow_cloud_context,
             commands::directory_commands::get_project_context,
+            commands::project_note_commands::get_project_note,
+            commands::project_note_commands::save_project_note_user,
+            commands::project_note_commands::save_project_note_ai,
+            commands::project_note_commands::generate_project_note_ai,
+            commands::project_note_commands::list_project_note_ai_history,
+            commands::project_note_commands::restore_project_note_ai,
             commands::settings_commands::get_llm_settings,
             commands::settings_commands::set_llm_settings,
             commands::settings_commands::test_llm_connection,
