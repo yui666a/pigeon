@@ -802,7 +802,13 @@ mod tests {
         crate::db::vec_ext::register();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        apply_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        let upto_v19: Vec<Migration> = MIGRATIONS
+            .iter()
+            .copied()
+            .filter(|(version, _)| *version < 20)
+            .collect();
+        apply_migrations(&conn, &upto_v19).unwrap();
+        assert_eq!(schema_version(&conn), 19);
         // テストデータ: acc1 は setup_db 相当を手で入れる
         conn.execute(
             "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
@@ -818,8 +824,8 @@ mod tests {
         let m = crate::test_helpers::make_mail("m1", "<m1@ex>", "S", "2026-07-18T10:00:00");
         crate::db::mails::insert_mail(&conn, &m).unwrap();
         conn.execute_batch(
-            "INSERT INTO correction_log (mail_id, from_project, from_path, to_project, to_path) VALUES ('m1', 'p1', '照明', 'p2', '音響');
-             INSERT INTO correction_log (mail_id, from_project, from_path, to_project, to_path) VALUES ('m1', NULL, NULL, 'p2', '音響');
+            "INSERT INTO correction_log (mail_id, from_project, to_project) VALUES ('m1', 'p1', 'p2');
+             INSERT INTO correction_log (mail_id, from_project, to_project) VALUES ('m1', NULL, 'p2');
              DELETE FROM correction_log WHERE id = 2;",
         )
         .unwrap();
