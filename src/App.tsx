@@ -9,13 +9,16 @@ import { MailView } from "./components/mail-view/MailView";
 import { DragOverlay } from "./components/common/DragOverlay";
 import { ToastContainer } from "./components/common/ToastContainer";
 import { ComposeModal } from "./components/compose/ComposeModal";
+import { ProjectNotePanel } from "./components/project-note/ProjectNotePanel";
 import { useUiStore } from "./stores/uiStore";
+import { useProjectStore } from "./stores/projectStore";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useMailStore } from "./stores/mailStore";
 import { ensureNotificationPermission } from "./utils/notifyNewMail";
 
 function App() {
   const viewMode = useUiStore((s) => s.viewMode);
+  const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
   const initNewMailListener = useMailStore((s) => s.initNewMailListener);
   useKeyboardShortcuts();
 
@@ -36,16 +39,26 @@ function App() {
   return (
     <div className="flex h-screen">
       <Sidebar />
-      <div className="w-80 border-r">
-        {viewMode === "search" ? (
-          <SearchResults />
-        ) : viewMode === "unclassified" ? (
-          <UnclassifiedList />
-        ) : viewMode === "drafts" ? (
-          <DraftList />
-        ) : (
-          <ThreadList viewMode={viewMode} />
+      <div className="flex w-80 flex-col border-r">
+        {viewMode === "project" && selectedProjectId && (
+          <details className="border-b">
+            <summary className="cursor-pointer px-2 py-1 text-sm font-semibold">
+              案件ノート
+            </summary>
+            <ProjectNotePanel projectId={selectedProjectId} />
+          </details>
         )}
+        <div className="min-h-0 flex-1">
+          {viewMode === "search" ? (
+            <SearchResults />
+          ) : viewMode === "unclassified" ? (
+            <UnclassifiedList />
+          ) : viewMode === "drafts" ? (
+            <DraftList />
+          ) : (
+            <ThreadList viewMode={viewMode} />
+          )}
+        </div>
       </div>
       <div className="flex-1">
         <MailView />
