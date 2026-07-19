@@ -1,4 +1,4 @@
-import { projectPathString } from "../../stores/projectTree";
+import { ProjectSelect } from "../common/ProjectSelect";
 import type { Project } from "../../types/project";
 
 interface BulkActionBarProps {
@@ -27,39 +27,18 @@ export function BulkActionBar({
 }: BulkActionBarProps) {
   if (selectedCount === 0) return null;
 
-  // 階層内では同名案件が共存し得るため、選択肢はパス表記・パス順で出す
-  const sortedProjects = [...projects].sort((a, b) =>
-    projectPathString(projects, a.id).localeCompare(
-      projectPathString(projects, b.id),
-    ),
-  );
-
   return (
     <div className="flex flex-wrap items-center gap-2 border-b bg-blue-50 px-4 py-2">
       <span className="shrink-0 whitespace-nowrap text-sm text-blue-800">
         {selectedCount} 件選択中
       </span>
       <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
-        <select
-          aria-label="案件へ移動"
-          defaultValue=""
-          onChange={(e) => {
-            if (e.target.value) {
-              onMove(e.target.value);
-              e.target.value = "";
-            }
-          }}
-          className="min-w-0 flex-1 rounded border px-2 py-1 text-sm"
-        >
-          <option value="" disabled>
-            案件へ移動...
-          </option>
-          {sortedProjects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {projectPathString(projects, p.id)}
-            </option>
-          ))}
-        </select>
+        <ProjectSelect
+          projects={projects}
+          ariaLabel="案件へ移動"
+          placeholder="案件へ移動..."
+          onSelect={onMove}
+        />
         <button
           onClick={onCreateProject}
           className="shrink-0 whitespace-nowrap rounded border border-blue-300 px-3 py-1 text-sm text-blue-700 hover:bg-blue-100"
