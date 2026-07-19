@@ -99,6 +99,10 @@ struct OllamaChatResponseMessage {
 /// classify は trait のデフォルト実装（generate_text 経由）を使う。
 #[async_trait]
 impl LlmClassifier for OllamaClassifier {
+    fn model_id(&self) -> String {
+        format!("ollama:{}", self.model)
+    }
+
     async fn health_check(&self) -> Result<(), AppError> {
         let url = format!("{}/api/tags", self.endpoint);
         let response = reqwest::Client::builder()

@@ -183,6 +183,10 @@ impl TextGenerator for GeminiVertexClassifier {
 /// classify は trait のデフォルト実装（generate_text 経由）を使う。
 #[async_trait]
 impl LlmClassifier for GeminiVertexClassifier {
+    fn model_id(&self) -> String {
+        format!("gemini_vertex:{}", self.model)
+    }
+
     /// generateContent に最小のダミーメッセージを投げ、疎通・認証・権限・クォータを検証する。
     async fn health_check(&self) -> Result<(), AppError> {
         let url = self.endpoint_url();

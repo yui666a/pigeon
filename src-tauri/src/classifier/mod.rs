@@ -47,6 +47,11 @@ pub trait TextGenerator: Send + Sync {
 
 #[async_trait]
 pub trait LlmClassifier: TextGenerator + Send + Sync {
+    /// 判断の記録に残す "provider:model" 形式の識別子。モデルを変えると
+    /// 確信度の性質も変わるため、キャリブレーション分析の軸として使う。
+    /// 秘密情報（APIキー等）は含めない。
+    fn model_id(&self) -> String;
+
     /// メールを分類する。プロンプト組み立て → LLM 呼び出し → パースの流れは
     /// 全プロバイダ共通なので、デフォルト実装として提供する。
     /// 応答をパースできない場合は Unclassified にフォールバックする。
@@ -112,6 +117,10 @@ mod tests {
 
     #[async_trait]
     impl LlmClassifier for MockLlm {
+        fn model_id(&self) -> String {
+            "stub:test".into()
+        }
+
         async fn health_check(&self) -> Result<(), AppError> {
             Ok(())
         }
