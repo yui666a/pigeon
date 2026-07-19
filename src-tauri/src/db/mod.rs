@@ -12,6 +12,7 @@ pub mod mails;
 pub mod migrations;
 pub mod project_contexts;
 pub mod project_files;
+pub mod project_notes;
 pub mod projects;
 pub mod repository;
 pub mod saved_searches;
