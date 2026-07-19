@@ -277,9 +277,10 @@ pub async fn classify_one(
         .await?;
 
     // --- 3. 確信度ゲート + 永続化（ロック内） ---
+    let model_id = classifier.model_id();
     let result = {
         let conn = db.lock().map_err(AppError::lock_err)?;
-        apply_result(&conn, pending, mail_id, raw)?
+        apply_result(&conn, pending, mail_id, raw, Some(&model_id))?
     };
 
     Ok(ClassifyResponse {
@@ -359,12 +360,74 @@ fn unclassified_with_reason(reason: String, confidence: f64) -> ClassifyResult {
 ///   積む（ユーザー承認待ち）。サニタイズ後に名前が空なら不成立として
 ///   Unclassified に正規化する
 /// - Unclassified: 何も永続化しない
+/// AI の判断を1件記録する。
+///
+/// `persisted` は「確信度ゲートを通過して割り当てが確定する見込みか」を表す。
+/// assign かつ確信度が閾値以上のときだけ true。案件の帰属検証で後から
+/// Unclassified に正規化されうるが、その場合も「AI は assign を高確信で
+/// 選んだ」という事実は分析上残す価値があるため、ここでは true にする。
+///
+/// 記録の失敗は分類本体を巻き添えにしない。観測のためのログが、分類という
+/// 主目的を壊してはならない。
+fn log_judgement(
+    conn: &Connection,
+    mail_id: &str,
+    result: &ClassifyResult,
+    model: Option<&str>,
+) -> Result<(), AppError> {
+    let account_id = match mails::get_mail_by_id(conn, mail_id) {
+        Ok(mail) => mail.account_id,
+        // メールが消えているなら記録先も無い。分類側でエラーになるので黙って諦める
+        Err(_) => return Ok(()),
+    };
+
+    let (action, project_id, proposed_name, persisted) = match &result.action {
+        ClassifyAction::Assign { project_id } => (
+            "assign",
+            Some(project_id.as_str()),
+            None,
+            result.confidence >= CONFIDENCE_UNCERTAIN,
+        ),
+        ClassifyAction::Create { project_name, .. } => {
+            ("create", None, Some(project_name.as_str()), false)
+        }
+        ClassifyAction::Unclassified => ("unclassified", None, None, false),
+    };
+
+    // 案件パスは提案時点のスナップショット。案件が後で改名・削除されても
+    // 「どこへ入れようとしたか」の意味を保つ
+    let project_path = project_id
+        .and_then(|id| crate::db::projects::project_path_string(conn, id).ok())
+        .filter(|p| !p.is_empty());
+
+    let entry = crate::db::classification_log::ClassificationLogEntry {
+        mail_id,
+        account_id: &account_id,
+        action,
+        project_id,
+        project_path,
+        proposed_name,
+        confidence: result.confidence,
+        persisted,
+        model,
+    };
+    if let Err(e) = crate::db::classification_log::insert_log(conn, &entry) {
+        eprintln!("分類ログの記録に失敗しました（分類自体は継続します）: {e}");
+    }
+    Ok(())
+}
+
 pub fn apply_result(
     conn: &Connection,
     pending: &PendingClassifications,
     mail_id: &str,
     result: ClassifyResult,
+    model: Option<&str>,
 ) -> Result<ClassifyResult, AppError> {
+    // AI の判断は永続化の可否によらず記録する。確信度ゲートで破棄された
+    // assign や、割り当て行を作らない create / unclassified もここでしか
+    // 観測できない（設計: 2026-07-20-classification-observability-design.md）
+    log_judgement(conn, mail_id, &result, model)?;
     match result.action {
         ClassifyAction::Assign { ref project_id } if result.confidence >= CONFIDENCE_UNCERTAIN => {
             if !is_assignable_project(conn, mail_id, project_id)? {
@@ -489,6 +552,10 @@ mod tests {
 
     #[async_trait]
     impl LlmClassifier for StubLlm {
+        fn model_id(&self) -> String {
+            "stub:test".into()
+        }
+
         async fn health_check(&self) -> Result<(), AppError> {
             if self.healthy {
                 Ok(())
@@ -506,6 +573,96 @@ mod tests {
             confidence,
             reason: "スタブの理由".into(),
         }
+    }
+
+    /// classification_log の行を (action, confidence, persisted) で読む
+    fn log_rows(conn: &Connection) -> Vec<(String, f64, i64)> {
+        let mut stmt = conn
+            .prepare("SELECT action, confidence, persisted FROM classification_log ORDER BY id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    }
+
+    /// 確信度ゲートで破棄された assign こそ観測できないと困る。
+    /// これが記録されないと「生の確信度分布」が永久に分からない
+    /// （設計: 2026-07-20-classification-observability-design.md §1）
+    #[test]
+    fn test_apply_result_logs_discarded_low_confidence_assign() {
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        let proj = insert_project(&conn, "Proj");
+
+        apply_result(&conn, &pending, "m1", assign_result(&proj.id, 0.3), None).unwrap();
+
+        let rows = log_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "assign", "AI が選んだ action を記録する");
+        assert!((rows[0].1 - 0.3).abs() < f64::EPSILON, "生の確信度を残す");
+        assert_eq!(rows[0].2, 0, "破棄されたので persisted=0");
+    }
+
+    #[test]
+    fn test_apply_result_logs_persisted_assign() {
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+        let proj = insert_project(&conn, "Proj");
+
+        apply_result(
+            &conn,
+            &pending,
+            "m1",
+            assign_result(&proj.id, 0.95),
+            Some("gemini_vertex:gemini-3.5-flash"),
+        )
+        .unwrap();
+
+        let rows = log_rows(&conn);
+        assert_eq!(rows, vec![("assign".into(), 0.95, 1)]);
+
+        let (pid, model): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT project_id, model FROM classification_log",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pid.as_deref(), Some(proj.id.as_str()));
+        assert_eq!(model.as_deref(), Some("gemini_vertex:gemini-3.5-flash"));
+    }
+
+    /// create / unclassified は mail_project_assignments に行を作らないため、
+    /// ログに残さないと確信度が完全に失われる
+    #[test]
+    fn test_apply_result_logs_create_and_unclassified() {
+        let conn = setup_db();
+        let pending = PendingClassifications::new();
+        insert_test_mail(&conn, "m1", "Subject");
+
+        apply_result(&conn, &pending, "m1", create_result(), None).unwrap();
+        apply_result(&conn, &pending, "m1", unclassified_result(), None).unwrap();
+
+        let rows = log_rows(&conn);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "create");
+        assert_eq!(rows[0].2, 0, "提案は保留キュー止まりで永続化ではない");
+        assert_eq!(rows[1].0, "unclassified");
+        assert_eq!(rows[1].2, 0);
+
+        let name: Option<String> = conn
+            .query_row(
+                "SELECT proposed_name FROM classification_log WHERE action = 'create'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(name.as_deref(), Some("Suggested"));
     }
 
     fn create_result() -> ClassifyResult {
@@ -694,6 +851,10 @@ mod tests {
 
     #[async_trait]
     impl LlmClassifier for CapturingLlm {
+        fn model_id(&self) -> String {
+            "stub:test".into()
+        }
+
         async fn health_check(&self) -> Result<(), AppError> {
             Ok(())
         }
@@ -802,8 +963,14 @@ mod tests {
         let pending = PendingClassifications::new();
         insert_test_mail(&conn, "m1", "Subject");
 
-        let res =
-            apply_result(&conn, &pending, "m1", assign_result("ghost-project", 0.95)).unwrap();
+        let res = apply_result(
+            &conn,
+            &pending,
+            "m1",
+            assign_result("ghost-project", 0.95),
+            None,
+        )
+        .unwrap();
 
         assert!(matches!(res.action, ClassifyAction::Unclassified));
         assert!(
@@ -834,7 +1001,8 @@ mod tests {
         };
         let other = projects::insert_project(&conn, &req).unwrap();
 
-        let res = apply_result(&conn, &pending, "m1", assign_result(&other.id, 0.95)).unwrap();
+        let res =
+            apply_result(&conn, &pending, "m1", assign_result(&other.id, 0.95), None).unwrap();
 
         assert!(matches!(res.action, ClassifyAction::Unclassified));
         assert!(
@@ -863,7 +1031,7 @@ mod tests {
             reason: "r".into(),
         };
 
-        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+        let res = apply_result(&conn, &pending, "m1", result, None).unwrap();
 
         match res.action {
             ClassifyAction::Create {
@@ -900,7 +1068,7 @@ mod tests {
             reason: "r".into(),
         };
 
-        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+        let res = apply_result(&conn, &pending, "m1", result, None).unwrap();
 
         assert!(matches!(res.action, ClassifyAction::Unclassified));
         assert!(!pending.contains("m1").unwrap(), "不成立の提案は積まない");
@@ -951,7 +1119,7 @@ mod tests {
             reason: "r".into(),
         };
 
-        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+        let res = apply_result(&conn, &pending, "m1", result, None).unwrap();
 
         match res.action {
             ClassifyAction::Create {
@@ -977,7 +1145,7 @@ mod tests {
             reason: "r".into(),
         };
 
-        let res = apply_result(&conn, &pending, "m1", result).unwrap();
+        let res = apply_result(&conn, &pending, "m1", result, None).unwrap();
 
         match res.action {
             ClassifyAction::Create {
@@ -1006,6 +1174,7 @@ mod tests {
             &pending,
             "m1",
             assign_result(&proj.id, CONFIDENCE_UNCERTAIN),
+            None,
         )
         .unwrap();
 
@@ -1023,7 +1192,7 @@ mod tests {
         let pending = PendingClassifications::new();
         insert_test_mail(&conn, "m1", "Subject");
 
-        apply_result(&conn, &pending, "m1", create_result()).unwrap();
+        apply_result(&conn, &pending, "m1", create_result(), None).unwrap();
 
         assert!(pending.contains("m1").unwrap());
     }
@@ -1078,6 +1247,10 @@ mod tests {
 
     #[async_trait]
     impl LlmClassifier for SeqLlm {
+        fn model_id(&self) -> String {
+            "stub:test".into()
+        }
+
         async fn health_check(&self) -> Result<(), AppError> {
             Ok(())
         }
@@ -1394,6 +1567,10 @@ mod tests {
 
     #[async_trait]
     impl LlmClassifier for TextStubLlm {
+        fn model_id(&self) -> String {
+            "stub:test".into()
+        }
+
         async fn health_check(&self) -> Result<(), AppError> {
             Ok(())
         }

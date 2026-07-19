@@ -175,6 +175,7 @@ const MIGRATIONS: &[Migration] = &[
     (19, migrate_v19),
     (20, migrate_v20),
     (21, migrate_v21),
+    (22, migrate_v22),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -657,6 +658,38 @@ fn migrate_v21(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// AI 分類の全判断を記録するログ。確信度ゲートで破棄された assign や、
+/// mail_project_assignments に行を作らない create / unclassified も残すことで、
+/// AI が出した確信度の「生の分布」を事後に検証できるようにする。
+///
+/// 本文由来のテキスト（reason・件名）は保存しない。分析目的の長期保存先を
+/// 新設するため、ADR 0002 の「送った内容の保存先を増やさない」方針に従う
+/// （設計: docs/design/2026-07-20-classification-observability-design.md）。
+fn migrate_v22(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS classification_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            mail_id       TEXT NOT NULL REFERENCES mails(id) ON DELETE CASCADE,
+            account_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            action        TEXT NOT NULL CHECK(action IN ('assign', 'create', 'unclassified')),
+            project_id    TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            project_path  TEXT,
+            proposed_name TEXT,
+            confidence    REAL NOT NULL,
+            persisted     INTEGER NOT NULL CHECK(persisted IN (0, 1)),
+            model         TEXT,
+            classified_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_classification_log_mail
+            ON classification_log(mail_id);
+        CREATE INDEX IF NOT EXISTS idx_classification_log_at
+            ON classification_log(classified_at);
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,7 +904,7 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((22, migrate_broken_partial));
+        with_broken.push((23, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -884,7 +917,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            21,
+            22,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -897,17 +930,17 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((22, migrate_broken_partial));
+        with_broken.push((23, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((22, migrate_fixed));
+        with_fixed.push((23, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 22);
+        assert_eq!(schema_version(&conn), 23);
     }
 
     #[test]
@@ -917,21 +950,21 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((22, migrate_broken_partial));
+        with_broken.push((23, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v21）はコミット済みのまま
+        // 成功済みバージョン（v1〜v22）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            21,
+            22,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 21);
+        assert_eq!(schema_version(&conn), 22);
     }
 
     #[test]
@@ -1050,7 +1083,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1261,7 +1294,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1288,7 +1321,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1443,7 +1476,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1650,7 +1683,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1746,7 +1779,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1865,7 +1898,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -1993,7 +2026,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -2014,7 +2047,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -2147,7 +2180,7 @@ mod tests {
 
         // 残りのマイグレーション（v17）を適用
         apply_migrations(&conn, MIGRATIONS).unwrap();
-        assert_eq!(schema_version(&conn), 21);
+        assert_eq!(schema_version(&conn), 22);
 
         let trigger_count: i32 = conn
             .query_row(
@@ -2178,6 +2211,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(body, "サトーノ端末");
+    }
+
+    /// AI の全判断を記録するログ。破棄された低確信 assign も残すため、
+    /// 確信度のキャリブレーションを事後に検証できる
+    /// （設計: docs/design/2026-07-20-classification-observability-design.md）
+    #[test]
+    fn test_migration_creates_classification_log() {
+        crate::db::vec_ext::register();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('a1', 'T', 't@e.com', 'i', 's', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr,
+                                subject, date, uid, fetched_at)
+             VALUES ('m1', 'a1', 'INBOX', '<m1@e.com>', 'a@e.com', 'b@e.com',
+                     'S', '2026-07-20T10:00:00', 1, '2026-07-20T10:00:00')",
+            [],
+        )
+        .unwrap();
+
+        // 永続化されなかった低確信の判断も記録できる
+        conn.execute(
+            "INSERT INTO classification_log
+                (mail_id, account_id, action, confidence, persisted, model)
+             VALUES ('m1', 'a1', 'unclassified', 0.2, 0, 'gemini_vertex:gemini-3.5-flash')",
+            [],
+        )
+        .unwrap();
+
+        let (action, persisted, at): (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT action, persisted, classified_at FROM classification_log",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(action, "unclassified");
+        assert_eq!(persisted, 0);
+        assert!(at.is_some(), "classified_at は既定で埋まる");
+
+        // action は3種類に限定される
+        assert!(
+            conn.execute(
+                "INSERT INTO classification_log (mail_id, account_id, action, confidence, persisted)
+                 VALUES ('m1', 'a1', 'bogus', 0.5, 1)",
+                [],
+            )
+            .is_err(),
+            "未知の action は CHECK 制約で弾く"
+        );
+
+        // メール削除で CASCADE する
+        conn.execute("DELETE FROM mails WHERE id = 'm1'", [])
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM classification_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "メール削除でログも消える");
     }
 
     #[test]

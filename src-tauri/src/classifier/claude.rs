@@ -87,6 +87,10 @@ impl TextGenerator for ClaudeClassifier {
 /// classify は trait のデフォルト実装（generate_text 経由）を使う。
 #[async_trait]
 impl LlmClassifier for ClaudeClassifier {
+    fn model_id(&self) -> String {
+        format!("claude:{}", self.model)
+    }
+
     async fn health_check(&self) -> Result<(), AppError> {
         let response = self
             .client

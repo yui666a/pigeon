@@ -117,6 +117,10 @@ impl TextGenerator for ClaudeVertexClassifier {
 /// classify は trait のデフォルト実装（generate_text 経由）を使う。
 #[async_trait]
 impl LlmClassifier for ClaudeVertexClassifier {
+    fn model_id(&self) -> String {
+        format!("vertex:{}", self.model)
+    }
+
     /// 専用の軽量エンドポイントが無いため、最小のダミーメッセージを rawPredict に投げて
     /// 疎通・認証・権限をまとめて検証する。
     async fn health_check(&self) -> Result<(), AppError> {

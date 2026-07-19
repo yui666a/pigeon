@@ -4,6 +4,7 @@ pub mod assignments;
 pub mod attachments;
 pub mod audit_log;
 pub mod chunks;
+pub mod classification_log;
 pub mod cloud_rules;
 pub mod directories;
 pub mod drafts;
