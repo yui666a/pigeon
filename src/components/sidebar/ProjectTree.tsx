@@ -4,7 +4,11 @@ import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useMailStore } from "../../stores/mailStore";
 import { useDragStore } from "../../stores/dragStore";
-import { buildProjectTree, aggregateUnread } from "../../stores/projectTree";
+import {
+  buildProjectTree,
+  aggregateUnread,
+  collectSubtreeIds,
+} from "../../stores/projectTree";
 import type { ProjectTreeNode } from "../../stores/projectTree";
 import type { DeleteImpact, Project } from "../../types/project";
 import { projectApi } from "../../api/projectApi";
@@ -305,11 +309,14 @@ function ProjectListInner({
       {mergeSourceId && (() => {
         const sourceProject = projects.find((p) => p.id === mergeSourceId);
         if (!sourceProject) return null;
-        const candidates = projects.filter((p) => p.id !== mergeSourceId);
+        // マージ先に自分の子孫は選べない（バックエンドでも拒否されるが候補から除く）
+        const subtree = collectSubtreeIds(buildProjectTree(projects), mergeSourceId);
+        const candidates = projects.filter((p) => !subtree.has(p.id));
         return (
           <MergeProjectDialog
             sourceProject={sourceProject}
             candidates={candidates}
+            projects={projects}
             onMerge={async (targetId) => {
               try {
                 await mergeProject(mergeSourceId, targetId);

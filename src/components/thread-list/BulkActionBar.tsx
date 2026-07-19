@@ -1,3 +1,4 @@
+import { projectPathString } from "../../stores/projectTree";
 import type { Project } from "../../types/project";
 
 interface BulkActionBarProps {
@@ -26,6 +27,13 @@ export function BulkActionBar({
 }: BulkActionBarProps) {
   if (selectedCount === 0) return null;
 
+  // 階層内では同名案件が共存し得るため、選択肢はパス表記・パス順で出す
+  const sortedProjects = [...projects].sort((a, b) =>
+    projectPathString(projects, a.id).localeCompare(
+      projectPathString(projects, b.id),
+    ),
+  );
+
   return (
     <div className="flex flex-wrap items-center gap-2 border-b bg-blue-50 px-4 py-2">
       <span className="shrink-0 whitespace-nowrap text-sm text-blue-800">
@@ -46,9 +54,9 @@ export function BulkActionBar({
           <option value="" disabled>
             案件へ移動...
           </option>
-          {projects.map((p) => (
+          {sortedProjects.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name}
+              {projectPathString(projects, p.id)}
             </option>
           ))}
         </select>
