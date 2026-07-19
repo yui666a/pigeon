@@ -137,3 +137,26 @@ describe("ThreadItem", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ThreadItem の要確認マーク", () => {
+  it("要確認のメールが1件でもあれば ⚠ を出す", () => {
+    const thread = makeThread({
+      mails: [
+        makeMail("m1", { assigned_by: "user", confidence: null }),
+        makeMail("m2", { assigned_by: "ai", confidence: 0.55 }),
+      ],
+    });
+    render(<ThreadItem thread={thread} selected={false} onClick={vi.fn()} />);
+    expect(screen.getByLabelText("要確認のAI分類あり")).toBeInTheDocument();
+  });
+
+  it("確信度が高い分類だけなら ⚠ を出さない", () => {
+    const thread = makeThread({
+      mails: [makeMail("m1", { assigned_by: "ai", confidence: 0.92 })],
+    });
+    render(<ThreadItem thread={thread} selected={false} onClick={vi.fn()} />);
+    expect(
+      screen.queryByLabelText("要確認のAI分類あり"),
+    ).not.toBeInTheDocument();
+  });
+});

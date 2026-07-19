@@ -4,6 +4,7 @@ import { useMailDrag } from "../../hooks/useMailDrag";
 import { formatShortDate } from "../../utils/date";
 import { threadBackgroundClass } from "../../utils/threadStyle";
 import { useSelectionStore } from "../../stores/selectionStore";
+import { needsConfirmation } from "../../utils/classifyConfidence";
 
 interface ThreadItemProps {
   thread: Thread;
@@ -21,6 +22,8 @@ export const ThreadItem = memo(function ThreadItem({
   const { onMouseDown } = useMailDrag(mailIds, thread.subject, onClick);
   const hasUnread = thread.mails.some((m) => !m.is_read);
   const hasFlagged = thread.mails.some((m) => m.is_flagged);
+  // 一覧では視認のみ。承認操作は本文側（MailHeader のバッジ）で行う
+  const hasUncertain = thread.mails.some(needsConfirmation);
   const isChecked = useSelectionStore((s) => s.isSelected(thread.thread_id));
   const toggleThread = useSelectionStore((s) => s.toggleThread);
 
@@ -46,6 +49,14 @@ export const ThreadItem = memo(function ThreadItem({
             {hasFlagged && (
               <span className="shrink-0 text-amber-500" aria-label="フラグ付き">
                 ★
+              </span>
+            )}
+            {hasUncertain && (
+              <span
+                className="shrink-0 text-yellow-600"
+                aria-label="要確認のAI分類あり"
+              >
+                ⚠
               </span>
             )}
             <span
