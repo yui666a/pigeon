@@ -22,7 +22,7 @@ use crate::models::classifier::{
 };
 
 /// 自動割り当ての閾値。これ以上の確信度の assign はユーザー確認なしで割り当てる
-/// （UI 側のバッジ配色もこの値を鏡写しにしている: ClassifyResultBadge.tsx）。
+/// （UI 側は src/utils/classifyConfidence.ts がこの値を鏡写しにしている）。
 pub const CONFIDENCE_AUTO_ASSIGN: f64 = 0.7;
 
 /// 要確認の閾値。これ未満の assign は永続化せず未分類のまま扱う。

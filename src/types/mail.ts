@@ -19,6 +19,10 @@ export interface Mail {
   is_read: boolean;
   is_flagged: boolean;
   fetched_at: string;
+  /** 以下2つは mails テーブルではなく mail_project_assignments 由来の注釈。
+   * 未割り当てのメールでは null。確信度が中程度のAI分類に ⚠ を出すために使う */
+  assigned_by?: string | null;
+  confidence?: number | null;
 }
 
 export interface UnreadCounts {
