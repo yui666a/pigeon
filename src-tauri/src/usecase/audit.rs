@@ -168,7 +168,7 @@ mod tests {
         );
         sink.record(
             &conn,
-            &AuditEntry::new("move_mail", Risk::Reversible, Driver::Ui, &json!({})),
+            &AuditEntry::new("bulk_move_mails", Risk::Reversible, Driver::Ui, &json!({})),
         );
 
         let entries = sink.entries();
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(entries[0].use_case, "send_mail");
         assert_eq!(entries[0].risk, Risk::Sensitive);
         assert_eq!(entries[0].driver, Driver::Agent);
-        assert_eq!(entries[1].use_case, "move_mail");
+        assert_eq!(entries[1].use_case, "bulk_move_mails");
     }
 
     #[test]

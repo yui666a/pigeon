@@ -79,8 +79,6 @@ describe("Sidebar - handleProjectSubmit", () => {
           return Promise.resolve([]);
         case "get_project_directory":
           return Promise.resolve(null);
-        case "get_unclassified_mails":
-          return Promise.resolve([]);
         case "list_saved_searches":
           return Promise.resolve([]);
         case "create_project":

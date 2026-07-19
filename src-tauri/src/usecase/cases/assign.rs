@@ -11,34 +11,6 @@ use crate::error::AppError;
 use crate::usecase::{Registry, Risk, UseCase};
 
 #[derive(Deserialize)]
-pub struct MoveMailInput {
-    pub mail_id: String,
-    pub project_id: String,
-}
-
-/// メールを案件へ割り当てる（IMAP 通信なし・ローカルのみ）。
-pub struct MoveMailUseCase;
-
-#[async_trait::async_trait]
-impl UseCase for MoveMailUseCase {
-    type Input = MoveMailInput;
-    type Output = ();
-
-    fn name(&self) -> &'static str {
-        "move_mail"
-    }
-
-    fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
-        Ok(Risk::Reversible)
-    }
-
-    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
-        let pending = ctx.pending();
-        ctx.with_conn(|conn| move_mail_inner(conn, pending, &input.mail_id, &input.project_id))
-    }
-}
-
-#[derive(Deserialize)]
 pub struct BulkMoveMailsInput {
     pub mail_ids: Vec<String>,
     pub project_id: String,
@@ -74,7 +46,6 @@ impl UseCase for BulkMoveMailsUseCase {
 }
 
 pub fn register_assign_cases(registry: &mut Registry) {
-    registry.register(MoveMailUseCase);
     registry.register(BulkMoveMailsUseCase);
 }
 
@@ -112,8 +83,10 @@ mod tests {
         .unwrap()
     }
 
+    /// 単件移動は bulk に一本化しているため、1要素での呼び出しが従来の
+    /// move_mail と同じ結果になることを担保する（ADR 0004 D12）。
     #[tokio::test]
-    async fn test_move_mail_assigns_project() {
+    async fn test_bulk_move_single_mail_assigns_project() {
         let (db, pending, batches, locks) = build_states();
         db.with_conn(|conn| {
             insert_test_mail(conn, "m1", "Hello");
@@ -123,10 +96,10 @@ mod tests {
         let project_id = create_project(&db);
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
 
-        MoveMailUseCase
+        let result = BulkMoveMailsUseCase
             .run(
-                MoveMailInput {
-                    mail_id: "m1".into(),
+                BulkMoveMailsInput {
+                    mail_ids: vec!["m1".into()],
                     project_id: project_id.clone(),
                 },
                 &ctx,
@@ -134,6 +107,8 @@ mod tests {
             .await
             .expect("move should succeed");
 
+        assert_eq!(result.succeeded.len(), 1);
+        assert!(result.failed.is_empty());
         let assigned = db
             .with_conn(|conn| assignments::get_mails_by_project(conn, &project_id))
             .unwrap();

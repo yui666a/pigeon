@@ -80,8 +80,9 @@
 | `approve_classification` | mail_id, project_id | — | AI分類承認 |
 | `approve_new_project` | mail_id, project_name, description? | Project | 新規プロジェクト提案を承認 |
 | `reject_classification` | mail_id | — | AI分類却下 |
-| `get_unclassified_mails` | account_id | Mail[] | 未分類メール一覧取得 |
-| `get_mails_by_project` | project_id | Mail[] | プロジェクト別メール取得 |
+| `get_unclassified_threads` | account_id | Thread[] | 未分類メール一覧取得（スレッド単位） |
+| `get_threads_by_project` | project_id | Thread[] | プロジェクト別メール取得（スレッド単位・子案件を含む） |
+| `bulk_move_mails` | mail_ids, project_id | BulkResult | メールを案件へ移動（単件も1要素で呼ぶ。ADR 0004 D12） |
 
 ## データフロー
 
