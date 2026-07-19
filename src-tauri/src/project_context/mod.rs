@@ -180,8 +180,12 @@ pub async fn rescan_project(
             context_file::build_cached_context(&composed, context_file::MAX_CACHED_CONTEXT_CHARS);
         let context_hash = extractor::sha256_hex(composed.as_bytes());
 
-        // ファイルへの書き出しは sync_note_to_disk 経由のみ（書き込み経路を1つに保つ）
-        crate::project_notes_sync::sync_note_to_disk(&conn, project_id)?;
+        // ファイルへの書き出しは sync_note_to_disk 経由のみ（書き込み経路を1つに保つ）。
+        // DBが正本なので、ミラー書き出しの失敗はDB側の更新（直後のupsert_generatedに
+        // よるinventory_hash更新）を止めてはいけない（コマンド呼び出し側と同じ方針）
+        if let Err(e) = crate::project_notes_sync::sync_note_to_disk(&conn, project_id) {
+            eprintln!("[warn] PIGEON-CONTEXT.md への書き出しに失敗: {}", e);
+        }
 
         project_contexts::upsert_generated(
             &conn,
@@ -460,6 +464,76 @@ mod tests {
         assert!(
             md.contains("〇〇ホール"),
             "前回のautoセクションを維持（劣化しない）"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_rescan_survives_context_file_write_failure_and_advances_inventory_hash() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // §8: sync_note_to_disk はミラー書き出しに過ぎず、失敗してもDB側の正本更新
+        // (upsert_generated による inventory_hash 更新)を止めてはいけない。
+        // ここでは PIGEON-CONTEXT.md 自身を読み取り専用にし、「ディレクトリの
+        // スキャンは読めるが、そのファイルへの書き込みだけ失敗する」状況を
+        // 再現する（macOSでは既存ファイルの上書きはファイル自身のパーミッションで
+        // 決まり、ディレクトリを読み取り専用にしても上書きは防げないため）。
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let db = setup(dir.path().to_str().unwrap());
+
+        // 1回目: 通常に生成させ、PIGEON-CONTEXT.md を作らせておく
+        rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        let context_path = dir.path().join("PIGEON-CONTEXT.md");
+        assert!(context_path.exists());
+
+        // PIGEON-CONTEXT.md を読み取り専用にする
+        std::fs::set_permissions(&context_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        // ファイル構成を変えて再生成を誘発する
+        std::fs::write(dir.path().join("b.txt"), "y").unwrap();
+
+        let result = rescan_project(&db, &MockGenerator, "p1", false).await;
+
+        // 後始末: 権限を戻さないとテスト自体のtempdir掃除が失敗する
+        std::fs::set_permissions(&context_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let outcome = result.unwrap_or_else(|e| {
+            panic!(
+                "PIGEON-CONTEXT.md書き出し失敗はDB側の正本更新を止めてはならない: {}",
+                e
+            )
+        });
+        assert!(outcome.regenerated, "DB側の再生成自体は成功する");
+
+        // inventory_hash が新しいスキャン結果まで進んでいること。
+        // 進んでいなければ、次回同一構成での再スキャンが再び「構成変更」と誤判定し、
+        // LLMを呼び直して履歴を消費し続けてしまう（バグの本体）。
+        let conn = db.lock().unwrap();
+        let ctx = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        let new_hash = ctx.inventory_hash.clone();
+        drop(conn);
+
+        // 3回目: 構成を変えずに再スキャン → inventory_hashが進んでいれば自己修復のみ
+        let third = rescan_project(&db, &MockGenerator, "p1", false)
+            .await
+            .unwrap();
+        assert!(
+            !third.regenerated,
+            "inventory_hashが更新されていれば同一構成の再スキャンで再生成しない"
+        );
+
+        let conn = db.lock().unwrap();
+        let ctx_after = crate::db::project_contexts::get_context(&conn, "p1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ctx_after.inventory_hash, new_hash,
+            "構成不変時はinventory_hashも変わらない"
         );
     }
 
