@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { Modal } from "../common/Modal";
+import { projectPathString } from "../../stores/projectTree";
 import type { Project } from "../../types/project";
 
 interface MergeProjectDialogProps {
   sourceProject: Project;
   candidates: Project[];
+  /** パス表記の解決用（candidates に含まれない祖先も要るため全案件を渡す） */
+  projects: Project[];
   onMerge: (targetId: string) => Promise<void>;
   onCancel: () => void;
 }
@@ -12,6 +15,7 @@ interface MergeProjectDialogProps {
 export function MergeProjectDialog({
   sourceProject,
   candidates,
+  projects,
   onMerge,
   onCancel,
 }: MergeProjectDialogProps) {
@@ -47,7 +51,13 @@ export function MergeProjectDialog({
             マージ先の案件がありません
           </p>
         ) : (
-          candidates.map((project) => (
+          [...candidates]
+            .sort((a, b) =>
+              projectPathString(projects, a.id).localeCompare(
+                projectPathString(projects, b.id),
+              ),
+            )
+            .map((project) => (
             <button
               key={project.id}
               onClick={() => setSelectedTargetId(project.id)}
@@ -57,9 +67,9 @@ export function MergeProjectDialog({
                   : "text-gray-700"
               }`}
             >
-              {project.name}
+              {projectPathString(projects, project.id)}
             </button>
-          ))
+            ))
         )}
       </div>
 

@@ -54,3 +54,26 @@ export function aggregateUnread(
   for (const p of projects) sum(p.id);
   return result;
 }
+
+/** projectId 自身とその子孫すべての id 集合（親の付け替え先・マージ先から除外する対象） */
+export function collectSubtreeIds(
+  nodes: ProjectTreeNode[],
+  projectId: string,
+): Set<string> {
+  const found = (function find(list: ProjectTreeNode[]): ProjectTreeNode | null {
+    for (const node of list) {
+      if (node.project.id === projectId) return node;
+      const inChildren = find(node.children);
+      if (inChildren) return inChildren;
+    }
+    return null;
+  })(nodes);
+
+  const ids = new Set<string>();
+  if (!found) return ids;
+  (function collect(node: ProjectTreeNode) {
+    ids.add(node.project.id);
+    for (const child of node.children) collect(child);
+  })(found);
+  return ids;
+}

@@ -107,3 +107,27 @@ describe("BulkActionBar", () => {
     expect(onCreateProject).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("BulkActionBar (階層案件)", () => {
+  it("案件の選択肢はパス表記でパス順に並ぶ", () => {
+    const tour = makeProject("tour", "ツアー");
+    const venue = { ...makeProject("venue", "埼玉"), parent_id: "tour" };
+    const other = makeProject("other", "別件");
+    render(
+      <BulkActionBar
+        selectedCount={1}
+        projects={[other, venue, tour]}
+        onDelete={() => {}}
+        onArchive={() => {}}
+        onMove={() => {}}
+        onClear={() => {}}
+        onCreateProject={() => {}}
+      />,
+    );
+    const labels = screen
+      .getAllByRole("option")
+      .filter((o) => !(o as HTMLOptionElement).disabled)
+      .map((o) => o.textContent);
+    expect(labels).toEqual(["ツアー", "ツアー > 埼玉", "別件"]);
+  });
+});

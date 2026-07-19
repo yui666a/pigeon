@@ -1,32 +1,12 @@
 import { useState } from "react";
 import { Modal } from "../common/Modal";
 import { useProjectStore } from "../../stores/projectStore";
-import { buildProjectTree } from "../../stores/projectTree";
+import { buildProjectTree, collectSubtreeIds } from "../../stores/projectTree";
 import type { ProjectTreeNode } from "../../stores/projectTree";
 
 interface MoveProjectDialogProps {
   projectId: string;
   onClose: () => void;
-}
-
-/** projectId 自身とその子孫すべての id 集合（新しい親として選べない対象） */
-function collectSubtreeIds(nodes: ProjectTreeNode[], projectId: string): Set<string> {
-  const found = (function find(list: ProjectTreeNode[]): ProjectTreeNode | null {
-    for (const node of list) {
-      if (node.project.id === projectId) return node;
-      const inChildren = find(node.children);
-      if (inChildren) return inChildren;
-    }
-    return null;
-  })(nodes);
-
-  const ids = new Set<string>();
-  if (!found) return ids;
-  (function collect(node: ProjectTreeNode) {
-    ids.add(node.project.id);
-    for (const child of node.children) collect(child);
-  })(found);
-  return ids;
 }
 
 export function MoveProjectDialog({ projectId, onClose }: MoveProjectDialogProps) {

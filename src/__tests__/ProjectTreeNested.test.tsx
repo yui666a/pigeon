@@ -200,3 +200,20 @@ describe("ProjectTree nested rendering", () => {
     expect(screen.getByPlaceholderText("案件名を入力")).toBeInTheDocument();
   });
 });
+
+describe("ProjectTree merge candidates (階層案件)", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockInvoke.mockResolvedValue(undefined);
+  });
+
+  it("マージ先の候補に自分の子孫が含まれない", async () => {
+    setupStores();
+    render(<ProjectTree onSelectUnclassified={() => {}} onSelectProject={() => {}} />);
+    fireEvent.contextMenu(screen.getByText("ルート案件"));
+    fireEvent.click(await screen.findByText("マージ"));
+    const dialog = await screen.findByRole("dialog", { name: /マージ/ });
+    // 子孫 mid はマージ先候補に出ない
+    expect(within(dialog).queryByText(/中間案件/)).not.toBeInTheDocument();
+  });
+});

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectTree, aggregateUnread, projectPathString } from "../stores/projectTree";
+import {
+  buildProjectTree,
+  aggregateUnread,
+  projectPathString,
+  collectSubtreeIds,
+} from "../stores/projectTree";
 import type { Project } from "../types/project";
 
 const p = (id: string, parent: string | null): Project => ({
@@ -50,5 +55,18 @@ describe("projectPathString", () => {
   it("stops at an orphan parent_id not present in the array", () => {
     const projects = [p("child", "gone")];
     expect(projectPathString(projects, "child")).toBe("child");
+  });
+});
+
+describe("collectSubtreeIds", () => {
+  it("returns the node itself and all descendants", () => {
+    const projects = [p("root", null), p("mid", "root"), p("leaf", "mid"), p("other", null)];
+    const ids = collectSubtreeIds(buildProjectTree(projects), "mid");
+    expect(ids).toEqual(new Set(["mid", "leaf"]));
+  });
+
+  it("returns empty set for unknown id", () => {
+    const ids = collectSubtreeIds(buildProjectTree([p("root", null)]), "ghost");
+    expect(ids.size).toBe(0);
   });
 });
