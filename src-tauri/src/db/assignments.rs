@@ -172,8 +172,10 @@ pub fn get_mails_by_projects(
         return Ok(Vec::new());
     }
     let placeholders = vec!["?"; project_ids.len()].join(",");
+    // 割り当て注釈（assigned_by / confidence）は MAIL_COLUMNS の直後に並べ、
+    // row_to_mail_with_assignment がオフセットで読む
     let sql = format!(
-        "SELECT {} FROM mails m
+        "SELECT {}, mpa.assigned_by, mpa.confidence FROM mails m
          JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
          WHERE mpa.project_id IN ({placeholders})
          ORDER BY m.date DESC",
@@ -181,7 +183,10 @@ pub fn get_mails_by_projects(
     );
     let mut stmt = conn.prepare(&sql)?;
     let mails = stmt
-        .query_map(rusqlite::params_from_iter(project_ids.iter()), row_to_mail)?
+        .query_map(
+            rusqlite::params_from_iter(project_ids.iter()),
+            mails::row_to_mail_with_assignment,
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
 }
@@ -495,11 +500,38 @@ mod tests {
             is_flagged: false,
             fetched_at: "2026-04-13T00:00:00".into(),
             uid_confirmed: true,
+            assigned_by: None,
+            confidence: None,
         }
     }
 
     fn insert_mail(conn: &Connection, mail: &Mail) {
         mails::insert_mail(conn, mail).unwrap();
+    }
+
+    /// 確信度が中程度の AI 分類に UI が ⚠ を出せるよう、割り当て注釈を
+    /// メールに載せて返す（設計: phase2-ai-classification D. 確信度ゲート）
+    #[test]
+    fn test_get_mails_by_project_carries_assignment_annotation() {
+        let conn = setup_db();
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+        insert_mail(&conn, &make_mail("m1", "acc1", "AI", "2026-04-13T10:00:00"));
+        insert_mail(
+            &conn,
+            &make_mail("m2", "acc1", "User", "2026-04-13T09:00:00"),
+        );
+        assign_mail(&conn, "m1", "proj1", "ai", Some(0.55)).unwrap();
+        assign_mail(&conn, "m2", "proj1", "user", None).unwrap();
+
+        let result = get_mails_by_project(&conn, "proj1").unwrap();
+
+        let m1 = result.iter().find(|m| m.id == "m1").unwrap();
+        assert_eq!(m1.assigned_by.as_deref(), Some("ai"));
+        assert!((m1.confidence.unwrap() - 0.55).abs() < f64::EPSILON);
+
+        let m2 = result.iter().find(|m| m.id == "m2").unwrap();
+        assert_eq!(m2.assigned_by.as_deref(), Some("user"));
+        assert_eq!(m2.confidence, None);
     }
 
     #[test]

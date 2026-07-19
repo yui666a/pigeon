@@ -164,6 +164,9 @@ pub fn parse_mime(
         fetched_at: chrono::Utc::now().to_rfc3339(),
         // サーバーから取得した uid はサーバー実 UID なので確定
         uid_confirmed: true,
+        // 受信直後のパース結果。案件への割り当てはこの後の分類で決まる
+        assigned_by: None,
+        confidence: None,
     })
 }
 

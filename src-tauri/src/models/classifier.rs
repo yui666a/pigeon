@@ -139,6 +139,8 @@ mod tests {
             is_flagged: false,
             fetched_at: "2026-04-13T00:00:00".into(),
             uid_confirmed: true,
+            assigned_by: None,
+            confidence: None,
         }
     }
 

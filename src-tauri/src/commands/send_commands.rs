@@ -214,6 +214,9 @@ pub(crate) fn build_sent_record(
         fetched_at: now,
         // 送信時の uid は max_uid+1 の推定値。Sent 同期で後追い確定するまで未確定
         uid_confirmed: false,
+        // 送信直後のローカル行。案件への割り当てはまだ無い
+        assigned_by: None,
+        confidence: None,
     }
 }
 

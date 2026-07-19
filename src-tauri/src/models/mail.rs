@@ -26,6 +26,15 @@ pub struct Mail {
     /// 送信時にローカル保存する Sent 行（推定 uid）は false。
     /// Sent 同期の watermark 計算（確定行のみの max uid）に使う。
     pub uid_confirmed: bool,
+    /// 以下2つは `mails` テーブルのカラムではなく、`mail_project_assignments`
+    /// から JOIN して載せる注釈。割り当てのないメールでは `None` になる。
+    /// 確信度が中程度（`CONFIDENCE_UNCERTAIN`〜`CONFIDENCE_AUTO_ASSIGN`）の
+    /// AI 分類にユーザー確認を促すため、UI まで運ぶ
+    /// （設計: docs/design/2026-04-13-phase2-ai-classification-design.md）。
+    #[serde(default)]
+    pub assigned_by: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
 }
 
 /// アカウント内の未読件数の集計（folder='INBOX' のみ対象）
