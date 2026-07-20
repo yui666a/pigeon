@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
-import type { BulkResult, Mail, Thread, UnreadCounts } from "../types/mail";
+import type { BulkResult, Mail, Thread, ThreadPage, UnreadCounts } from "../types/mail";
 import type { NewMailEvent, SyncProgress } from "../types/events";
 import { mailApi } from "../api/mailApi";
 import { errorMessage, isReauthError } from "../api/errors";
@@ -10,6 +10,7 @@ import { useProjectStore } from "./projectStore";
 import { useUiStore } from "./uiStore";
 import { notifyNewMail } from "../utils/notifyNewMail";
 import { INBOX_FOLDER } from "../constants/folders";
+import { THREAD_PAGE_SIZE } from "../constants/paging";
 
 interface MailState {
   threads: Thread[];
@@ -26,8 +27,16 @@ interface MailState {
   backfillProgress: SyncProgress | null;
   /** account_id -> これ以上サーバーに古いメールが無いか（ボタン無効化の判定用） */
   backfillExhausted: Record<string, boolean>;
+  /** サーバ側にまだ後続スレッドがあるか（一覧の「もっと見る」の表示判定） */
+  hasMoreThreads: boolean;
+  /** 未分類一覧にまだ後続スレッドがあるか */
+  hasMoreUnclassified: boolean;
   fetchThreads: (accountId: string, folder: string) => Promise<void>;
   fetchThreadsByProject: (projectId: string) => Promise<void>;
+  /** 現在の一覧の続きを1ページ分追加取得する（案件ビュー / INBOX を自動判別） */
+  fetchMoreThreads: () => Promise<void>;
+  /** 未分類一覧の続きを1ページ分追加取得する */
+  fetchMoreUnclassified: (accountId: string) => Promise<void>;
   syncAccount: (accountId: string) => Promise<number>;
   backfillAccount: (accountId: string, limit: number) => Promise<void>;
   setThreads: (threads: Thread[]) => void;
@@ -192,6 +201,17 @@ function removeMailFromState(state: MailState, mailId: string): Partial<MailStat
   };
 }
 
+/**
+ * ThreadPage を安全に取り出す。バックエンドは常に { threads, has_more } を
+ * 返すが、想定外の形が来ても一覧を undefined にして描画を壊さない。
+ */
+function toPage(page: ThreadPage | undefined | null): ThreadPage {
+  return {
+    threads: page?.threads ?? [],
+    has_more: page?.has_more ?? false,
+  };
+}
+
 export const useMailStore = create<MailState>((set, get) => ({
   threads: [],
   selectedThread: null,
@@ -205,11 +225,14 @@ export const useMailStore = create<MailState>((set, get) => ({
   backfilling: false,
   backfillProgress: null,
   backfillExhausted: {},
+  hasMoreThreads: false,
+  hasMoreUnclassified: false,
 
+  // 一覧の先頭ページを取得する（再取得のたびに先頭へ戻す）
   fetchThreads: async (accountId, folder) => {
     try {
-      const threads = await mailApi.fetchThreads(accountId, folder);
-      set({ threads });
+      const page = toPage(await mailApi.fetchThreads(accountId, folder, THREAD_PAGE_SIZE, 0));
+      set({ threads: page.threads, hasMoreThreads: page.has_more });
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));
     }
@@ -219,14 +242,60 @@ export const useMailStore = create<MailState>((set, get) => ({
   // 反映しない（sync-progress リスナーの「表示中のみ反映」方針と同じ）
   fetchThreadsByProject: async (projectId) => {
     try {
-      const threads = await mailApi.fetchThreadsByProject(projectId);
+      const page = toPage(await mailApi.fetchThreadsByProject(projectId, THREAD_PAGE_SIZE, 0));
       if (useProjectStore.getState().selectedProjectId !== projectId) return;
-      set({ threads });
+      set({ threads: page.threads, hasMoreThreads: page.has_more });
     } catch (e) {
       // 失敗時に前のビューの一覧を残すと紛らわしいためクリアする
       if (useProjectStore.getState().selectedProjectId === projectId) {
-        set({ threads: [] });
+        set({ threads: [], hasMoreThreads: false });
       }
+      useErrorStore.getState().addError(errorMessage(e));
+    }
+  },
+
+  // 続きのページを取得して現在の一覧に追記する。offset は「今表示している
+  // スレッド数」＝次に読むべき位置。案件ビューか INBOX かは選択状態で判別する
+  fetchMoreThreads: async () => {
+    const { threads, hasMoreThreads } = get();
+    if (!hasMoreThreads) return;
+    const offset = threads.length;
+    const projectId = useProjectStore.getState().selectedProjectId;
+    const accountId = useAccountStore.getState().selectedAccountId;
+    try {
+      const raw = projectId
+        ? await mailApi.fetchThreadsByProject(projectId, THREAD_PAGE_SIZE, offset)
+        : accountId
+          ? await mailApi.fetchThreads(accountId, INBOX_FOLDER, THREAD_PAGE_SIZE, offset)
+          : null;
+      if (!raw) return;
+      const page = toPage(raw);
+      // 取得中に一覧が差し替わっていたら追記しない（先頭ページの取り直しと競合させない）
+      if (get().threads.length !== offset) return;
+      set((state) => ({
+        threads: [...state.threads, ...page.threads],
+        hasMoreThreads: page.has_more,
+      }));
+    } catch (e) {
+      useErrorStore.getState().addError(errorMessage(e));
+    }
+  },
+
+  fetchMoreUnclassified: async (accountId) => {
+    const { unclassifiedThreads, hasMoreUnclassified } = get();
+    if (!hasMoreUnclassified) return;
+    const offset = unclassifiedThreads.length;
+    try {
+      const page = toPage(
+        await mailApi.fetchUnclassifiedThreads(accountId, THREAD_PAGE_SIZE, offset),
+      );
+      if (get().unclassifiedThreads.length !== offset) return;
+      set((state) => ({
+        unclassifiedThreads: [...state.unclassifiedThreads, ...page.threads],
+        unclassifiedMails: [...state.unclassifiedMails, ...page.threads.flatMap((t) => t.mails)],
+        hasMoreUnclassified: page.has_more,
+      }));
+    } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));
     }
   },
@@ -428,10 +497,13 @@ export const useMailStore = create<MailState>((set, get) => ({
   fetchUnclassified: async (accountId) => {
     try {
       // スレッド単位で取得し、メール一覧はフラット化して両方の状態を一致させる
-      const threads = await mailApi.fetchUnclassifiedThreads(accountId);
+      const page = toPage(
+        await mailApi.fetchUnclassifiedThreads(accountId, THREAD_PAGE_SIZE, 0),
+      );
       set({
-        unclassifiedThreads: threads,
-        unclassifiedMails: threads.flatMap((t) => t.mails),
+        unclassifiedThreads: page.threads,
+        unclassifiedMails: page.threads.flatMap((t) => t.mails),
+        hasMoreUnclassified: page.has_more,
       });
     } catch (e) {
       useErrorStore.getState().addError(errorMessage(e));

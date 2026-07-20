@@ -156,34 +156,45 @@ pub fn reject_classification(
     }
 }
 
-/// 未分類メールをスレッド単位で返す（未分類一覧のスレッド表示用）。
+/// 未分類メールをスレッド単位で1ページ分返す（未分類一覧のスレッド表示用）。
 /// 分類の実体はメール単位のまま（スレッドのD&Dは全メールIDを渡す）。
 ///
-/// 取得の前にスレッド追従の自動分類（`auto_follow_threads`）を行う。
-/// 同一スレッドの既存メールが単一の案件に割り当て済みなら、後から届いた返信等の
-/// 未分類メールをその案件へ自動追従させる。一覧を開くたびに再計算する
-/// （設計: docs/archive/specs/2026-07-13-thread-follow-classify-design.md）
+/// 一覧は必ず上限を持ち、切り出しはスレッド単位で行う（ADR 0006 決定5）。
+///
+/// 本体は `usecase::cases::classify::GetUnclassifiedThreadsUseCase` にあり、
+/// ここでは Tauri の State を Ctx へ束ねて dispatch へ渡すだけ。
+/// スレッド追従の自動分類を伴うため、この use case の Risk は Read ではなく
+/// Reversible である（詳細は use case 側の doc を参照）。
+// dispatch 経由の command は State 6 個の注入で既に上限に達しており、
+// ドメイン引数（account_id / limit / offset）を足すと超える
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn get_unclassified_threads(
-    db: State<DbState>,
-    pending: State<PendingClassifications>,
+pub async fn get_unclassified_threads(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
-) -> Result<Vec<crate::models::mail::Thread>, AppError> {
-    db.with_conn(|conn| get_unclassified_threads_inner(conn, &pending, &account_id))
-}
-
-fn get_unclassified_threads_inner(
-    conn: &rusqlite::Connection,
-    pending: &PendingClassifications,
-    account_id: &str,
-) -> Result<Vec<crate::models::mail::Thread>, AppError> {
-    let followed = assignments::auto_follow_threads(conn, account_id)?;
-    // スレッド追従で割り当てが確定したメールの提案は不要になる
-    for mail_id in &followed {
-        pending.remove(mail_id)?;
-    }
-    let mails = assignments::get_unclassified_mails(conn, account_id)?;
-    Ok(crate::db::mails::build_threads(&mails))
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<crate::models::mail::ThreadPage, AppError> {
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_unclassified_threads",
+        serde_json::json!({
+            "account_id": account_id,
+            "limit": limit,
+            "offset": offset,
+        }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out).map_err(|e| {
+        AppError::Validation(format!("unexpected get_unclassified_threads output: {e}"))
+    })
 }
 
 /// メール1件を案件へ割り当てる本体。`bulk_move_mails` から1件ずつ再利用される。
@@ -577,33 +588,6 @@ mod tests {
         assert!(
             !pending.contains("m1").unwrap(),
             "承認で確定したら提案は残らない"
-        );
-    }
-
-    #[test]
-    fn test_get_unclassified_threads_inner_removes_followed_pending() {
-        // スレッド追従で割り当てが確定したメールの Create 提案も除去される
-        let conn = setup_db();
-        let pending = PendingClassifications::new();
-        let m1 =
-            crate::test_helpers::make_mail("m1", "<m1@ex.com>", "Re: Test", "2026-07-12T10:00:00");
-        let mut m2 =
-            crate::test_helpers::make_mail("m2", "<m2@ex.com>", "Re: Test", "2026-07-12T11:00:00");
-        m2.in_reply_to = Some("<m1@ex.com>".into());
-        crate::db::mails::insert_mail(&conn, &m1).unwrap();
-        crate::db::mails::insert_mail(&conn, &m2).unwrap();
-        let proj = insert_project_for(&conn, "Proj");
-        assignments::assign_mail(&conn, "m1", &proj.id, "user", Some(1.0)).unwrap();
-        pending
-            .insert("m2".into(), pending_create_result())
-            .unwrap();
-
-        let threads = get_unclassified_threads_inner(&conn, &pending, "acc1").unwrap();
-
-        assert!(threads.is_empty(), "m2 は追従割り当てされ一覧から消える");
-        assert!(
-            !pending.contains("m2").unwrap(),
-            "追従で確定したメールの提案も除去される"
         );
     }
 }

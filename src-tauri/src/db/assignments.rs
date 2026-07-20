@@ -156,6 +156,57 @@ pub fn get_unclassified_mails(conn: &Connection, account_id: &str) -> Result<Vec
     Ok(mails)
 }
 
+/// 未分類メール（INBOX・未割り当て）の軽量メタを返す（date DESC・本文を読まない）。
+/// スレッド単位ページングの1段目に使う（ADR 0006 決定5）。
+pub fn get_unclassified_thread_metas(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<crate::threading::ThreadMailMeta>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.message_id, m.in_reply_to, m.\"references\", m.subject, m.date
+         FROM mails m
+         LEFT JOIN mail_project_assignments mpa ON m.id = mpa.mail_id
+         WHERE mpa.mail_id IS NULL AND m.account_id = ?1 AND m.folder = 'INBOX'
+         ORDER BY m.date DESC",
+    )?;
+    let metas = stmt
+        .query_map(params![account_id], |row| {
+            Ok(crate::threading::ThreadMailMeta {
+                id: row.get(0)?,
+                message_id: row.get(1)?,
+                in_reply_to: row.get(2)?,
+                references: row.get(3)?,
+                subject: row.get(4)?,
+                date: row.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(metas)
+}
+
+/// 指定 ID のメールを本文込みで取得する（date DESC）。スレッド単位ページングの
+/// 2段目——窓に入ったスレッドのメールだけを読む。`ids` が空ならクエリを撃たない。
+pub fn get_unclassified_mails_by_ids(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<Mail>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {} FROM mails m WHERE m.id IN ({placeholders}) ORDER BY m.date DESC",
+        *MAIL_COLUMNS_PREFIXED
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mails = stmt
+        .query_map(rusqlite::params_from_iter(ids.iter()), row_to_mail)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(mails)
+}
+
 /// Get mails assigned to a specific project.
 pub fn get_mails_by_project(conn: &Connection, project_id: &str) -> Result<Vec<Mail>, AppError> {
     get_mails_by_projects(conn, std::slice::from_ref(&project_id.to_string()))
@@ -584,6 +635,67 @@ mod tests {
         create_account(&conn, "acc2");
         let unclassified_acc2 = get_unclassified_mails(&conn, "acc2").unwrap();
         assert!(unclassified_acc2.is_empty());
+    }
+
+    // --- 未分類メールのスレッド単位ページング（ADR 0006 決定5） ---
+
+    #[test]
+    fn test_unclassified_thread_metas_limits_to_inbox_and_unassigned() {
+        let conn = setup_db();
+        create_project(&conn, "proj1", "acc1", "Project Alpha");
+
+        insert_mail(
+            &conn,
+            &make_mail("m1", "acc1", "Assigned", "2026-04-13T10:00:00"),
+        );
+        insert_mail(
+            &conn,
+            &make_mail("m2", "acc1", "Free", "2026-04-13T11:00:00"),
+        );
+        let mut sent = make_mail("m3", "acc1", "Sent", "2026-04-13T12:00:00");
+        sent.folder = "Sent".into();
+        insert_mail(&conn, &sent);
+        assign_mail(&conn, "m1", "proj1", "ai", Some(0.9)).unwrap();
+
+        let metas = get_unclassified_thread_metas(&conn, "acc1").unwrap();
+        assert_eq!(metas.len(), 1, "未割り当ての INBOX メールのみ");
+        assert_eq!(metas[0].id, "m2");
+    }
+
+    #[test]
+    fn test_unclassified_thread_metas_orders_by_date_desc() {
+        let conn = setup_db();
+        insert_mail(
+            &conn,
+            &make_mail("m1", "acc1", "Old", "2026-04-13T10:00:00"),
+        );
+        insert_mail(
+            &conn,
+            &make_mail("m2", "acc1", "New", "2026-04-13T12:00:00"),
+        );
+
+        let metas = get_unclassified_thread_metas(&conn, "acc1").unwrap();
+        assert_eq!(metas[0].id, "m2", "新しい順");
+        assert_eq!(metas[1].id, "m1");
+    }
+
+    #[test]
+    fn test_get_unclassified_mails_by_ids_carries_bodies() {
+        let conn = setup_db();
+        insert_mail(&conn, &make_mail("m1", "acc1", "A", "2026-04-13T10:00:00"));
+        insert_mail(&conn, &make_mail("m2", "acc1", "B", "2026-04-13T11:00:00"));
+
+        let mails =
+            get_unclassified_mails_by_ids(&conn, &["m1".to_string(), "m2".to_string()]).unwrap();
+        assert_eq!(mails.len(), 2);
+        assert!(
+            mails.iter().all(|m| m.body_text.is_some()),
+            "本文を読んで返す"
+        );
+        // 空 ID ならクエリを撃たず空
+        assert!(get_unclassified_mails_by_ids(&conn, &[])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

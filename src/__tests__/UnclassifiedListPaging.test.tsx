@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { UnclassifiedList } from "../components/thread-list/UnclassifiedList";
 import { useAccountStore } from "../stores/accountStore";
@@ -7,9 +7,8 @@ import { useClassifyStore } from "../stores/classifyStore";
 import { useProjectStore } from "../stores/projectStore";
 import type { Mail, Thread } from "../types/mail";
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(() => Promise.resolve([])),
-}));
+const mockInvoke = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
@@ -47,13 +46,20 @@ const threadOf = (m: Mail): Thread => ({
   projects: [],
 });
 
+/**
+ * ページングはサーバ側。一覧は取得済みを全部描画し、後続の有無で
+ * 「もっと見る」を出す（ADR 0006 決定5）
+ */
 describe("UnclassifiedList paging", () => {
   beforeEach(() => {
+    mockInvoke.mockReset();
+    mockInvoke.mockResolvedValue([]);
     useAccountStore.setState({ selectedAccountId: "acc1" });
-    const mails = Array.from({ length: 250 }, (_, i) => mail(i));
+    const mails = Array.from({ length: 200 }, (_, i) => mail(i));
     useMailStore.setState({
       unclassifiedMails: mails,
       unclassifiedThreads: mails.map(threadOf),
+      hasMoreUnclassified: true,
       threads: [],
       syncing: false,
       needsReauth: false,
@@ -70,18 +76,49 @@ describe("UnclassifiedList paging", () => {
     });
   });
 
-  it("renders only the first 200 unclassified mails with a show-more button", () => {
+  it("取得済みを描画し、後続があれば「もっと見る」を出す", () => {
     render(<UnclassifiedList />);
     expect(screen.getByText("未分類 0")).toBeInTheDocument();
     expect(screen.getByText("未分類 199")).toBeInTheDocument();
-    expect(screen.queryByText("未分類 200")).not.toBeInTheDocument();
-    expect(screen.getByText(/もっと見る（残り 50 件）/)).toBeInTheDocument();
+    expect(screen.getByText(/もっと見る/)).toBeInTheDocument();
   });
 
-  it("reveals all mails on click", () => {
+  it("後続が無ければ「もっと見る」を出さない", () => {
+    useMailStore.setState({ hasMoreUnclassified: false });
     render(<UnclassifiedList />);
-    fireEvent.click(screen.getByText(/もっと見る/));
-    expect(screen.getByText("未分類 249")).toBeInTheDocument();
     expect(screen.queryByText(/もっと見る/)).not.toBeInTheDocument();
+  });
+
+  it("クリックで次ページを offset 付きで取得し追記する", async () => {
+    // 初回マウントの取得（offset 0）は先頭200件＋後続あり、
+    // 「もっと見る」の取得（offset 200）は201件目を返す
+    mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === "get_unclassified_threads") {
+        const { offset } = args as { offset: number };
+        return offset === 0
+          ? Promise.resolve({
+              threads: Array.from({ length: 200 }, (_, i) => threadOf(mail(i))),
+              has_more: true,
+            })
+          : Promise.resolve({ threads: [threadOf(mail(200))], has_more: false });
+      }
+      return Promise.resolve([]);
+    });
+
+    render(<UnclassifiedList />);
+    await waitFor(() => expect(screen.getByText(/もっと見る/)).toBeInTheDocument());
+    mockInvoke.mockClear();
+
+    fireEvent.click(screen.getByText(/もっと見る/));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
+        accountId: "acc1",
+        limit: 200,
+        offset: 200,
+      });
+    });
+    await waitFor(() => expect(screen.getByText("未分類 200")).toBeInTheDocument());
+    expect(screen.getByText("未分類 0")).toBeInTheDocument();
   });
 });

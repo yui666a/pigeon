@@ -65,7 +65,7 @@ describe("ThreadList hierarchy display", () => {
         return Promise.resolve({ by_project: {}, unclassified: 0 });
       }
       if (command === "get_threads_by_project") {
-        return Promise.resolve([makeThread()]);
+        return Promise.resolve({ threads: [makeThread()], has_more: false });
       }
       return Promise.resolve([]);
     });
@@ -84,11 +84,14 @@ describe("ThreadList hierarchy display", () => {
         return Promise.resolve({ by_project: {}, unclassified: 0 });
       }
       if (command === "get_threads_by_project") {
-        return Promise.resolve([
-          makeThread({
-            projects: [{ project_id: "leaf", display_path: "埼玉 > 音響" }],
-          }),
-        ]);
+        return Promise.resolve({
+          threads: [
+            makeThread({
+              projects: [{ project_id: "leaf", display_path: "埼玉 > 音響" }],
+            }),
+          ],
+          has_more: false,
+        });
       }
       return Promise.resolve([]);
     });

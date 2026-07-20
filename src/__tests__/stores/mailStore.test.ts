@@ -94,14 +94,17 @@ describe("mailStore", () => {
     it("sets threads on success", async () => {
       useProjectStore.setState({ selectedProjectId: "p1" });
       const threads = [makeThread([makeMail("m1")])];
-      mockInvoke.mockResolvedValue(threads);
+      mockInvoke.mockResolvedValue({ threads, has_more: false });
 
       await useMailStore.getState().fetchThreadsByProject("p1");
 
       expect(mockInvoke).toHaveBeenCalledWith("get_threads_by_project", {
         projectId: "p1",
+        limit: 200,
+        offset: 0,
       });
       expect(useMailStore.getState().threads).toEqual(threads);
+      expect(useMailStore.getState().hasMoreThreads).toBe(false);
     });
 
     it("clears threads and reports an error toast on failure", async () => {
@@ -122,9 +125,9 @@ describe("mailStore", () => {
 
     it("does not overwrite threads when the selected project changed during fetch", async () => {
       useProjectStore.setState({ selectedProjectId: "p1" });
-      let resolveFetch!: (threads: Thread[]) => void;
+      let resolveFetch!: (page: { threads: Thread[]; has_more: boolean }) => void;
       mockInvoke.mockReturnValue(
-        new Promise<Thread[]>((resolve) => {
+        new Promise<{ threads: Thread[]; has_more: boolean }>((resolve) => {
           resolveFetch = resolve;
         }),
       );
@@ -132,7 +135,7 @@ describe("mailStore", () => {
       const pending = useMailStore.getState().fetchThreadsByProject("p1");
       // 取得中に別案件へ切り替わった（高速切替の競合）
       useProjectStore.setState({ selectedProjectId: "p2" });
-      resolveFetch([makeThread([makeMail("stale")])]);
+      resolveFetch({ threads: [makeThread([makeMail("stale")])], has_more: false });
       await pending;
 
       expect(useMailStore.getState().threads).toEqual([]);
@@ -144,11 +147,16 @@ describe("mailStore", () => {
       const threads = [
         { thread_id: "t1", subject: "Thread A", last_date: "2026-04-13", mail_count: 2, from_addrs: ["a@b.com"], mails: [], projects: [] },
       ];
-      mockInvoke.mockResolvedValue(threads);
+      mockInvoke.mockResolvedValue({ threads, has_more: false });
 
       await useMailStore.getState().fetchThreads("acc1", "INBOX");
 
-      expect(mockInvoke).toHaveBeenCalledWith("get_threads", { accountId: "acc1", folder: "INBOX" });
+      expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
+        accountId: "acc1",
+        folder: "INBOX",
+        limit: 200,
+        offset: 0,
+      });
       expect(useMailStore.getState().threads).toEqual(threads);
     });
 
@@ -345,11 +353,15 @@ describe("mailStore", () => {
       const threads = [
         { thread_id: "t1", subject: "Re: Test", last_date: "", mail_count: 2, from_addrs: [], mails: [m1, m2], projects: [] },
       ];
-      mockInvoke.mockResolvedValue(threads);
+      mockInvoke.mockResolvedValue({ threads, has_more: false });
 
       await useMailStore.getState().fetchUnclassified("acc1");
 
-      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", { accountId: "acc1" });
+      expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
+        accountId: "acc1",
+        limit: 200,
+        offset: 0,
+      });
       expect(useMailStore.getState().unclassifiedThreads).toEqual(threads);
       expect(useMailStore.getState().unclassifiedMails).toEqual([m1, m2]);
     });
@@ -790,9 +802,13 @@ describe("mailStore", () => {
       expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
         accountId: "acc1",
         folder: "INBOX",
+        limit: 200,
+        offset: 0,
       });
       expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
+        limit: 200,
+        offset: 0,
       });
 
       mockInvoke.mockClear();
@@ -801,6 +817,8 @@ describe("mailStore", () => {
       expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
         accountId: "acc1",
         folder: "INBOX",
+        limit: 200,
+        offset: 0,
       });
     });
 
@@ -815,9 +833,13 @@ describe("mailStore", () => {
       expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
         accountId: "acc1",
         folder: "INBOX",
+        limit: 200,
+        offset: 0,
       });
       expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
+        limit: 200,
+        offset: 0,
       });
     });
 
@@ -832,6 +854,8 @@ describe("mailStore", () => {
       expect(mockInvoke).not.toHaveBeenCalledWith("get_threads", expect.anything());
       expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
+        limit: 200,
+        offset: 0,
       });
     });
 
@@ -1039,9 +1063,13 @@ describe("mailStore", () => {
       expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
         accountId: "acc1",
         folder: "INBOX",
+        limit: 200,
+        offset: 0,
       });
       expect(mockInvoke).toHaveBeenCalledWith("get_unclassified_threads", {
         accountId: "acc1",
+        limit: 200,
+        offset: 0,
       });
     });
 
