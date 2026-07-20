@@ -705,6 +705,8 @@ HashMapの非決定的な反復順を避けるためソートして返す。"
 | `get_unread_counts` | `{account_id: String}` | `UnreadCounts` |
 | `get_projects` | `{account_id: String}` | `Vec<Project>` |
 
+**エラー挙動の非対称に注意**: `get_threads` は存在しないアカウントに対して空の `Vec` を返すが、`get_threads_by_project` は存在しない案件に対して `AppError::ProjectNotFound` を返す。CLI / MCP から不正な ID を渡したときの応答が異なるため、出力整形やエラーメッセージを書くときに前提にしないこと。
+
 - [ ] **Step 1: 失敗するテストを書く**
 
 `src-tauri/src/usecase/cases/mailbox.rs` の tests に追加:
