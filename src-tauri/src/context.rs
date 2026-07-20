@@ -10,6 +10,10 @@ use crate::usecase::{AuditSink, Driver, NoOpProgressSink, ProgressSink, SqliteAu
 /// Tauri が所有する各 managed State への参照を束ね、driver 情報と監査シンクを持つ。
 pub struct Ctx<'a> {
     db: &'a DbState,
+    /// 遅延初期化ホルダ（GUI 本番）。実体の生成は `secure_store()` の初回呼び出し時。
+    /// use case が秘密情報を必要としない限り Stronghold は開かれない（ADR 0006 決定 1）
+    secure_store_state: Option<&'a SecureStoreState>,
+    /// 初期化済みの実体を直接注入する経路（CLI / MCP、およびテスト）。
     secure_store: Option<&'a SecureStore>,
     approved_attachments: Option<&'a ApprovedAttachments>,
     pending: &'a PendingClassifications,
@@ -32,7 +36,8 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             db,
-            secure_store: Some(&secure_store.0),
+            secure_store_state: Some(secure_store),
+            secure_store: None,
             approved_attachments: None,
             pending,
             batches,
@@ -56,6 +61,7 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             db,
+            secure_store_state: None,
             secure_store: Some(secure_store),
             approved_attachments: None,
             pending,
@@ -90,6 +96,7 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             db,
+            secure_store_state: None,
             secure_store: None,
             approved_attachments: None,
             pending,
@@ -131,11 +138,19 @@ impl<'a> Ctx<'a> {
         self.db.with_conn_mut(f)
     }
 
-    /// SecureStore への参照。テスト用 Ctx で未設定の場合はエラー。
+    /// SecureStore への参照。**この呼び出しが初回なら、ここで初期化が走る**
+    /// （数十秒かかりうる。ADR 0006 決定 1）。初期化に失敗した場合は panic せず
+    /// エラーを返し、呼び出し元のコマンド経由でユーザーへ伝える。
+    /// テスト用 Ctx で未設定の場合もエラー。
     pub fn secure_store(&self) -> Result<&SecureStore, AppError> {
-        self.secure_store.ok_or_else(|| {
-            AppError::Validation("secure store not configured in this context".into())
-        })
+        if let Some(store) = self.secure_store {
+            return Ok(store);
+        }
+        self.secure_store_state
+            .ok_or_else(|| {
+                AppError::Validation("secure store not configured in this context".into())
+            })?
+            .get()
     }
 
     /// DbState への参照。`with_conn` で足りない、
@@ -226,6 +241,40 @@ mod tests {
         assert!(ctx.sync_locks().try_begin("acc1"));
         // 同じ基盤 State を指しているので、二重開始は拒否される
         assert!(!ctx.sync_locks().try_begin("acc1"));
+    }
+
+    #[test]
+    fn test_ctx_does_not_initialize_secure_store_until_requested() {
+        // GUI 経路の Ctx は遅延ホルダを借用するだけで、use case が
+        // secure_store() を呼ぶまで Stronghold を開かない（ADR 0006 決定 1）。
+        // 実 Stronghold は使わず InMemory で初期化の有無だけを見る
+        let (db, pending, batches, locks) = build_states();
+        let state = SecureStoreState::lazy(|| Ok(SecureStore::in_memory()));
+        let ctx = Ctx::new(&db, &state, &pending, &batches, &locks);
+
+        // with_conn だけを使う use case では初期化されない
+        ctx.with_conn(|_| Ok(())).expect("with_conn");
+        assert!(!state.is_initialized(), "Ctx 構築と DB 利用では開かれない");
+
+        ctx.secure_store().expect("secure store");
+        assert!(state.is_initialized(), "要求された時点で初めて開かれる");
+    }
+
+    #[test]
+    fn test_ctx_propagates_secure_store_init_failure() {
+        // 遅延初期化の失敗は panic せずコマンドへ伝播する
+        let (db, pending, batches, locks) = build_states();
+        let state = SecureStoreState::lazy(|| Err(AppError::Stronghold("keychain denied".into())));
+        let ctx = Ctx::new(&db, &state, &pending, &batches, &locks);
+
+        let err = match ctx.secure_store() {
+            Err(e) => e,
+            Ok(_) => panic!("初期化失敗はエラーで返る"),
+        };
+        assert!(
+            err.to_string().contains("keychain denied"),
+            "原因が残る: {err}"
+        );
     }
 
     #[test]

@@ -78,11 +78,40 @@ pub fn run() {
         }
     };
 
-    let conn = bootstrap::open_db(&data_dir).expect("Failed to open database");
+    let conn = match bootstrap::open_db(&data_dir) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("error: failed to open database: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    let (secure_store, migration) =
-        bootstrap::open_secure_store(&data_dir).expect("Failed to initialize SecureStore");
-    bootstrap::report_master_key_migration(&migration);
+    // SecureStore は遅延初期化する（ADR 0006 決定 1）。
+    //
+    // Stronghold のオープンはスナップショット暗号化時の scrypt が支配的で、
+    // 保管件数に依存せず固定で数十秒かかる。加えて macOS ではキーチェーン
+    // 読み出しの初回に OS の許可ダイアログが出るため、ユーザー応答まで無限に
+    // ブロックしうる。これらを Builder 構築前に行うとウィンドウすら存在しない
+    // 状態で待つことになるが、SecureStore は起動時には一切使われない
+    // （実際の利用は sync_account の資格情報解決などユーザー操作時）ため、
+    // 初回アクセスまで初期化を遅らせる。
+    //
+    // 遅延させてよいのは ProcessLock と違い「起動できるかどうかを決めない」
+    // 処理だからである。ProcessLock は短時間で完了し、失敗したらアプリが
+    // 起動できない処理なので上で同期取得したまま残している。
+    //
+    // なお、この init が走る時点で ProcessLock が保持されていることは
+    // スコープで保証される: `_process_lock` はこの run() のローカル変数で、
+    // 下の Builder::run() がイベントループ終了までブロックするため、
+    // アプリが動いている間ずっと生存する。SecureStoreState へ触れるのは
+    // Tauri コマンドとイベントループ上のタスクだけで、いずれもそれより
+    // 長生きしない（詳細は SecureStoreState のドキュメントコメント）。
+    let data_dir_for_store = data_dir.clone();
+    let secure_store_state = SecureStoreState::lazy(move || {
+        let (store, migration) = bootstrap::open_secure_store(&data_dir_for_store)?;
+        bootstrap::report_master_key_migration(&migration);
+        Ok(store)
+    });
 
     // UseCase レジストリ（dispatch バスの能力セット）。全 driver がここを共有する
     let registry = {
@@ -98,7 +127,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(registry)
         .manage(DbState(Mutex::new(conn)))
-        .manage(SecureStoreState(secure_store))
+        .manage(secure_store_state)
         .manage(OAuthStateStore::new())
         .manage(state::ApprovedAttachments::new())
         .manage(SyncLocks::new())
@@ -124,6 +153,35 @@ pub fn run() {
                             });
                         }
                     }
+                });
+            }
+
+            // 起動時: SecureStore をバックグラウンドで温めておく（ADR 0006 決定 1）。
+            //
+            // 遅延初期化は起動ブロックを解消するが、コスト自体は初回の秘密情報
+            // アクセス時へ移動するだけである。ウィンドウ表示後にここで先回りして
+            // 初期化しておくことで、最初の sync_account でも待たされにくくする。
+            //
+            // 初期化は SecureStoreState 内で直列化されるため、warming 中に
+            // ユーザー操作が来ても二重初期化にはならない（後続は同じ実体を共有する）。
+            // 失敗してもアプリは動き続ける: 失敗は記憶されないので、次に秘密情報が
+            // 必要になった時点で再試行され、そこで明示的なエラーとして表面化する。
+            //
+            // ProcessLock: この spawn は GUI プロセス内で走り、run() の
+            // `_process_lock` が生きている間しか実行されない（Builder::run() が
+            // イベントループ終了まで戻らないため）。よって warming が
+            // Stronghold を開く時点で必ず排他ロックを保持している。
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // ブロッキングな scrypt を非同期ランタイムのワーカー上で走らせない
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        if let Err(e) = app_handle.state::<SecureStoreState>().get() {
+                            eprintln!("[warn] secure store: 事前初期化に失敗しました（次回アクセス時に再試行します）: {e}");
+                        }
+                    })
+                    .await;
                 });
             }
 
@@ -188,14 +246,24 @@ pub fn run() {
                     if targets.is_empty() {
                         return;
                     }
-                    let secure_store = app_handle.state::<SecureStoreState>();
+                    let secure_store_state = app_handle.state::<SecureStoreState>();
+                    // SecureStore の解決は DB ロックを取る「前」に済ませる
+                    // （ADR 0006 決定 3: DB ロックを保持したまま他のロックを待たない）。
+                    // ここが初回アクセスなら、この時点で Stronghold が初期化される
+                    let secure_store = match secure_store_state.get() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[warn] startup scan: secure store unavailable: {}", e);
+                            return;
+                        }
+                    };
                     let (classifier, cloud) = {
                         let conn = match db.0.lock() {
                             Ok(c) => c,
                             Err(_) => return,
                         };
                         let classifier =
-                            match classifier::factory::build_classifier(&conn, &secure_store.0) {
+                            match classifier::factory::build_classifier(&conn, secure_store) {
                                 Ok(c) => c,
                                 Err(_) => return,
                             };

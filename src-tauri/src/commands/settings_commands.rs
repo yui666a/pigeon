@@ -105,7 +105,10 @@ pub fn get_llm_settings(
     db: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
 ) -> Result<LlmSettings, AppError> {
-    db.with_conn(|conn| load_llm_settings(conn, &secure_store.0))
+    // SecureStore の解決は DB ロックを取る前に済ませる
+    // （ADR 0006 決定 3: DB ロックを保持したまま他のロックを待たない）
+    let secure_store = secure_store.get()?;
+    db.with_conn(|conn| load_llm_settings(conn, secure_store))
 }
 
 #[tauri::command]
@@ -125,10 +128,12 @@ pub fn set_llm_settings(
     gemini_model: String,
     embedding_model: String,
 ) -> Result<(), AppError> {
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = secure_store.get()?;
     db.with_conn(|conn| {
         store_llm_settings(
             conn,
-            &secure_store.0,
+            secure_store,
             &provider,
             &ollama_endpoint,
             &ollama_model,
@@ -176,7 +181,7 @@ pub async fn test_llm_connection(
             vertex_sa_json: vertex_sa_json.as_deref(),
             gemini_model: &gemini_model,
         },
-        &secure_store.0,
+        secure_store.get()?,
     )?;
     classifier.health_check().await
 }
