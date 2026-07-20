@@ -15,6 +15,7 @@
 | [0003](0003-secret-storage-boundary.md) | 機密情報の保管境界 | 確定 | 秘密情報は Stronghold(SecureStore)、非機密設定は settings テーブル。平文DB保存禁止 |
 | [0004](0004-ai-native-dispatch-architecture.md) | AI-Native dispatch バスと Risk 認可アーキテクチャ | 進行中 | commands/MCP/常駐エージェントが単一バス+Riskゲート+監査を共有。Phase 4-1 完了、4-2 設計合意済み |
 | [0005](0005-mail-sync-uid-policy.md) | メール同期の方向性・UID信頼性・破壊的操作の反映規約 | 確定 | 破壊的操作は同期反映・可逆操作はベストエフォート、UIDは confirmed フラグで管理 |
+| [0006](0006-startup-blocking-and-data-fetch-policy.md) | 起動パスのブロッキング禁止とデータ取得量の上限 | 確定 | 起動パスに重い同期処理を置かない・重いコマンドは async・一覧取得は LIMIT 必須・キャッシュ優先描画 |
 
 ## 運用
 
