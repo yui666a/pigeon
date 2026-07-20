@@ -58,15 +58,24 @@ async fn run_locked(account_id: &str, ctx: &Ctx<'_>) -> Result<u32, AppError> {
             // 進捗はベストエフォート（送出失敗で同期は止めない）
             ctx.progress().emit(
                 "sync-progress",
-                &serde_json::json!({
-                    "account_id": account_id,
-                    "done": done,
-                    "total": total,
-                }),
+                &sync_progress_payload(account_id, done, total),
             );
         },
     )
     .await
+}
+
+/// sync-progress イベントの payload。
+///
+/// キー名は frontend の `SyncProgress`（src/types/events.ts）がそのまま読むため、
+/// 変更すると進捗表示が壊れる。純関数に切り出して wire contract をテストで固定している
+/// （コールバックは同期ループの奥でしか発火せず、そのままでは検証できないため）。
+fn sync_progress_payload(account_id: &str, done: usize, total: usize) -> serde_json::Value {
+    serde_json::json!({
+        "account_id": account_id,
+        "done": done,
+        "total": total,
+    })
 }
 
 pub fn register_sync_cases(registry: &mut Registry) {
@@ -140,6 +149,21 @@ mod tests {
         assert!(
             sync_locks.try_begin("missing"),
             "run 後にロックが解放されていること"
+        );
+    }
+
+    #[test]
+    fn test_progress_payload_matches_frontend_contract() {
+        // キー名は src/types/events.ts の SyncProgress と一致させる。
+        // 変更すると進捗表示が無言で壊れる（コンパイルも実行も通ってしまう）
+        let payload = sync_progress_payload("acct-1", 3, 10);
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "account_id": "acct-1",
+                "done": 3,
+                "total": 10,
+            })
         );
     }
 
