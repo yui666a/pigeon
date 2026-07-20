@@ -335,6 +335,29 @@ pub fn run() {
             commands::bulk_commands::bulk_archive_mails,
             commands::bulk_commands::bulk_move_mails,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // 終了時: 遅延コミット中の秘密情報を確定させる（ADR 0006 決定 4）。
+            //
+            // 遅延対象は再取得可能な値だけなので失っても再認証には至らないが、
+            // 正常終了で捨てる理由は無い。未コミットの変更が無ければ
+            // スナップショット書き出しは走らないため、終了が遅くなることもない。
+            //
+            // 異常終了（強制終了・電源断）ではここは走らない。その場合の
+            // アクセストークン喪失は次回同期時の再取得で吸収される。
+            if let tauri::RunEvent::Exit = event {
+                use tauri::Manager;
+                let state = app_handle.state::<SecureStoreState>();
+                // 未初期化なら書き込みも遅延分も存在しない。ここで get() すると
+                // 終了時に不要な初期化（数秒）を走らせてしまうので触らない
+                if state.is_initialized() {
+                    if let Ok(store) = state.get() {
+                        if let Err(e) = store.flush() {
+                            eprintln!("[warn] secure store: 終了時のフラッシュに失敗しました: {e}");
+                        }
+                    }
+                }
+            }
+        });
 }
