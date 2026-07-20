@@ -41,6 +41,10 @@ export function ThreadList({ viewMode }: ThreadListProps) {
     if (viewMode === "project" && selectedProjectId) {
       void fetchThreadsByProject(selectedProjectId);
     } else if (viewMode === "threads" && selectedAccountId) {
+      // ローカルキャッシュを先に描画し、ネットワーク同期の完了を待たせない
+      // （ADR「ローカルキャッシュの描画をネットワーク同期の完了に依存させない」）。
+      // 同期は裏で走らせ、完了後に差分を反映する
+      void fetchThreads(selectedAccountId, INBOX_FOLDER);
       void syncAccount(selectedAccountId).then(() => {
         // 高速切替で古いアカウントの結果が新しい一覧を上書きしないよう、
         // クリーンアップ済みなら取得しない。再認証が必要なときも取得は
