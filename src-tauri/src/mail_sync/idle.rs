@@ -150,9 +150,21 @@ async fn run_watch_session(app: &AppHandle, account_id: &str) -> SessionOutcome 
         }
     };
 
-    let secure_store = app.state::<SecureStoreState>();
+    let secure_store_state = app.state::<SecureStoreState>();
+    // IDLE 監視は起動直後に spawn されるため、ここが SecureStore の
+    // 初回アクセスになりうる（初期化に数十秒かかる場合がある）
+    let secure_store = match secure_store_state.get() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[warn] idle: secure store unavailable for {}: {}",
+                account_id, e
+            );
+            return SessionOutcome::ConnectFailed;
+        }
+    };
     let (auth_type, username, credential) =
-        match resolve_imap_credentials(&account, &secure_store.0).await {
+        match resolve_imap_credentials(&account, secure_store).await {
             Ok(creds) => creds,
             Err(AppError::ReauthRequired(_)) => {
                 // 再認証が必要。OAuth 完了時に start_watching で再スタートされる

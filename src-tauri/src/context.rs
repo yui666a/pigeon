@@ -10,6 +10,10 @@ use crate::usecase::{AuditSink, Driver, SqliteAuditSink};
 /// Tauri が所有する各 managed State への参照を束ね、driver 情報と監査シンクを持つ。
 pub struct Ctx<'a> {
     db: &'a DbState,
+    /// 遅延初期化ホルダ（本番）。実体の生成は `secure_store()` の初回呼び出し時。
+    /// use case が秘密情報を必要としない限り Stronghold は開かれない（ADR 0006 決定 1）
+    secure_store_state: Option<&'a SecureStoreState>,
+    /// 初期化済みの実体を直接注入する経路（テスト用）。
     secure_store: Option<&'a SecureStore>,
     approved_attachments: Option<&'a ApprovedAttachments>,
     pending: &'a PendingClassifications,
@@ -30,7 +34,8 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             db,
-            secure_store: Some(&secure_store.0),
+            secure_store_state: Some(secure_store),
+            secure_store: None,
             approved_attachments: None,
             pending,
             batches,
@@ -63,6 +68,7 @@ impl<'a> Ctx<'a> {
     ) -> Self {
         Self {
             db,
+            secure_store_state: None,
             secure_store: None,
             approved_attachments: None,
             pending,
@@ -105,11 +111,19 @@ impl<'a> Ctx<'a> {
         self.db.with_conn_mut(f)
     }
 
-    /// SecureStore への参照。テスト用 Ctx で未設定の場合はエラー。
+    /// SecureStore への参照。**この呼び出しが初回なら、ここで初期化が走る**
+    /// （数十秒かかりうる。ADR 0006 決定 1）。初期化に失敗した場合は panic せず
+    /// エラーを返し、呼び出し元のコマンド経由でユーザーへ伝える。
+    /// テスト用 Ctx で未設定の場合もエラー。
     pub fn secure_store(&self) -> Result<&SecureStore, AppError> {
-        self.secure_store.ok_or_else(|| {
-            AppError::Validation("secure store not configured in this context".into())
-        })
+        if let Some(store) = self.secure_store {
+            return Ok(store);
+        }
+        self.secure_store_state
+            .ok_or_else(|| {
+                AppError::Validation("secure store not configured in this context".into())
+            })?
+            .get()
     }
 
     /// DbState への参照。`with_conn` で足りない、

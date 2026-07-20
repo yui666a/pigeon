@@ -43,6 +43,9 @@ pub fn run() {
 
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
+    // 遅延初期化クロージャへ渡す控え（クロージャは 'static である必要がある）
+    let data_dir_for_store = data_dir.clone();
+
     let db_path = data_dir.join("pigeon.db");
     db::vec_ext::register();
     let conn = Connection::open(&db_path).expect("Failed to open database");
@@ -50,27 +53,37 @@ pub fn run() {
         .expect("Failed to enable foreign keys");
     migrations::run_migrations(&conn).expect("Failed to run migrations");
 
-    // SecureStore のマスター鍵はデバイス固有の乱数を OS キーチェーンに保管する
-    // （ADR 0003）。旧固定鍵のスナップショットは開いた時点で新鍵へ再暗号化する。
-    let key_backend = secure_store::default_master_key_backend(&data_dir);
-    let key = secure_store::resolve_master_key(key_backend.as_ref())
-        .expect("Failed to resolve SecureStore master key");
-    let stronghold_path = data_dir.join("pigeon.stronghold");
-    let (secure_store, migration) =
-        secure_store::SecureStore::open_with_migration(stronghold_path, &key)
-            .expect("Failed to initialize SecureStore");
-    match &migration {
-        secure_store::MasterKeyMigration::MigratedFromLegacy => {
-            eprintln!("[info] secure store: 旧固定鍵のスナップショットを新しいマスター鍵で再暗号化しました");
+    // SecureStore は遅延初期化する（ADR 0006 決定 1）。
+    //
+    // Stronghold の初期化は KeyProvider の鍵導出（重い KDF）が支配的で、保管件数に
+    // 依存せず固定で数十秒かかる。加えて macOS ではキーチェーン読み出しの初回に
+    // OS の許可ダイアログが出るため、ユーザー応答まで無限にブロックしうる。
+    // これらを Builder 構築前に行うとウィンドウすら存在しない状態で待つことになるが、
+    // SecureStore は起動時には一切使われない（実際の利用は sync_account の
+    // 資格情報解決などユーザー操作時）ため、初回アクセスまで初期化を遅らせる。
+    //
+    // マスター鍵の解決（ADR 0003）とスナップショットの鍵移行もこのクロージャ内で
+    // 行うため、同じく起動パスから外れる。
+    let secure_store_state = SecureStoreState::lazy(move || {
+        let key_backend = secure_store::default_master_key_backend(&data_dir_for_store);
+        let key = secure_store::resolve_master_key(key_backend.as_ref())?;
+        let stronghold_path = data_dir_for_store.join("pigeon.stronghold");
+        let (store, migration) =
+            secure_store::SecureStore::open_with_migration(stronghold_path, &key)?;
+        match &migration {
+            secure_store::MasterKeyMigration::MigratedFromLegacy => {
+                eprintln!("[info] secure store: 旧固定鍵のスナップショットを新しいマスター鍵で再暗号化しました");
+            }
+            secure_store::MasterKeyMigration::UnreadableBackedUp { backup } => {
+                eprintln!(
+                    "[warn] secure store: 既存スナップショットを復号できなかったため {} に退避しました。アカウントの再認証が必要です",
+                    backup.display()
+                );
+            }
+            _ => {}
         }
-        secure_store::MasterKeyMigration::UnreadableBackedUp { backup } => {
-            eprintln!(
-                "[warn] secure store: 既存スナップショットを復号できなかったため {} に退避しました。アカウントの再認証が必要です",
-                backup.display()
-            );
-        }
-        _ => {}
-    }
+        Ok(store)
+    });
 
     // UseCase レジストリ（dispatch バスの能力セット）。全 driver がここを共有する
     let registry = {
@@ -86,7 +99,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(registry)
         .manage(DbState(Mutex::new(conn)))
-        .manage(SecureStoreState(secure_store))
+        .manage(secure_store_state)
         .manage(OAuthStateStore::new())
         .manage(state::ApprovedAttachments::new())
         .manage(SyncLocks::new())
@@ -112,6 +125,30 @@ pub fn run() {
                             });
                         }
                     }
+                });
+            }
+
+            // 起動時: SecureStore をバックグラウンドで温めておく（ADR 0006 決定 1）。
+            //
+            // 遅延初期化は起動ブロックを解消するが、コスト自体は初回の秘密情報
+            // アクセス時へ移動するだけである。ウィンドウ表示後にここで先回りして
+            // 初期化しておくことで、最初の sync_account でも待たされにくくする。
+            //
+            // 初期化は OnceLock で直列化されるため、warming 中にユーザー操作が来ても
+            // 二重初期化にはならない（後続は同じ実体を待って共有する）。
+            // 失敗してもアプリは動き続ける: 失敗は記憶されないので、次に秘密情報が
+            // 必要になった時点で再試行され、そこで明示的なエラーとして表面化する。
+            {
+                use tauri::Manager;
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // ブロッキングな KDF を非同期ランタイムのワーカー上で走らせない
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        if let Err(e) = app_handle.state::<SecureStoreState>().get() {
+                            eprintln!("[warn] secure store: 事前初期化に失敗しました（次回アクセス時に再試行します）: {e}");
+                        }
+                    })
+                    .await;
                 });
             }
 
@@ -176,14 +213,24 @@ pub fn run() {
                     if targets.is_empty() {
                         return;
                     }
-                    let secure_store = app_handle.state::<SecureStoreState>();
+                    let secure_store_state = app_handle.state::<SecureStoreState>();
+                    // SecureStore の解決は DB ロックを取る「前」に済ませる
+                    // （ADR 0006 決定 3: DB ロックを保持したまま他のロックを待たない）。
+                    // ここが初回アクセスなら、この時点で Stronghold が初期化される
+                    let secure_store = match secure_store_state.get() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("[warn] startup scan: secure store unavailable: {}", e);
+                            return;
+                        }
+                    };
                     let (classifier, cloud) = {
                         let conn = match db.0.lock() {
                             Ok(c) => c,
                             Err(_) => return,
                         };
                         let classifier =
-                            match classifier::factory::build_classifier(&conn, &secure_store.0) {
+                            match classifier::factory::build_classifier(&conn, secure_store) {
                                 Ok(c) => c,
                                 Err(_) => return,
                             };

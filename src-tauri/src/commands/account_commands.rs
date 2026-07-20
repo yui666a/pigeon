@@ -19,7 +19,11 @@ pub fn create_account(
     // For PLAIN auth, save password to SecureStore
     if matches!(request.auth_type, AuthType::Plain) {
         if let Some(ref password) = request.password {
-            crate::commands::auth_commands::save_password(&secure_store.0, &account.id, password)?;
+            crate::commands::auth_commands::save_password(
+                secure_store.get()?,
+                &account.id,
+                password,
+            )?;
         }
     }
 
@@ -35,7 +39,7 @@ pub fn get_accounts(
     secure_store: State<SecureStoreState>,
 ) -> Result<Vec<Account>, AppError> {
     let mut accounts = state.with_conn(accounts::list_accounts)?;
-    check_accounts_reauth(&mut accounts, &secure_store.0);
+    check_accounts_reauth(&mut accounts, secure_store.get()?);
     Ok(accounts)
 }
 

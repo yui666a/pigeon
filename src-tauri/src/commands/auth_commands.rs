@@ -170,7 +170,7 @@ pub async fn handle_oauth_callback(
     url: String,
 ) -> Result<String, AppError> {
     let account_id =
-        handle_oauth_callback_inner(&state, &secure_store.0, &oauth_store, &url).await?;
+        handle_oauth_callback_inner(&state, secure_store.get()?, &oauth_store, &url).await?;
     // OAuth 完了（新規追加・再認証とも）したアカウントの IDLE 監視を開始する。
     // 再認証の場合は停止していた監視タスクがここで置き換え再開される
     crate::mail_sync::idle::start_watching(&app, &account_id);

@@ -28,7 +28,9 @@ pub async fn classify_mail(
     mail_id: String,
 ) -> Result<ClassifyResponse, AppError> {
     let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
-    let classifier = ctx.with_conn(|conn| build_classifier(conn, ctx.secure_store()?))?;
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = ctx.secure_store()?;
+    let classifier = ctx.with_conn(|conn| build_classifier(conn, secure_store))?;
     service::classify_one(&db.0, classifier.as_ref(), ctx.pending(), &mail_id).await
 }
 
@@ -58,7 +60,9 @@ pub async fn classify_batch(
     secure_store: State<'_, SecureStoreState>,
     account_id: String,
 ) -> Result<ClassifyBatchOutcome, AppError> {
-    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = secure_store.get()?;
+    let classifier = db.with_conn(|conn| build_classifier(conn, secure_store))?;
     service::classify_batch(
         &db.0,
         classifier.as_ref(),
@@ -235,7 +239,9 @@ pub async fn suggest_project_from_mails(
     })?;
 
     // --- LLM 実行（ロック外） ---
-    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = secure_store.get()?;
+    let classifier = db.with_conn(|conn| build_classifier(conn, secure_store))?;
     classifier.health_check().await?;
     service::suggest_project_name(classifier.as_ref(), &summaries).await
 }

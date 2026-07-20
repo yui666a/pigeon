@@ -53,7 +53,7 @@ pub async fn sync_account(
     if !sync_locks.try_begin(&account_id) {
         return Ok(0);
     }
-    let result = sync_account_locked(&app, &state, &secure_store.0, &account_id).await;
+    let result = sync_account_locked(&app, &state, secure_store.get()?, &account_id).await;
     sync_locks.finish(&account_id);
     result
 }
@@ -128,7 +128,8 @@ pub async fn backfill_account(
             exhausted: false,
         });
     }
-    let result = backfill_account_locked(&app, &state, &secure_store.0, &account_id, limit).await;
+    let result =
+        backfill_account_locked(&app, &state, secure_store.get()?, &account_id, limit).await;
     sync_locks.finish(&account_id);
     result
 }
