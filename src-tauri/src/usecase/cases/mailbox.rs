@@ -13,7 +13,7 @@ use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, Delet
 use crate::context::Ctx;
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
-use crate::models::mail::{Thread, UnreadCounts};
+use crate::models::mail::{ThreadPage, UnreadCounts};
 use crate::usecase::{Registry, Risk, UseCase};
 
 /// 対象メールの削除プランから実効 Risk を求める。
@@ -255,19 +255,55 @@ impl UseCase for BulkArchiveMailsUseCase {
     }
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-pub struct GetThreadsInput {
-    pub account_id: String,
-    pub folder: String,
+/// 一覧取得の既定ページサイズ（スレッド単位）。
+/// 呼び出し側が `limit` を省略したときに適用される。
+/// フロントの `src/constants/paging.ts` の `THREAD_PAGE_SIZE` と揃える。
+pub const DEFAULT_THREAD_PAGE_SIZE: usize = 200;
+
+/// 1リクエストで返せるスレッド数の上限。巨大な `limit` を投げられても
+/// 全件転送に退化しないための歯止め（ADR 0006 決定5）。
+///
+/// usecase 層で掛けるのは、GUI だけでなく CLI / MCP から任意の `limit` が
+/// 渡りうるため。バスを通る全 driver に同じ上限が効く。
+pub const MAX_THREAD_PAGE_SIZE: usize = 500;
+
+/// `limit` / `offset` の省略値と上限を解決する。3つの一覧 use case が共用する。
+pub fn resolve_page_window(limit: Option<usize>, offset: Option<usize>) -> (usize, usize) {
+    (
+        limit
+            .unwrap_or(DEFAULT_THREAD_PAGE_SIZE)
+            .min(MAX_THREAD_PAGE_SIZE),
+        offset.unwrap_or(0),
+    )
 }
 
-/// フォルダ内メールをスレッド化して返す（読み取り）。
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GetThreadsInput {
+    /// 対象アカウントの ID。
+    pub account_id: String,
+    /// 対象フォルダ名（例: "INBOX"）。
+    pub folder: String,
+    /// 返すスレッドの最大件数。省略時は 200。
+    ///
+    /// 上限はメールではなくスレッドに掛かる。窓に入ったスレッドは
+    /// 常にメールが揃った状態で返るため、`limit: 1` でも 5 通の
+    /// スレッドは 5 通すべて含んで返る。件数の見積もりには使えない。
+    pub limit: Option<usize>,
+    /// 読み飛ばすスレッド数。省略時は 0。
+    ///
+    /// 続きを取るには前回の `limit` + `offset` を渡す。
+    /// `has_more` が false になるまで繰り返せば全件を走査できる。
+    /// 総件数は返さない（毎回の全走査を避けるため）。
+    pub offset: Option<usize>,
+}
+
+/// フォルダ内メールをスレッド化して1ページ分返す（読み取り）。
 pub struct GetThreadsUseCase;
 
 #[async_trait::async_trait]
 impl UseCase for GetThreadsUseCase {
     type Input = GetThreadsInput;
-    type Output = Vec<Thread>;
+    type Output = ThreadPage;
 
     fn name(&self) -> &'static str {
         "get_threads"
@@ -278,26 +314,33 @@ impl UseCase for GetThreadsUseCase {
     }
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
-        // スレッド化は DB ロックの外で行う（接続を握ったままの CPU 処理を避ける）
-        let all_mails = ctx.with_conn(|conn| {
-            mails::get_mails_by_account(conn, &input.account_id, &input.folder)
-        })?;
-        Ok(mails::build_threads(&all_mails))
+        let (limit, offset) = resolve_page_window(input.limit, input.offset);
+        ctx.with_conn(|conn| {
+            mails::get_thread_page_by_account(conn, &input.account_id, &input.folder, limit, offset)
+        })
     }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct GetThreadsByProjectInput {
+    /// 対象案件の ID。子案件のメールも集約して返す。
     pub project_id: String,
+    /// 返すスレッドの最大件数。省略時は 200。
+    /// 上限はスレッド単位に掛かり、窓に入ったスレッドはメールが揃って返る。
+    pub limit: Option<usize>,
+    /// 読み飛ばすスレッド数。省略時は 0。
+    /// 続きを取るには前回の `limit` + `offset` を渡し、`has_more` が
+    /// false になるまで繰り返す。
+    pub offset: Option<usize>,
 }
 
-/// 案件に紐づくスレッド一覧（読み取り）。
+/// 案件に紐づくスレッド一覧を1ページ分返す（読み取り）。
 pub struct GetThreadsByProjectUseCase;
 
 #[async_trait::async_trait]
 impl UseCase for GetThreadsByProjectUseCase {
     type Input = GetThreadsByProjectInput;
-    type Output = Vec<Thread>;
+    type Output = ThreadPage;
 
     fn name(&self) -> &'static str {
         "get_threads_by_project"
@@ -308,7 +351,10 @@ impl UseCase for GetThreadsByProjectUseCase {
     }
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
-        ctx.with_conn(|conn| mails::get_threads_by_project(conn, &input.project_id))
+        let (limit, offset) = resolve_page_window(input.limit, input.offset);
+        ctx.with_conn(|conn| {
+            mails::get_thread_page_by_project(conn, &input.project_id, limit, offset)
+        })
     }
 }
 
@@ -521,10 +567,13 @@ mod tests {
         let input = GetThreadsInput {
             account_id: "nope".into(),
             folder: "INBOX".into(),
+            limit: None,
+            offset: None,
         };
         assert_eq!(uc.risk(&input, &ctx).expect("risk"), Risk::Read);
         let out = uc.run(input, &ctx).await.expect("run");
-        assert!(out.is_empty());
+        assert!(out.threads.is_empty());
+        assert!(!out.has_more);
     }
 
     #[tokio::test]
@@ -553,6 +602,8 @@ mod tests {
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &sync_locks);
         let input = GetThreadsByProjectInput {
             project_id: "p1".into(),
+            limit: None,
+            offset: None,
         };
         assert_eq!(
             GetThreadsByProjectUseCase.risk(&input, &ctx).expect("risk"),
@@ -562,7 +613,8 @@ mod tests {
             .run(input, &ctx)
             .await
             .expect("run");
-        assert!(out.is_empty());
+        assert!(out.threads.is_empty());
+        assert!(!out.has_more);
     }
 
     #[tokio::test]
@@ -586,5 +638,172 @@ mod tests {
             .with_conn(|conn| crate::db::mails::get_mail_by_id(conn, "m1"))
             .unwrap();
         assert_eq!(mail.folder, "INBOX");
+    }
+
+    // --- スレッド単位ページング（ADR 0006 決定5） ---
+
+    /// limit / offset を省略しても既定の窓が適用される（上限なしにならない）
+    #[test]
+    fn test_resolve_page_window_defaults() {
+        assert_eq!(
+            resolve_page_window(None, None),
+            (DEFAULT_THREAD_PAGE_SIZE, 0)
+        );
+        assert_eq!(resolve_page_window(Some(10), Some(20)), (10, 20));
+    }
+
+    /// CLI / MCP から巨大な limit が渡っても全件転送に退化しない
+    #[test]
+    fn test_resolve_page_window_clamps_to_max() {
+        assert_eq!(
+            resolve_page_window(Some(100_000), None),
+            (MAX_THREAD_PAGE_SIZE, 0)
+        );
+    }
+
+    /// 本 PR の設計判断の核心。スレッドは分断されない——5通のスレッドを
+    /// limit=1 で取っても 5 通すべて揃って返る（メール単位LIMITなら欠ける）
+    #[tokio::test]
+    async fn test_get_threads_keeps_threads_whole_under_limit() {
+        let (db, pending, batches, locks) = build_states();
+        let root = make_mail("r1", "<r1@ex.com>", "長いスレッド", "2026-07-01T10:00:00");
+        db.with_conn(|conn| crate::db::mails::insert_mail(conn, &root))
+            .unwrap();
+        for i in 0..4 {
+            let mut reply = make_mail(
+                &format!("c{i}"),
+                &format!("<c{i}@ex.com>"),
+                "Re: 長いスレッド",
+                &format!("2026-07-01T1{}:00:00", i + 1),
+            );
+            reply.in_reply_to = Some("<r1@ex.com>".into());
+            db.with_conn(|conn| crate::db::mails::insert_mail(conn, &reply))
+                .unwrap();
+        }
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
+
+        let page = GetThreadsUseCase
+            .run(
+                GetThreadsInput {
+                    account_id: "acc1".into(),
+                    folder: "INBOX".into(),
+                    limit: Some(1),
+                    offset: None,
+                },
+                &ctx,
+            )
+            .await
+            .expect("get_threads should succeed");
+
+        assert_eq!(page.threads.len(), 1);
+        assert_eq!(
+            page.threads[0].mails.len(),
+            5,
+            "スレッドは分断されず全メールが揃う"
+        );
+        assert!(!page.has_more, "5通は1スレッドなので後続なし");
+    }
+
+    /// offset でページを進められ、ページ間で重複しない
+    #[tokio::test]
+    async fn test_get_threads_pages_without_overlap() {
+        let (db, pending, batches, locks) = build_states();
+        for i in 0..5 {
+            let m = make_mail(
+                &format!("m{i}"),
+                &format!("<m{i}@ex.com>"),
+                &format!("Subject {i}"),
+                &format!("2026-07-01T0{i}:00:00"),
+            );
+            db.with_conn(|conn| crate::db::mails::insert_mail(conn, &m))
+                .unwrap();
+        }
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
+
+        let run = |limit, offset| {
+            GetThreadsUseCase.run(
+                GetThreadsInput {
+                    account_id: "acc1".into(),
+                    folder: "INBOX".into(),
+                    limit: Some(limit),
+                    offset: Some(offset),
+                },
+                &ctx,
+            )
+        };
+
+        let first = run(3, 0).await.unwrap();
+        let second = run(3, 3).await.unwrap();
+        assert_eq!(first.threads.len(), 3);
+        assert!(first.has_more);
+        assert_eq!(second.threads.len(), 2, "端数ページ");
+        assert!(!second.has_more);
+
+        let mut ids: Vec<String> = first
+            .threads
+            .iter()
+            .chain(second.threads.iter())
+            .map(|t| t.thread_id.clone())
+            .collect();
+        let total = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "ページ間で重複しない");
+        assert_eq!(total, 5);
+    }
+
+    /// 案件のスレッド一覧もスレッド単位で切れる
+    #[tokio::test]
+    async fn test_get_threads_by_project_pages() {
+        let (db, pending, batches, locks) = build_states();
+        db.with_conn(|conn| {
+            crate::db::projects::insert_project_with_id(conn, "p1", "acc1", "P", None, None, None)
+        })
+        .unwrap();
+        for i in 0..3 {
+            let m = make_mail(
+                &format!("m{i}"),
+                &format!("<m{i}@ex.com>"),
+                &format!("Subject {i}"),
+                &format!("2026-07-01T0{i}:00:00"),
+            );
+            db.with_conn(|conn| crate::db::mails::insert_mail(conn, &m))
+                .unwrap();
+            db.with_conn(|conn| {
+                crate::db::assignments::assign_mail(conn, &format!("m{i}"), "p1", "user", None)
+            })
+            .unwrap();
+        }
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
+
+        let page = GetThreadsByProjectUseCase
+            .run(
+                GetThreadsByProjectInput {
+                    project_id: "p1".into(),
+                    limit: Some(2),
+                    offset: Some(0),
+                },
+                &ctx,
+            )
+            .await
+            .expect("get_threads_by_project should succeed");
+
+        assert_eq!(page.threads.len(), 2);
+        assert!(page.has_more);
+    }
+
+    /// MCP の tools/list が返すスキーマに limit / offset が現れること。
+    /// エージェントはこのスキーマだけを見てページングを組み立てる
+    #[test]
+    fn test_get_threads_input_schema_exposes_paging() {
+        use crate::usecase::ErasedUseCase;
+        let schema = ErasedUseCase::input_schema(&GetThreadsUseCase);
+        let props = &schema["properties"];
+        assert!(props.get("limit").is_some(), "limit がスキーマに出る");
+        assert!(props.get("offset").is_some(), "offset がスキーマに出る");
+        // 省略可能であること（required に含まれない）
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(!required.iter().any(|v| v == "limit"));
+        assert!(!required.iter().any(|v| v == "offset"));
     }
 }

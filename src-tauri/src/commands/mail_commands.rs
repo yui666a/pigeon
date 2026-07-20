@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::mail_sync::sync_service;
 use crate::mail_sync::{imap_client, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
-use crate::models::mail::{Mail, Thread, UnreadCounts};
+use crate::models::mail::{Mail, ThreadPage, UnreadCounts};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 /// embed-progress イベントの payload（同期後に走る埋め込みパスの進捗）
@@ -528,6 +528,9 @@ pub fn get_recent_unread_subjects(
     state.with_conn(|conn| mails::get_recent_unread_subjects(conn, &account_id, limit))
 }
 
+// dispatch 経由の command は State 6 個の注入で既に上限に達しており、
+// ドメイン引数（account_id / folder / limit / offset）を足すと超える
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn get_threads(
     registry: State<'_, Registry>,
@@ -538,12 +541,19 @@ pub async fn get_threads(
     sync_locks: State<'_, SyncLocks>,
     account_id: String,
     folder: String,
-) -> Result<Vec<Thread>, AppError> {
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ThreadPage, AppError> {
     let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
     let out = dispatch(
         &registry,
         "get_threads",
-        serde_json::json!({ "account_id": account_id, "folder": folder }),
+        serde_json::json!({
+            "account_id": account_id,
+            "folder": folder,
+            "limit": limit,
+            "offset": offset,
+        }),
         &ctx,
     )
     .await?;
@@ -551,6 +561,9 @@ pub async fn get_threads(
         .map_err(|e| AppError::Validation(format!("unexpected get_threads output: {e}")))
 }
 
+// dispatch 経由の command は State 6 個の注入で既に上限に達しており、
+// ドメイン引数（project_id / limit / offset）を足すと超える
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn get_threads_by_project(
     registry: State<'_, Registry>,
@@ -560,12 +573,18 @@ pub async fn get_threads_by_project(
     batches: State<'_, ClassifyBatches>,
     sync_locks: State<'_, SyncLocks>,
     project_id: String,
-) -> Result<Vec<Thread>, AppError> {
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ThreadPage, AppError> {
     let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
     let out = dispatch(
         &registry,
         "get_threads_by_project",
-        serde_json::json!({ "project_id": project_id }),
+        serde_json::json!({
+            "project_id": project_id,
+            "limit": limit,
+            "offset": offset,
+        }),
         &ctx,
     )
     .await?;
