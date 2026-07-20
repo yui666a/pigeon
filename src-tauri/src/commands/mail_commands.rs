@@ -520,11 +520,25 @@ pub(crate) fn unarchive_mail_inner(
 
 /// プロジェクト毎 + 未分類の未読件数を返す（INBOX のみ対象）。
 #[tauri::command]
-pub fn get_unread_counts(
-    state: State<DbState>,
+pub async fn get_unread_counts(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
 ) -> Result<UnreadCounts, AppError> {
-    state.with_conn(|conn| mails::get_unread_counts(conn, &account_id))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_unread_counts",
+        serde_json::json!({ "account_id": account_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_unread_counts output: {e}")))
 }
 
 /// デスクトップ通知の件名プレビュー用に、直近の未読メール件名を返す
@@ -539,22 +553,48 @@ pub fn get_recent_unread_subjects(
 }
 
 #[tauri::command]
-pub fn get_threads(
-    state: State<DbState>,
+pub async fn get_threads(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     folder: String,
 ) -> Result<Vec<Thread>, AppError> {
-    let all_mails =
-        state.with_conn(|conn| mails::get_mails_by_account(conn, &account_id, &folder))?;
-    Ok(mails::build_threads(&all_mails))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_threads",
+        serde_json::json!({ "account_id": account_id, "folder": folder }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_threads output: {e}")))
 }
 
 #[tauri::command]
-pub fn get_threads_by_project(
-    state: State<DbState>,
+pub async fn get_threads_by_project(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     project_id: String,
 ) -> Result<Vec<Thread>, AppError> {
-    state.with_conn(|conn| mails::get_threads_by_project(conn, &project_id))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_threads_by_project",
+        serde_json::json!({ "project_id": project_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_threads_by_project output: {e}")))
 }
 
 #[cfg(test)]

@@ -167,7 +167,31 @@ impl UseCase for MergeProjectsUseCase {
     }
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GetProjectsInput {
+    pub account_id: String,
+}
+
+/// アカウント配下の案件一覧（読み取り）。
+pub struct GetProjectsUseCase;
+
+#[async_trait::async_trait]
+impl UseCase for GetProjectsUseCase {
+    type Input = GetProjectsInput;
+    type Output = Vec<Project>;
+    fn name(&self) -> &'static str {
+        "get_projects"
+    }
+    fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+        Ok(Risk::Read)
+    }
+    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
+        ctx.with_conn(|conn| projects::list_projects(conn, &input.account_id))
+    }
+}
+
 pub fn register_project_cases(registry: &mut Registry) {
+    registry.register(GetProjectsUseCase);
     registry.register(CreateProjectUseCase);
     registry.register(UpdateProjectUseCase);
     registry.register(SetProjectParentUseCase);
@@ -247,6 +271,28 @@ mod tests {
             .with_conn(|conn| Ok(projects::get_project(conn, "b")?.parent_id))
             .unwrap();
         assert_eq!(parent.as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn test_get_projects_usecase_lists_projects_of_account() {
+        let (db, pending, batches, locks) = build_states();
+        db.with_conn(|conn| {
+            projects::insert_project_with_id(conn, "a", "acc1", "A", None, None, None)?;
+            Ok(())
+        })
+        .unwrap();
+        let ctx = crate::context::Ctx::new_for_test(&db, &pending, &batches, &locks);
+
+        let input = GetProjectsInput {
+            account_id: "acc1".into(),
+        };
+        assert_eq!(
+            GetProjectsUseCase.risk(&input, &ctx).expect("risk"),
+            Risk::Read
+        );
+        let out = GetProjectsUseCase.run(input, &ctx).await.expect("run");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "a");
     }
 
     #[test]
