@@ -38,8 +38,25 @@ pub async fn create_project(
 }
 
 #[tauri::command]
-pub fn get_projects(state: State<DbState>, account_id: String) -> Result<Vec<Project>, AppError> {
-    state.with_conn(|conn| projects::list_projects(conn, &account_id))
+pub async fn get_projects(
+    registry: State<'_, Registry>,
+    db: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
+    account_id: String,
+) -> Result<Vec<Project>, AppError> {
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_projects",
+        serde_json::json!({ "account_id": account_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_projects output: {e}")))
 }
 
 #[tauri::command]

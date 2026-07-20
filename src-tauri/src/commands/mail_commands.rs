@@ -13,14 +13,6 @@ use crate::models::account::{Account, AccountProvider, AuthType};
 use crate::models::mail::{Mail, Thread, UnreadCounts};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 
-/// sync-progress イベントの payload
-#[derive(Clone, serde::Serialize)]
-struct SyncProgressEvent {
-    account_id: String,
-    done: usize,
-    total: usize,
-}
-
 /// embed-progress イベントの payload（同期後に走る埋め込みパスの進捗）
 #[derive(Clone, serde::Serialize)]
 struct EmbedProgressEvent {
@@ -40,57 +32,41 @@ fn spawn_embedding_pass(app: &AppHandle) {
     });
 }
 
+/// アカウントを同期する。dispatch バス経由（多重起動ガードと進捗送出は
+/// use case 側）。埋め込みパスの起動だけは AppHandle 依存のためここに残す。
 #[tauri::command]
 pub async fn sync_account(
     app: AppHandle,
+    registry: State<'_, Registry>,
     state: State<'_, DbState>,
     secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
     sync_locks: State<'_, SyncLocks>,
     account_id: String,
 ) -> Result<u32, AppError> {
-    // 同一アカウントの同期が進行中なら開始しない（画面遷移等での多重起動対策）。
-    // エラーではなく 0 件を返す: 呼び出し側にとって「新規取り込みなし」と等価
-    if !sync_locks.try_begin(&account_id) {
-        return Ok(0);
-    }
-    let result = sync_account_locked(&app, &state, &secure_store.0, &account_id).await;
-    sync_locks.finish(&account_id);
-    result
-}
-
-/// sync_account のロック取得後の本体。同期のドメインロジックは
-/// mail_sync::sync_service に委譲し、ここでは資格情報解決の注入と
-/// sync-progress イベントの emit のみを行う。
-async fn sync_account_locked(
-    app: &AppHandle,
-    state: &DbState,
-    secure_store: &crate::secure_store::SecureStore,
-    account_id: &str,
-) -> Result<u32, AppError> {
-    let account = state.with_conn(|conn| accounts::get_account(conn, account_id))?;
-    let result = sync_service::sync_account(
-        state,
-        &account,
-        || resolve_imap_credentials(&account, secure_store),
-        |done, total| {
-            // 進捗はベストエフォート（emit 失敗で同期は止めない）
-            let _ = app.emit(
-                "sync-progress",
-                SyncProgressEvent {
-                    account_id: account_id.to_string(),
-                    done,
-                    total,
-                },
-            );
-        },
+    let sink = crate::TauriProgressSink::new(app.clone());
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks).with_progress(&sink);
+    let out = dispatch(
+        &registry,
+        "sync_account",
+        serde_json::json!({ "account_id": account_id }),
+        &ctx,
     )
-    .await;
-    if result.is_ok() {
-        // 新規取り込みメールをチャンク化・埋め込みするパスを非同期で開始する
-        // （検索索引の更新。同期そのものの成否・速度には影響させない）
-        spawn_embedding_pass(app);
+    .await?;
+    let count: u32 = serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected sync_account output: {e}")))?;
+    // 新規取り込みメールをチャンク化・埋め込みするパスを非同期で開始する
+    // （検索索引の更新。同期そのものの成否・速度には影響させない）。
+    // AppHandle 依存なので use case ではなく GUI プロセス側に残す。
+    //
+    // 0 件なら起動しない: use case は同期が進行中のとき Ok(0) を返すため、
+    // 無条件に呼ぶと多重クリックのたびに空振りのパスが走る
+    // （EmbeddingRunGuard が実行中なら弾くが、空いていれば起動してしまう）。
+    if count > 0 {
+        spawn_embedding_pass(&app);
     }
-    result
+    Ok(count)
 }
 
 /// backfill-progress イベントの payload。sync-progress とは別イベントにしている
@@ -520,11 +496,25 @@ pub(crate) fn unarchive_mail_inner(
 
 /// プロジェクト毎 + 未分類の未読件数を返す（INBOX のみ対象）。
 #[tauri::command]
-pub fn get_unread_counts(
-    state: State<DbState>,
+pub async fn get_unread_counts(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
 ) -> Result<UnreadCounts, AppError> {
-    state.with_conn(|conn| mails::get_unread_counts(conn, &account_id))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_unread_counts",
+        serde_json::json!({ "account_id": account_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_unread_counts output: {e}")))
 }
 
 /// デスクトップ通知の件名プレビュー用に、直近の未読メール件名を返す
@@ -539,22 +529,48 @@ pub fn get_recent_unread_subjects(
 }
 
 #[tauri::command]
-pub fn get_threads(
-    state: State<DbState>,
+pub async fn get_threads(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     account_id: String,
     folder: String,
 ) -> Result<Vec<Thread>, AppError> {
-    let all_mails =
-        state.with_conn(|conn| mails::get_mails_by_account(conn, &account_id, &folder))?;
-    Ok(mails::build_threads(&all_mails))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_threads",
+        serde_json::json!({ "account_id": account_id, "folder": folder }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_threads output: {e}")))
 }
 
 #[tauri::command]
-pub fn get_threads_by_project(
-    state: State<DbState>,
+pub async fn get_threads_by_project(
+    registry: State<'_, Registry>,
+    state: State<'_, DbState>,
+    secure_store: State<'_, SecureStoreState>,
+    pending: State<'_, PendingClassifications>,
+    batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     project_id: String,
 ) -> Result<Vec<Thread>, AppError> {
-    state.with_conn(|conn| mails::get_threads_by_project(conn, &project_id))
+    let ctx = Ctx::new(&state, &secure_store, &pending, &batches, &sync_locks);
+    let out = dispatch(
+        &registry,
+        "get_threads_by_project",
+        serde_json::json!({ "project_id": project_id }),
+        &ctx,
+    )
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected get_threads_by_project output: {e}")))
 }
 
 #[cfg(test)]

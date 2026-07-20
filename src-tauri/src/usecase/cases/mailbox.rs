@@ -13,6 +13,7 @@ use crate::commands::mail_policy::{plan_archive, plan_delete, ArchivePlan, Delet
 use crate::context::Ctx;
 use crate::db::{accounts, mails, settings};
 use crate::error::AppError;
+use crate::models::mail::{Thread, UnreadCounts};
 use crate::usecase::{Registry, Risk, UseCase};
 
 /// 対象メールの削除プランから実効 Risk を求める。
@@ -254,7 +255,93 @@ impl UseCase for BulkArchiveMailsUseCase {
     }
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GetThreadsInput {
+    pub account_id: String,
+    pub folder: String,
+}
+
+/// フォルダ内メールをスレッド化して返す（読み取り）。
+pub struct GetThreadsUseCase;
+
+#[async_trait::async_trait]
+impl UseCase for GetThreadsUseCase {
+    type Input = GetThreadsInput;
+    type Output = Vec<Thread>;
+
+    fn name(&self) -> &'static str {
+        "get_threads"
+    }
+
+    fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+        Ok(Risk::Read)
+    }
+
+    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
+        // スレッド化は DB ロックの外で行う（接続を握ったままの CPU 処理を避ける）
+        let all_mails = ctx.with_conn(|conn| {
+            mails::get_mails_by_account(conn, &input.account_id, &input.folder)
+        })?;
+        Ok(mails::build_threads(&all_mails))
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GetThreadsByProjectInput {
+    pub project_id: String,
+}
+
+/// 案件に紐づくスレッド一覧（読み取り）。
+pub struct GetThreadsByProjectUseCase;
+
+#[async_trait::async_trait]
+impl UseCase for GetThreadsByProjectUseCase {
+    type Input = GetThreadsByProjectInput;
+    type Output = Vec<Thread>;
+
+    fn name(&self) -> &'static str {
+        "get_threads_by_project"
+    }
+
+    fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+        Ok(Risk::Read)
+    }
+
+    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
+        ctx.with_conn(|conn| mails::get_threads_by_project(conn, &input.project_id))
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GetUnreadCountsInput {
+    pub account_id: String,
+}
+
+/// 案件毎 + 未分類の未読件数（読み取り）。
+pub struct GetUnreadCountsUseCase;
+
+#[async_trait::async_trait]
+impl UseCase for GetUnreadCountsUseCase {
+    type Input = GetUnreadCountsInput;
+    type Output = UnreadCounts;
+
+    fn name(&self) -> &'static str {
+        "get_unread_counts"
+    }
+
+    fn risk(&self, _input: &Self::Input, _ctx: &Ctx) -> Result<Risk, AppError> {
+        Ok(Risk::Read)
+    }
+
+    async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, AppError> {
+        ctx.with_conn(|conn| mails::get_unread_counts(conn, &input.account_id))
+    }
+}
+
 pub fn register_mailbox_cases(registry: &mut Registry) {
+    registry.register(GetThreadsUseCase);
+    registry.register(GetThreadsByProjectUseCase);
+    registry.register(GetUnreadCountsUseCase);
     registry.register(DeleteMailUseCase);
     registry.register(ArchiveMailUseCase);
     registry.register(UnarchiveMailUseCase);
@@ -424,6 +511,58 @@ mod tests {
             .with_conn(|conn| crate::db::mails::get_mail_by_id(conn, "sent1"))
             .unwrap();
         assert_eq!(mail.folder, "Archive");
+    }
+
+    #[tokio::test]
+    async fn test_get_threads_returns_empty_for_unknown_account() {
+        let (db, pending, batches, sync_locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &sync_locks);
+        let uc = GetThreadsUseCase;
+        let input = GetThreadsInput {
+            account_id: "nope".into(),
+            folder: "INBOX".into(),
+        };
+        assert_eq!(uc.risk(&input, &ctx).expect("risk"), Risk::Read);
+        let out = uc.run(input, &ctx).await.expect("run");
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_unread_counts_usecase_is_read() {
+        let (db, pending, batches, sync_locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &sync_locks);
+        let input = GetUnreadCountsInput {
+            account_id: "acc1".into(),
+        };
+        assert_eq!(
+            GetUnreadCountsUseCase.risk(&input, &ctx).expect("risk"),
+            Risk::Read
+        );
+        let out = GetUnreadCountsUseCase.run(input, &ctx).await.expect("run");
+        assert_eq!(out.unclassified, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_threads_by_project_returns_empty_for_project_without_mails() {
+        let (db, pending, batches, sync_locks) = build_states();
+        db.with_conn(|conn| {
+            crate::db::projects::insert_project_with_id(conn, "p1", "acc1", "P", None, None, None)?;
+            Ok(())
+        })
+        .unwrap();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &sync_locks);
+        let input = GetThreadsByProjectInput {
+            project_id: "p1".into(),
+        };
+        assert_eq!(
+            GetThreadsByProjectUseCase.risk(&input, &ctx).expect("risk"),
+            Risk::Read
+        );
+        let out = GetThreadsByProjectUseCase
+            .run(input, &ctx)
+            .await
+            .expect("run");
+        assert!(out.is_empty());
     }
 
     #[tokio::test]

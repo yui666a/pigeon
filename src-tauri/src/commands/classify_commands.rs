@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 use crate::classifier::factory::build_classifier;
 use crate::classifier::service::{self, ClassifyBatches, PendingClassifications};
@@ -8,6 +8,7 @@ use crate::error::AppError;
 use crate::models::classifier::{ClassifyBatchOutcome, ClassifyResponse, ProjectSuggestion};
 use crate::models::project::Project;
 use crate::state::{DbState, SecureStoreState, SyncLocks};
+use crate::usecase::{dispatch, Registry};
 
 // ---------------------------------------------------------------------------
 // Tauri commands
@@ -32,53 +33,37 @@ pub async fn classify_mail(
     service::classify_one(&db.0, classifier.as_ref(), ctx.pending(), &mail_id).await
 }
 
-/// classify-progress イベントの payload
-#[derive(Clone, serde::Serialize)]
-struct ClassifyProgressEvent {
-    account_id: String,
-    current: usize,
-    total: usize,
-    /// このステップで案件へ確定割り当てされたメールの ID（あれば）。
-    /// フロントが未分類一覧から即座に消すために使う。
-    assigned_mail_id: Option<String>,
-}
-
 /// 未分類メールのバッチ分類を開始/再開する。
 ///
 /// 1 invoke で「次の停止点（create 提案）または完了/キャンセル」まで進む。
-/// ループの本体は `classifier::service::classify_batch` にあり、ここでは
-/// 分類器の構築と classify-progress イベントの emit のみを行う
-/// （`sync_account` / `sync_service` と同じ分業）。
+/// 本体は `usecase::cases::classify::ClassifyBatchUseCase` にあり、ここでは
+/// Tauri の State を Ctx へ束ねて dispatch へ渡すだけ。
+///
+/// classify-progress イベントの payload（account_id / current / total /
+/// assigned_mail_id）は use case 側で組み立てる。frontend の
+/// `ClassifyProgressEvent` 型（src/types/classifier.ts）との対応はそちらを参照。
 #[tauri::command]
 pub async fn classify_batch(
     app: AppHandle,
+    registry: State<'_, Registry>,
     db: State<'_, DbState>,
     pending: State<'_, PendingClassifications>,
     batches: State<'_, ClassifyBatches>,
+    sync_locks: State<'_, SyncLocks>,
     secure_store: State<'_, SecureStoreState>,
     account_id: String,
 ) -> Result<ClassifyBatchOutcome, AppError> {
-    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
-    service::classify_batch(
-        &db.0,
-        classifier.as_ref(),
-        &pending,
-        &batches,
-        &account_id,
-        |current, total, assigned_mail_id| {
-            // 進捗はベストエフォート（emit 失敗で分類は止めない）
-            let _ = app.emit(
-                "classify-progress",
-                ClassifyProgressEvent {
-                    account_id: account_id.clone(),
-                    current,
-                    total,
-                    assigned_mail_id: assigned_mail_id.map(str::to_string),
-                },
-            );
-        },
+    let sink = crate::TauriProgressSink::new(app);
+    let ctx = Ctx::new(&db, &secure_store, &pending, &batches, &sync_locks).with_progress(&sink);
+    let out = dispatch(
+        &registry,
+        "classify_batch",
+        serde_json::json!({ "account_id": account_id }),
+        &ctx,
     )
-    .await
+    .await?;
+    serde_json::from_value(out)
+        .map_err(|e| AppError::Validation(format!("unexpected classify_batch output: {e}")))
 }
 
 /// 実行中/承認待ちのバッチ分類を中止する。
