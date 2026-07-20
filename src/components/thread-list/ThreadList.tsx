@@ -8,7 +8,7 @@ import { ThreadItem } from "./ThreadItem";
 import { BulkActionBar } from "./BulkActionBar";
 import { NewProjectFromSelectionForm } from "./NewProjectFromSelectionForm";
 import { EmptyState } from "../common/EmptyState";
-import { useDisplayLimit } from "../../hooks/useDisplayLimit";
+import { useLoadMore } from "../../hooks/useLoadMore";
 import { useBulkActions } from "../../hooks/useBulkActions";
 import { useCreateProjectFromSelection } from "../../hooks/useCreateProjectFromSelection";
 import { INBOX_FOLDER } from "../../constants/folders";
@@ -31,10 +31,9 @@ export function ThreadList({ viewMode }: ThreadListProps) {
   const syncAccount = useMailStore((s) => s.syncAccount);
   const selectThread = useMailStore((s) => s.selectThread);
   const clearSelection = useSelectionStore((s) => s.clear);
-  const { visible, hasMore, remaining, showMore } = useDisplayLimit(
-    threads,
-    `${viewMode}:${selectedProjectId ?? ""}:${selectedAccountId ?? ""}`,
-  );
+  const hasMoreThreads = useMailStore((s) => s.hasMoreThreads);
+  const fetchMoreThreads = useMailStore((s) => s.fetchMoreThreads);
+  const { hasMore, loading, loadMore } = useLoadMore(hasMoreThreads, fetchMoreThreads);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,7 +133,7 @@ export function ThreadList({ viewMode }: ThreadListProps) {
         />
       )}
       <div className="flex-1 overflow-y-auto">
-        {visible.map((thread) => (
+        {threads.map((thread) => (
           <ThreadItem
             key={thread.thread_id}
             thread={thread}
@@ -144,10 +143,11 @@ export function ThreadList({ viewMode }: ThreadListProps) {
         ))}
         {hasMore && (
           <button
-            onClick={showMore}
-            className="w-full py-2 text-sm text-blue-600 hover:bg-gray-50"
+            onClick={() => void loadMore()}
+            disabled={loading}
+            className="w-full py-2 text-sm text-blue-600 hover:bg-gray-50 disabled:text-gray-400"
           >
-            もっと見る（残り {remaining.toLocaleString()} 件）
+            {loading ? "読み込み中…" : "もっと見る"}
           </button>
         )}
       </div>

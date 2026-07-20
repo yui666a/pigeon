@@ -78,6 +78,6 @@ describe("UnclassifiedList fetch triggers", () => {
     });
 
     expect(fetchCalls()).toHaveLength(1);
-    expect(fetchCalls()[0][1]).toEqual({ accountId: "acc2" });
+    expect(fetchCalls()[0][1]).toEqual({ accountId: "acc2", limit: 200, offset: 0 });
   });
 });

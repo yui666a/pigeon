@@ -94,7 +94,7 @@ describe("ProjectTree drop", () => {
         case "get_project_directory":
           return Promise.resolve(null);
         case "get_unclassified_threads":
-          return Promise.resolve(unclassified.map(threadOf));
+          return Promise.resolve({ threads: unclassified.map(threadOf), has_more: false });
         case "get_unread_counts":
           return Promise.resolve({ by_project: {}, unclassified: 2 });
         case "bulk_move_mails":
@@ -143,7 +143,7 @@ describe("ProjectTree drop", () => {
         case "get_project_directory":
           return Promise.resolve(null);
         case "get_unclassified_threads":
-          return Promise.resolve(unclassified.map(threadOf));
+          return Promise.resolve({ threads: unclassified.map(threadOf), has_more: false });
         case "get_unread_counts":
           return Promise.resolve({ by_project: {}, unclassified: 2 });
         case "bulk_move_mails":

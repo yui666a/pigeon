@@ -12,16 +12,19 @@ describe("mailApi", () => {
     vi.clearAllMocks();
   });
 
-  it("fetchThreads は get_threads を accountId/folder 付きで呼ぶ", async () => {
-    mockInvoke.mockResolvedValue([]);
+  it("fetchThreads は get_threads を accountId/folder と件数指定つきで呼ぶ", async () => {
+    const page = { threads: [], has_more: false };
+    mockInvoke.mockResolvedValue(page);
 
-    const threads = await mailApi.fetchThreads("acc1", "INBOX");
+    const result = await mailApi.fetchThreads("acc1", "INBOX", 200, 0);
 
     expect(mockInvoke).toHaveBeenCalledWith("get_threads", {
       accountId: "acc1",
       folder: "INBOX",
+      limit: 200,
+      offset: 0,
     });
-    expect(threads).toEqual([]);
+    expect(result).toEqual(page);
   });
 
   it("syncAccount は sync_account を呼び、取り込み件数を返す", async () => {

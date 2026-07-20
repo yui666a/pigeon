@@ -9,7 +9,7 @@ import { ThreadDragItem } from "./ThreadDragItem";
 import { BulkActionBar } from "./BulkActionBar";
 import { NewProjectFromSelectionForm } from "./NewProjectFromSelectionForm";
 import { NewProjectProposal } from "../common/NewProjectProposal";
-import { useDisplayLimit } from "../../hooks/useDisplayLimit";
+import { useLoadMore } from "../../hooks/useLoadMore";
 import { useBulkActions } from "../../hooks/useBulkActions";
 import { useCreateProjectFromSelection } from "../../hooks/useCreateProjectFromSelection";
 import type { Thread } from "../../types/mail";
@@ -29,12 +29,12 @@ export function UnclassifiedList() {
   const selectThread = useMailStore((s) => s.selectThread);
   const projects = useProjectStore((s) => s.projects);
   const clearSelection = useSelectionStore((s) => s.clear);
-  const {
-    visible: visibleThreads,
-    hasMore,
-    remaining,
-    showMore,
-  } = useDisplayLimit(unclassifiedThreads, selectedAccountId);
+  const hasMoreUnclassified = useMailStore((s) => s.hasMoreUnclassified);
+  const fetchMoreUnclassified = useMailStore((s) => s.fetchMoreUnclassified);
+  const { hasMore, loading, loadMore } = useLoadMore(hasMoreUnclassified, () => {
+    if (!selectedAccountId) return;
+    return fetchMoreUnclassified(selectedAccountId);
+  });
 
   const { handleBulkDelete, handleBulkArchive, handleBulkMove, selectedCount } =
     useBulkActions({
@@ -142,7 +142,7 @@ export function UnclassifiedList() {
       {/* スレッド一覧: ペインの残り高さを使ってスクロールする */}
       {unclassifiedThreads.length > 0 && (
         <div className="flex-1 overflow-y-auto">
-          {visibleThreads.map((thread) => (
+          {unclassifiedThreads.map((thread) => (
             <ThreadDragItem
               key={thread.thread_id}
               thread={thread}
@@ -151,10 +151,11 @@ export function UnclassifiedList() {
           ))}
           {hasMore && (
             <button
-              onClick={showMore}
-              className="w-full py-2 text-xs text-blue-600 hover:bg-gray-50"
+              onClick={() => void loadMore()}
+              disabled={loading}
+              className="w-full py-2 text-xs text-blue-600 hover:bg-gray-50 disabled:text-gray-400"
             >
-              もっと見る（残り {remaining.toLocaleString()} 件）
+              {loading ? "読み込み中…" : "もっと見る"}
             </button>
           )}
         </div>

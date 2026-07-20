@@ -91,6 +91,16 @@ export interface Thread {
   projects: ThreadProjectRef[];
 }
 
+/**
+ * スレッド一覧の1ページ分。切り出しの単位はメールではなくスレッド
+ * （メール単位で切るとスレッドの一部だけが窓に入り表示が壊れる）。
+ * 総件数は返さない（毎回の COUNT(*) 全走査を避けるため）。
+ */
+export interface ThreadPage {
+  threads: Thread[];
+  has_more: boolean;
+}
+
 /** 集約表示でスレッドに付ける「どの案件のメールか」の注釈 */
 export interface ThreadProjectRef {
   project_id: string;
