@@ -4,7 +4,7 @@ use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::error::AppError;
 use crate::secure_store::SecureStore;
 use crate::state::{ApprovedAttachments, DbState, SecureStoreState, SyncLocks};
-use crate::usecase::{AuditSink, Driver, SqliteAuditSink};
+use crate::usecase::{AuditSink, Driver, NoOpProgressSink, ProgressSink, SqliteAuditSink};
 
 /// 全 driver（commands / 将来の MCP・agent）が共有する借用コンテキスト。
 /// Tauri が所有する各 managed State への参照を束ね、driver 情報と監査シンクを持つ。
@@ -18,6 +18,8 @@ pub struct Ctx<'a> {
     driver: Driver,
     /// None なら既定の SqliteAuditSink（audit() 参照）。テストで差し替える。
     audit: Option<&'a dyn AuditSink>,
+    /// None なら NoOpProgressSink（progress() 参照）。driver ごとに差し替える。
+    progress: Option<&'a dyn ProgressSink>,
 }
 
 impl<'a> Ctx<'a> {
@@ -37,6 +39,7 @@ impl<'a> Ctx<'a> {
             sync_locks,
             driver: Driver::Ui,
             audit: None,
+            progress: None,
         }
     }
 
@@ -70,6 +73,7 @@ impl<'a> Ctx<'a> {
             sync_locks,
             driver: Driver::Ui,
             audit: None,
+            progress: None,
         }
     }
 
@@ -147,6 +151,18 @@ impl<'a> Ctx<'a> {
         const DEFAULT: &SqliteAuditSink = &SqliteAuditSink;
         self.audit.unwrap_or(DEFAULT)
     }
+
+    /// 進捗シンクを差し替える（GUI: Tauri emit / CLI: stderr / MCP: 破棄）。
+    pub fn with_progress(mut self, sink: &'a dyn ProgressSink) -> Self {
+        self.progress = Some(sink);
+        self
+    }
+
+    /// 進捗シンク。既定は NoOp（進捗を捨てる）。
+    pub fn progress(&self) -> &dyn ProgressSink {
+        const DEFAULT: &NoOpProgressSink = &NoOpProgressSink;
+        self.progress.unwrap_or(DEFAULT)
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +211,22 @@ mod tests {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         assert_eq!(ctx.driver(), crate::usecase::Driver::Ui);
+    }
+
+    #[test]
+    fn test_ctx_progress_defaults_to_noop_and_can_be_replaced() {
+        use crate::usecase::progress::RecordingProgressSink;
+
+        let (db, pending, batches, sync_locks) = build_states();
+        let ctx = Ctx::new_for_test(&db, &pending, &batches, &sync_locks);
+        // 既定は NoOp。呼んでも panic しない
+        ctx.progress().emit("x", &serde_json::json!({}));
+
+        let sink = RecordingProgressSink::new();
+        let ctx = ctx.with_progress(&sink);
+        ctx.progress()
+            .emit("sync-progress", &serde_json::json!({"done": 1}));
+        assert_eq!(sink.events.lock().expect("lock").len(), 1);
     }
 
     #[test]
