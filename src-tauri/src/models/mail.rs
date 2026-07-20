@@ -67,6 +67,20 @@ pub struct Thread {
     pub projects: Vec<ThreadProjectRef>,
 }
 
+/// スレッド一覧の1ページ分。
+///
+/// 一覧取得は必ず上限を持つ（ADR 0006 決定5）。切り出しの単位は「メール」ではなく
+/// 「スレッド」——メール単位で LIMIT すると、同じスレッドの一部のメールだけが
+/// 窓に入り、mail_count や参加者一覧が実データと食い違ったスレッドが UI に出る。
+///
+/// `has_more` は「この後ろにまだスレッドがあるか」。総件数は返さない
+/// （COUNT(*) の全走査を毎回発生させないため）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadPage {
+    pub threads: Vec<Thread>,
+    pub has_more: bool,
+}
+
 /// 集約表示でスレッドに付ける「どの案件のメールか」の注釈。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadProjectRef {
