@@ -1,3 +1,4 @@
+pub mod bootstrap;
 pub mod classifier;
 pub mod cli;
 pub mod commands;
@@ -22,9 +23,7 @@ pub mod usecase;
 #[cfg(test)]
 pub mod test_helpers;
 
-use db::migrations;
 use mail_sync::oauth::OAuthStateStore;
-use rusqlite::Connection;
 use state::DbState;
 use state::EmbeddingRunGuard;
 use state::IdleWatchers;
@@ -57,40 +56,32 @@ pub fn run() {
     // `open` 起動の .app（cwd=/）でも開発時の .env を拾えるようにする（env_config）。
     env_config::load_dotenv();
 
-    let data_dir = dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("Pigeon");
-
-    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
-
-    let db_path = data_dir.join("pigeon.db");
-    db::vec_ext::register();
-    let conn = Connection::open(&db_path).expect("Failed to open database");
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .expect("Failed to enable foreign keys");
-    migrations::run_migrations(&conn).expect("Failed to run migrations");
-
-    // SecureStore のマスター鍵はデバイス固有の乱数を OS キーチェーンに保管する
-    // （ADR 0003）。旧固定鍵のスナップショットは開いた時点で新鍵へ再暗号化する。
-    let key_backend = secure_store::default_master_key_backend(&data_dir);
-    let key = secure_store::resolve_master_key(key_backend.as_ref())
-        .expect("Failed to resolve SecureStore master key");
-    let stronghold_path = data_dir.join("pigeon.stronghold");
-    let (secure_store, migration) =
-        secure_store::SecureStore::open_with_migration(stronghold_path, &key)
-            .expect("Failed to initialize SecureStore");
-    match &migration {
-        secure_store::MasterKeyMigration::MigratedFromLegacy => {
-            eprintln!("[info] secure store: 旧固定鍵のスナップショットを新しいマスター鍵で再暗号化しました");
+    let data_dir = match bootstrap::resolve_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
         }
-        secure_store::MasterKeyMigration::UnreadableBackedUp { backup } => {
+    };
+
+    // GUI と CLI が同じ DB / Stronghold を同時に開くとシークレットが無言で
+    // 消える（Stronghold は排他ロックを取らず後勝ちで上書きする）。
+    // DB を開く前に排他し、_process_lock を run() の間だけ保持する。
+    let _process_lock = match cli::lock::ProcessLock::acquire(&data_dir) {
+        Ok(lock) => lock,
+        Err(_) => {
             eprintln!(
-                "[warn] secure store: 既存スナップショットを復号できなかったため {} に退避しました。アカウントの再認証が必要です",
-                backup.display()
+                "error: Pigeon が既に起動しています（または pigeon-cli 実行中）。既存のプロセスを終了してから再実行してください。"
             );
+            std::process::exit(1);
         }
-        _ => {}
-    }
+    };
+
+    let conn = bootstrap::open_db(&data_dir).expect("Failed to open database");
+
+    let (secure_store, migration) =
+        bootstrap::open_secure_store(&data_dir).expect("Failed to initialize SecureStore");
+    bootstrap::report_master_key_migration(&migration);
 
     // UseCase レジストリ（dispatch バスの能力セット）。全 driver がここを共有する
     let registry = {
