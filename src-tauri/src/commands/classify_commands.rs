@@ -220,7 +220,9 @@ pub async fn suggest_project_from_mails(
     })?;
 
     // --- LLM 実行（ロック外） ---
-    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = secure_store.get()?;
+    let classifier = db.with_conn(|conn| build_classifier(conn, secure_store))?;
     classifier.health_check().await?;
     service::suggest_project_name(classifier.as_ref(), &summaries).await
 }

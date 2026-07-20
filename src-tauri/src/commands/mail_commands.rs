@@ -104,7 +104,8 @@ pub async fn backfill_account(
             exhausted: false,
         });
     }
-    let result = backfill_account_locked(&app, &state, &secure_store.0, &account_id, limit).await;
+    let result =
+        backfill_account_locked(&app, &state, secure_store.get()?, &account_id, limit).await;
     sync_locks.finish(&account_id);
     result
 }

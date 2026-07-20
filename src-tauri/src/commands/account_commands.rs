@@ -21,7 +21,11 @@ pub fn create_account(
     // For PLAIN auth, save password to SecureStore
     if matches!(request.auth_type, AuthType::Plain) {
         if let Some(ref password) = request.password {
-            crate::commands::auth_commands::save_password(&secure_store.0, &account.id, password)?;
+            crate::commands::auth_commands::save_password(
+                secure_store.get()?,
+                &account.id,
+                password,
+            )?;
         }
     }
 

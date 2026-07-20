@@ -64,7 +64,9 @@ pub async fn rescan_project_directory(
     secure_store: State<'_, SecureStoreState>,
     project_id: String,
 ) -> Result<RescanOutcome, AppError> {
-    let classifier = db.with_conn(|conn| build_classifier(conn, &secure_store.0))?;
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = secure_store.get()?;
+    let classifier = db.with_conn(|conn| build_classifier(conn, secure_store))?;
     // cloud フラグは送信可否ポリシー適用のためのもので、build_classifier とは独立。
     // 判定は is_cloud_provider_configured に集約（Vertex 系もクラウド扱い）。
     let cloud = db.with_conn(crate::classifier::factory::is_cloud_provider_configured)?;

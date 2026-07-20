@@ -75,9 +75,11 @@ pub async fn generate_project_note_ai(
     secure_store: State<'_, crate::state::SecureStoreState>,
     project_id: String,
 ) -> Result<GenerateNoteOutcome, AppError> {
+    // SecureStore の解決は DB ロックを取る前に済ませる（ADR 0006 決定 3）
+    let secure_store = secure_store.get()?;
     // 1. スナップショット取得 + 生成器構築（ロック内）
     let (classifier, project_name, mails) = db.with_conn(|conn| {
-        let classifier = crate::classifier::factory::build_classifier(conn, &secure_store.0)?;
+        let classifier = crate::classifier::factory::build_classifier(conn, secure_store)?;
         let project = crate::db::projects::get_project(conn, &project_id)?;
         let mails = crate::db::assignments::get_mails_by_project(conn, &project_id)?;
         Ok((classifier, project.name, mails))

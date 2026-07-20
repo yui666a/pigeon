@@ -77,7 +77,8 @@ pub async fn get_inline_images(
     };
 
     let (auth_type, username, credential) =
-        crate::commands::mail_commands::resolve_imap_credentials(&account, &secure_store.0).await?;
+        crate::commands::mail_commands::resolve_imap_credentials(&account, secure_store.get()?)
+            .await?;
     let mut session = imap_client::connect(
         &account.imap_host,
         account.imap_port,
