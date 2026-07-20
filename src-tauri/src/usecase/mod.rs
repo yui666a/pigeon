@@ -13,6 +13,6 @@ pub use dispatch::dispatch;
 pub use driver::Driver;
 pub use gate::GateOutcome;
 pub use progress::{NoOpProgressSink, ProgressSink};
-pub use registry::Registry;
+pub use registry::{Registry, UseCaseInfo};
 pub use risk::Risk;
 pub use traits::{ErasedUseCase, UseCase};

@@ -11,7 +11,7 @@ use crate::error::AppError;
 use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
 use crate::usecase::{Registry, Risk, UseCase};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct CreateProjectInput {
     pub account_id: String,
     pub name: String,
@@ -44,7 +44,7 @@ impl UseCase for CreateProjectUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct UpdateProjectInput {
     pub id: String,
     pub name: Option<String>,
@@ -74,7 +74,7 @@ impl UseCase for UpdateProjectUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SetProjectParentInput {
     pub project_id: String,
     pub parent_id: Option<String>,
@@ -99,7 +99,7 @@ impl UseCase for SetProjectParentUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ArchiveProjectInput {
     pub project_id: String,
 }
@@ -122,7 +122,7 @@ impl UseCase for ArchiveProjectUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct DeleteProjectInput {
     pub project_id: String,
 }
@@ -144,7 +144,7 @@ impl UseCase for DeleteProjectUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct MergeProjectsInput {
     pub source_id: String,
     pub target_id: String,

@@ -43,7 +43,7 @@ fn archive_risk(ctx: &Ctx, account_id: &str, mail_id: &str) -> Result<Risk, AppE
     )
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct DeleteMailInput {
     pub account_id: String,
     pub mail_id: String,
@@ -80,7 +80,7 @@ impl UseCase for DeleteMailUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ArchiveMailInput {
     pub account_id: String,
     pub mail_id: String,
@@ -122,7 +122,7 @@ impl UseCase for ArchiveMailUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct UnarchiveMailInput {
     pub account_id: String,
     pub mail_id: String,
@@ -149,7 +149,7 @@ impl UseCase for UnarchiveMailUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct BulkDeleteMailsInput {
     pub account_id: String,
     pub mail_ids: Vec<String>,
@@ -195,7 +195,7 @@ impl UseCase for BulkDeleteMailsUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct BulkArchiveMailsInput {
     pub account_id: String,
     pub mail_ids: Vec<String>,

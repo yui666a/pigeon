@@ -10,7 +10,7 @@ use crate::context::Ctx;
 use crate::error::AppError;
 use crate::usecase::{Registry, Risk, UseCase};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct BulkMoveMailsInput {
     pub mail_ids: Vec<String>,
     pub project_id: String,

@@ -9,7 +9,7 @@ use crate::context::Ctx;
 use crate::error::AppError;
 use crate::usecase::{Registry, Risk, UseCase};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SetFlaggedInput {
     pub account_id: String,
     pub mail_id: String,
@@ -44,7 +44,7 @@ impl UseCase for SetFlaggedUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct MarkReadInput {
     pub account_id: String,
     pub mail_id: String,
@@ -77,7 +77,7 @@ impl UseCase for MarkReadUseCase {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct MarkUnreadInput {
     pub account_id: String,
     pub mail_id: String,
