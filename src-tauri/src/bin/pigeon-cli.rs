@@ -36,6 +36,8 @@ enum Commands {
         #[arg(long)]
         project_id: Option<String>,
     },
+    /// アカウント一覧を表示する（他コマンドに渡す account_id はここで調べる）
+    Accounts,
     /// 案件一覧を表示する
     Projects { account_id: String },
     /// スレッド一覧を表示する
@@ -94,7 +96,15 @@ async fn run(cli: Cli) -> Result<(), String> {
             }
             return Ok(());
         }
-        Commands::Mcp => return Err("MCP サーバーは未実装です".to_string()),
+        // MCP は stdout を JSON-RPC が占有する。ここで返り、下の共通処理
+        // （結果の println）を通さない。driver も TTY 判定ではなく
+        // Driver::Mcp を使う（監査ログに MCP 経由と残すため）。
+        // ランタイムは tools/call で初めて必要になるのでサーバー内で遅延して開く。
+        Commands::Mcp => {
+            return pigeon_lib::mcp::server::serve_stdio()
+                .await
+                .map_err(|e| e.to_string())
+        }
         _ => {}
     }
 
@@ -124,6 +134,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 "project_id": project_id,
             }),
         ),
+        Commands::Accounts => ("get_accounts".to_string(), serde_json::json!({})),
         Commands::Projects { account_id } => (
             "get_projects".to_string(),
             serde_json::json!({ "account_id": account_id }),

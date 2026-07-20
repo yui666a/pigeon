@@ -69,12 +69,26 @@
 
 2026-07-15 の #161/#164/#165 で Phase 4-4 まで完了（asyncバス・Sensitive抽出・ゲート本体・audit_log v15・approval_queue v16）。残り:
 
-- 4-5: classify / sync / rescan のバス載せ替え（うち sync / classify は CLI/MCP 設計に含む。rescan は残り）
-- 5-1: MCP server driver / 5-2: 承認キューの消費UI・承認後再実行 / 5-3: 常駐エージェント
+- 4-5: ~~classify / sync~~ / rescan のバス載せ替え → **sync / classify は 2026-07-20 の #210 で完了。rescan は残り**
+- 5-1: ~~MCP server driver~~ → **2026-07-20 に完了**（#209 基盤 / #210 載せ替え / #211 CLI / 本 PR で MCP stdio サーバー）
+- 5-2: 承認キューの消費UI・承認後再実行 → **未着手**
+- 5-3: 常駐エージェント → 未着手
 
-5-1 は CLI driver とあわせて設計済み（`docs/design/2026-07-20-cli-mcp-driver-design.md`）。
+CLI / MCP driver の設計は `docs/design/2026-07-20-cli-mcp-driver-design.md`。
 
-**5-2 は 5-1 の前提になっている**。CLI（非TTY）と MCP から Sensitive 操作を呼ぶと承認キューに積まれるが、承認する導線が無いため**エージェントからのメール送信・案件削除は完了できない**。Read / Reversible（同期・分類・検索・既読・アーカイブ・案件作成）は承認不要なので主要導線は成立する。5-1 完了後、エージェント運用で最初に詰まるのはここ。
+**5-2 は 5-1 の前提になっている。** CLI（非TTY）と MCP から Sensitive 操作を呼ぶと承認キューに積まれるが、承認する導線が無いため**エージェントからのメール送信・案件削除は完了できない**。Read / Reversible（同期・分類・検索・既読・アーカイブ・案件作成）は承認不要なので主要導線は成立する。5-1 が完了した今、エージェント運用で最初に詰まるのはここ。
+
+### 5-4: GUI と CLI / MCP の同時実行（新規・2026-07-20）
+
+現在、**GUI 起動中は CLI / MCP がデータを読めない**。`pigeon.lock` の flock により後から起動した側が弾かれる。
+
+このロックは必須のものである。Stronghold は排他ロックを取らず、2 プロセスが同じスナップショットを開くと後から commit した側が先の書き込みを丸ごと上書きし、**エラーも警告もなくシークレットが消える**（2026-07-20 実測）。ロックを外す選択肢はない。
+
+一方で運用上の制約は大きい。「アプリを閉じてから CLI を叩く」はエージェントに常用させる形と噛み合わない。MCP の `initialize` / `tools/list` は Registry だけで応答するため GUI 起動中でも接続できるが、`tools/call` は弾かれる。
+
+解決策はローカル IPC（Unix domain socket 等）で、GUI が起動中なら CLI / MCP が GUI プロセスへ dispatch を転送する形。GUI 側に受け口を持たせ、`Ctx` の driver は転送元のものを使う（gate の判定を GUI 相当に格上げしない）。
+
+設計時に「まず排他で作り、実際に困ったら IPC を検討する」と判断した経緯がある（`docs/design/2026-07-20-cli-mcp-driver-design.md` の排他制御節）。5-3（常駐エージェント）に着手する段階では前提になる。
 
 2026-07-15 の #166 で Linux の secret-service 鍵保管も対応済み（ADR 0003 更新済み。master.key の廃止は Linux 正式配布時）。
 
