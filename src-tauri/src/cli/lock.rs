@@ -35,10 +35,12 @@ impl ProcessLock {
             .open(&path)
             .map_err(|e| AppError::FileIo(format!("failed to open {}: {e}", path.display())))?;
 
+        // メッセージは「誰がロックを持っているか」だけを述べる。
+        // GUI と CLI の両方がこの関数を呼ぶため、どちらか一方を前提にした
+        // 案内（「アプリを終了してください」等）は呼び出し側で足す。
         file.try_lock_exclusive().map_err(|_| {
             AppError::Validation(
-                "Pigeon が起動中のため CLI から実行できません。アプリを終了してから再実行してください。"
-                    .into(),
+                "他の Pigeon プロセスが起動中です（GUI または pigeon-cli）。".into(),
             )
         })?;
 
