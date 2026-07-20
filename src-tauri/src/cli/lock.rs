@@ -25,7 +25,18 @@ pub struct ProcessLock {
 
 impl ProcessLock {
     /// `data_dir` に対する排他ロックを取る。他プロセスが保持中なら Err。
+    ///
+    /// `hint` には呼び出し元に応じた次の行動を渡す（GUI と CLI で案内が異なるため）。
+    pub fn acquire_with_hint(data_dir: &Path, hint: &str) -> Result<Self, AppError> {
+        Self::acquire_inner(data_dir, hint)
+    }
+
+    /// `data_dir` に対する排他ロックを取る。他プロセスが保持中なら Err。
     pub fn acquire(data_dir: &Path) -> Result<Self, AppError> {
+        Self::acquire_inner(data_dir, "")
+    }
+
+    fn acquire_inner(data_dir: &Path, hint: &str) -> Result<Self, AppError> {
         let path = data_dir.join(LOCK_FILE_NAME);
         let file = OpenOptions::new()
             .create(true)
@@ -35,13 +46,15 @@ impl ProcessLock {
             .open(&path)
             .map_err(|e| AppError::FileIo(format!("failed to open {}: {e}", path.display())))?;
 
-        // メッセージは「誰がロックを持っているか」だけを述べる。
-        // GUI と CLI の両方がこの関数を呼ぶため、どちらか一方を前提にした
-        // 案内（「アプリを終了してください」等）は呼び出し側で足す。
+        // 事実（誰かが保持している）はここで述べ、次の行動（hint）は
+        // 呼び出し元が渡す。GUI と CLI で案内が異なるため。
         file.try_lock_exclusive().map_err(|_| {
-            AppError::Validation(
-                "他の Pigeon プロセスが起動中です（GUI または pigeon-cli）。".into(),
-            )
+            let mut msg = "他の Pigeon プロセスが起動中です（GUI または pigeon-cli）。".to_string();
+            if !hint.is_empty() {
+                msg.push(' ');
+                msg.push_str(hint);
+            }
+            AppError::Validation(msg)
         })?;
 
         Ok(Self { file })

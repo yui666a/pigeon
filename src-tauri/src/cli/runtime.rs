@@ -33,11 +33,10 @@ impl CliRuntime {
 
         // DB / Stronghold を開く前に排他する。Stronghold は自前で排他ロックを
         // 取らず、後から commit した側が先の書き込みを消してしまうため。
-        let lock = ProcessLock::acquire(&data_dir).map_err(|e| {
-            AppError::Validation(format!(
-                "{e} Pigeon アプリを終了してから再実行してください。"
-            ))
-        })?;
+        let lock = ProcessLock::acquire_with_hint(
+            &data_dir,
+            "Pigeon アプリを終了してから再実行してください。",
+        )?;
 
         let conn = bootstrap::open_db(&data_dir)?;
         let (secure_store, migration) = bootstrap::open_secure_store(&data_dir)?;
