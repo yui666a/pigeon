@@ -161,3 +161,36 @@ Stronghold については当初「ファイルロックを取る」と想定し
 - 承認キューの消費 UI・承認後の再実行（BACKLOG 5-2）
 - 常駐エージェント（BACKLOG 5-3）
 - GUI と CLI の同時実行（IPC 転送による共存）
+
+## 使い方
+
+### CLI
+
+    pigeon-cli --help                              # サブコマンド一覧
+    pigeon-cli projects <account_id>               # 案件一覧
+    pigeon-cli threads <account_id> [folder]       # スレッド一覧（既定 INBOX）
+    pigeon-cli unread <account_id>                 # 未読件数
+    pigeon-cli sync <account_id>                   # 同期（進捗は stderr）
+    pigeon-cli search <account_id> "<query>"       # 全文検索
+    pigeon-cli call --list                         # 呼べる UseCase と入力スキーマ
+    pigeon-cli call <name> '<json>'                # UseCase を直接呼ぶ
+    pigeon-cli driver                              # 判定された driver を表示
+    pigeon-cli <任意のコマンド> --json             # 機械可読出力
+
+`driver` と `call --list` は Registry だけで応答できるため、DB も SecureStore も開かない。GUI 起動中でも実行できる。
+
+### MCP
+
+MCP クライアントの設定に次を追加する。
+
+    { "command": "pigeon-cli", "args": ["mcp"] }
+
+`initialize` / `tools/list` / `tools/call` の 3 メソッドに対応する。tools は Registry から自動導出されるため、UseCase をバスに載せれば設定を変えずに露出する。
+
+driver は TTY 判定ではなく `Driver::Mcp` を固定で使う。MCP 経由であることを監査ログに残すためで、`pigeon-cli mcp` が CLI プロセスであっても `CliAutomated` にはしない。
+
+ランタイム（DB / SecureStore）は `tools/call` で初めて開く。`initialize` と `tools/list` は tool 一覧を返すだけで DB もキーチェーンも要らないため、クライアントの接続確認だけで GUI とのロック競合を起こさない。
+
+stdout は JSON-RPC が占有する。進捗は `NoOpProgressSink` に落とし（Ctx に progress を設定しない）、診断出力はすべて stderr へ書く。
+
+UseCase がエラーを返した場合は JSON-RPC のエラーではなく、`isError: true` を含む成功レスポンスで返す（MCP 仕様。プロトコルエラーと UseCase エラーは別物）。ランタイムを開けない場合（GUI 起動中など）はプロトコル以前の環境エラーなので JSON-RPC エラー（`-32603`）で返す。
