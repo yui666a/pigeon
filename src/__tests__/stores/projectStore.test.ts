@@ -25,20 +25,82 @@ describe("projectStore", () => {
   });
 
   describe("fetchProjects", () => {
+    const makeProject = (id: string) => ({
+      id,
+      account_id: "acc1",
+      name: `Project ${id}`,
+      description: null,
+      color: null,
+      is_archived: false,
+      parent_id: null,
+      created_at: "",
+      updated_at: "",
+    });
+
     it("sets projects on success", async () => {
-      const projects = [
-        { id: "p1", account_id: "acc1", name: "Project A", description: null, color: null, is_archived: false, parent_id: null, created_at: "", updated_at: "" },
-      ];
+      const projects = [makeProject("p1")];
       mockInvoke.mockImplementation((cmd: unknown) => {
-        if (cmd === "get_projects") return Promise.resolve(projects);
+        if (cmd === "get_projects_with_directories") {
+          return Promise.resolve(projects.map((p) => ({ ...p, directory: null })));
+        }
         return Promise.resolve(null);
       });
 
       await useProjectStore.getState().fetchProjects("acc1");
 
-      expect(mockInvoke).toHaveBeenCalledWith("get_projects", { accountId: "acc1" });
+      expect(mockInvoke).toHaveBeenCalledWith("get_projects_with_directories", {
+        accountId: "acc1",
+      });
       expect(useProjectStore.getState().projects).toEqual(projects);
       expect(useProjectStore.getState().loading).toBe(false);
+    });
+
+    it("stores each project's directory from the aggregated response", async () => {
+      const dir: ProjectDirectory = {
+        id: "d1",
+        project_id: "p1",
+        path: "/tmp/stage-a",
+        is_primary: true,
+        status: "ok",
+        last_scanned_at: null,
+        created_at: "",
+      };
+      mockInvoke.mockImplementation((cmd: unknown) => {
+        if (cmd === "get_projects_with_directories") {
+          return Promise.resolve([
+            { ...makeProject("p1"), directory: dir },
+            { ...makeProject("p2"), directory: null },
+          ]);
+        }
+        return Promise.resolve(null);
+      });
+
+      await useProjectStore.getState().fetchProjects("acc1");
+
+      expect(useProjectStore.getState().directories).toEqual({ p1: dir, p2: null });
+    });
+
+    it("issues a constant number of invokes regardless of project count", async () => {
+      // N+1 回帰テスト: 案件数に比例して IPC 往復が増えないこと（ADR 0006 射程外の個別改善）
+      const countInvokesFor = async (projectCount: number) => {
+        mockInvoke.mockReset();
+        mockInvoke.mockImplementation((cmd: unknown) => {
+          if (cmd === "get_projects_with_directories") {
+            return Promise.resolve(
+              Array.from({ length: projectCount }, (_, i) => ({
+                ...makeProject(`p${i}`),
+                directory: null,
+              })),
+            );
+          }
+          return Promise.resolve(null);
+        });
+        await useProjectStore.getState().fetchProjects("acc1");
+        return mockInvoke.mock.calls.length;
+      };
+
+      expect(await countInvokesFor(1)).toBe(1);
+      expect(await countInvokesFor(50)).toBe(1);
     });
 
     it("reports an error toast on failure", async () => {
@@ -77,7 +139,8 @@ describe("projectStore", () => {
       });
       mockInvoke.mockImplementation((cmd: unknown) => {
         if (cmd === "delete_project") return Promise.resolve(undefined);
-        if (cmd === "get_projects") return Promise.resolve([p2]);
+        if (cmd === "get_projects_with_directories")
+          return Promise.resolve([p2].map((p) => ({ ...p, directory: null })));
         return Promise.resolve(null);
       });
 
@@ -95,7 +158,8 @@ describe("projectStore", () => {
       });
       mockInvoke.mockImplementation((cmd: unknown) => {
         if (cmd === "delete_project") return Promise.resolve(undefined);
-        if (cmd === "get_projects") return Promise.resolve([p1]);
+        if (cmd === "get_projects_with_directories")
+          return Promise.resolve([p1].map((p) => ({ ...p, directory: null })));
         return Promise.resolve(null);
       });
 
@@ -113,7 +177,8 @@ describe("projectStore", () => {
       });
       mockInvoke.mockImplementation((cmd: unknown) => {
         if (cmd === "delete_project") return Promise.resolve(undefined);
-        if (cmd === "get_projects") return Promise.resolve([p2]);
+        if (cmd === "get_projects_with_directories")
+          return Promise.resolve([p2].map((p) => ({ ...p, directory: null })));
         return Promise.resolve(null);
       });
 
@@ -134,7 +199,7 @@ describe("projectStore", () => {
       });
       mockInvoke.mockImplementation((cmd: unknown) => {
         if (cmd === "archive_project") return Promise.resolve(undefined);
-        if (cmd === "get_projects") return Promise.resolve([]);
+        if (cmd === "get_projects_with_directories") return Promise.resolve([]);
         return Promise.resolve(null);
       });
 
@@ -152,7 +217,8 @@ describe("projectStore", () => {
       useProjectStore.setState({ projects: [p1] });
       mockInvoke.mockImplementation((cmd: unknown) => {
         if (cmd === "set_project_parent") return Promise.resolve(undefined);
-        if (cmd === "get_projects") return Promise.resolve([moved]);
+        if (cmd === "get_projects_with_directories")
+          return Promise.resolve([moved].map((p) => ({ ...p, directory: null })));
         return Promise.resolve(null);
       });
 

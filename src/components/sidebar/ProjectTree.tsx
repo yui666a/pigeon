@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAccountStore } from "../../stores/accountStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -124,8 +124,13 @@ function ProjectListInner({
   } | null>(null);
   const [structuralActionInFlight, setStructuralActionInFlight] = useState(false);
 
-  const tree = buildProjectTree(projects);
-  const aggregatedUnread = aggregateUnread(projects, unreadByProject);
+  // 依存（projects / 未読件数）が変わらない限り再計算しない。どちらも案件数に対して
+  // 木構造を走査するため、無関係な再レンダリングのたびに走らせない
+  const tree = useMemo(() => buildProjectTree(projects), [projects]);
+  const aggregatedUnread = useMemo(
+    () => aggregateUnread(projects, unreadByProject),
+    [projects, unreadByProject],
+  );
 
   const handleDropOnProject = async (projectId: string) => {
     if (!draggingMailIds) return;

@@ -4,7 +4,7 @@ use crate::classifier::service::{ClassifyBatches, PendingClassifications};
 use crate::context::Ctx;
 use crate::db::projects;
 use crate::error::AppError;
-use crate::models::project::Project;
+use crate::models::project::{Project, ProjectWithDirectory};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 use crate::usecase::{dispatch, Registry};
 
@@ -57,6 +57,18 @@ pub async fn get_projects(
     .await?;
     serde_json::from_value(out)
         .map_err(|e| AppError::Validation(format!("unexpected get_projects output: {e}")))
+}
+
+/// 案件一覧を主ディレクトリ付きで返す（サイドバー初期表示用）。
+///
+/// `get_projects` + 案件ごとの `get_project_directory` だと案件数ぶんの IPC 往復に
+/// なるため、1 クエリ・1 往復に集約する。
+#[tauri::command]
+pub fn get_projects_with_directories(
+    state: State<DbState>,
+    account_id: String,
+) -> Result<Vec<ProjectWithDirectory>, AppError> {
+    state.with_conn(|conn| projects::list_projects_with_directories(conn, &account_id))
 }
 
 #[tauri::command]
