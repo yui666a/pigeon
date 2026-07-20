@@ -60,8 +60,8 @@
 
 ```
 Task 1 (Driver::Cli + gate)
-Task 2 (Ctx cfg解除)
-Task 3 (ProgressSink)          ← Task 2
+Task 3 (ProgressSink)          ← 先に実施する
+Task 2 (Ctx cfg解除)           ← Task 3（progress フィールド）に依存
 Task 4 (Registry列挙 + schema)
 Task 5 (read系4つ載せ替え)     ← Task 4
 Task 6 (sync載せ替え)          ← Task 3
@@ -280,7 +280,9 @@ Expected: FAIL `no function or associated item named new_headless`
     }
 ```
 
-注: `progress` フィールドは Task 3 で追加する。Task 3 を先に実施する場合はこの行を含め、後にする場合はこの行を除く。**Task 2 と Task 3 を連続で実施することを推奨する。**
+注: `progress` フィールドは Task 3 で追加する。**Task 3 を先に実施すること** — Task 2 を先にコミットすると存在しないフィールドを初期化することになりコンパイルが通らない。
+
+注: `SecureStore` のインメモリ構築は `SecureStore::in_memory()`（`src-tauri/src/secure_store.rs`）。`SecureStore` は `Stronghold` / `InMemory` の enum で、`in_memory()` はスナップショット I/O を行わない。
 
 `with_driver` から `#[cfg(test)]` を削除:
 
