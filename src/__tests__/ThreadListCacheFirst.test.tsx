@@ -83,7 +83,10 @@ describe("ThreadList renders cache before sync completes", () => {
         return Promise.resolve({ by_project: {}, unclassified: 0 });
       }
       if (command === "get_threads") {
-        return Promise.resolve([thread("m1", "キャッシュ済みの件名")]);
+        return Promise.resolve({
+          threads: [thread("m1", "キャッシュ済みの件名")],
+          has_more: false,
+        });
       }
       return Promise.resolve([]);
     });
@@ -117,11 +120,13 @@ describe("ThreadList renders cache before sync completes", () => {
       }
       if (command === "get_threads") {
         getThreadsCall += 1;
-        return Promise.resolve(
-          getThreadsCall === 1
-            ? [thread("m1", "キャッシュ済みの件名")]
-            : [thread("m1", "キャッシュ済みの件名"), thread("m2", "同期後の新着")],
-        );
+        return Promise.resolve({
+          threads:
+            getThreadsCall === 1
+              ? [thread("m1", "キャッシュ済みの件名")]
+              : [thread("m1", "キャッシュ済みの件名"), thread("m2", "同期後の新着")],
+          has_more: false,
+        });
       }
       return Promise.resolve([]);
     });
@@ -150,7 +155,10 @@ describe("ThreadList renders cache before sync completes", () => {
         return Promise.resolve({ by_project: {}, unclassified: 0 });
       }
       if (command === "get_threads") {
-        return Promise.resolve([thread("m1", "キャッシュ済みの件名")]);
+        return Promise.resolve({
+          threads: [thread("m1", "キャッシュ済みの件名")],
+          has_more: false,
+        });
       }
       return Promise.resolve([]);
     });
