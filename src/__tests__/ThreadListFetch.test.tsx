@@ -47,7 +47,11 @@ describe("ThreadList fetch triggers", () => {
     await act(async () => {});
 
     expect(callsOf("get_threads_by_project")).toHaveLength(1);
-    expect(callsOf("get_threads_by_project")[0][1]).toEqual({ projectId: "p1" });
+    expect(callsOf("get_threads_by_project")[0][1]).toEqual({
+      projectId: "p1",
+      limit: 200,
+      offset: 0,
+    });
     expect(callsOf("sync_account")).toHaveLength(0);
   });
 
@@ -60,6 +64,8 @@ describe("ThreadList fetch triggers", () => {
     expect(callsOf("get_threads")[0][1]).toEqual({
       accountId: "acc1",
       folder: "INBOX",
+      limit: 200,
+      offset: 0,
     });
   });
 

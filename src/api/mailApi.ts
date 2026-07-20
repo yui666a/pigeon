@@ -3,7 +3,7 @@ import type {
   BackfillOutcome,
   BulkResult,
   SendMailRequest,
-  Thread,
+  ThreadPage,
   UnreadCounts,
 } from "../types/mail";
 
@@ -12,11 +12,12 @@ import type {
  * コマンド名・引数の組み立て・戻り型をここに固定する。
  */
 export const mailApi = {
-  fetchThreads: (accountId: string, folder: string) =>
-    invokeCommand<Thread[]>("get_threads", { accountId, folder }),
+  /** スレッド一覧を1ページ分取得する（切り出しはスレッド単位・ADR 0006 決定5） */
+  fetchThreads: (accountId: string, folder: string, limit: number, offset: number) =>
+    invokeCommand<ThreadPage>("get_threads", { accountId, folder, limit, offset }),
 
-  fetchThreadsByProject: (projectId: string) =>
-    invokeCommand<Thread[]>("get_threads_by_project", { projectId }),
+  fetchThreadsByProject: (projectId: string, limit: number, offset: number) =>
+    invokeCommand<ThreadPage>("get_threads_by_project", { projectId, limit, offset }),
 
   /** 取り込んだ件数を返す */
   syncAccount: (accountId: string) =>
@@ -47,8 +48,8 @@ export const mailApi = {
   fetchUnreadCounts: (accountId: string) =>
     invokeCommand<UnreadCounts>("get_unread_counts", { accountId }),
 
-  fetchUnclassifiedThreads: (accountId: string) =>
-    invokeCommand<Thread[]>("get_unclassified_threads", { accountId }),
+  fetchUnclassifiedThreads: (accountId: string, limit: number, offset: number) =>
+    invokeCommand<ThreadPage>("get_unclassified_threads", { accountId, limit, offset }),
 
   bulkDeleteMails: (accountId: string, mailIds: string[]) =>
     invokeCommand<BulkResult>("bulk_delete_mails", { accountId, mailIds }),
