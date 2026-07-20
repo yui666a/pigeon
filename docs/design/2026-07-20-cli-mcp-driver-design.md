@@ -83,6 +83,38 @@ CLI/MCP から呼べるのはバスに載った UseCase だけである。現在
 
 これにより「同期 → 分類 → 検索 → 返信」が CLI/MCP から完結する。`sync_account` は `SyncLocks` による多重起動ガードが現在 command 関数内にあるため、UseCase 側へ移す。
 
+この 2 つは進捗シンク（次節）の追加を前提とする。read 系 4 つは純粋な `with_conn` 呼び出しであり、既存の `SearchMailsUseCase` と同じ形に 1:1 で移せる。
+
+## 進捗シンク
+
+`sync_account` と `classify_batch` は現在 `AppHandle` を使って進捗イベントを emit している。
+
+- `sync_account` → `app.emit("sync-progress", ...)`
+- `classify_batch` → `app.emit("classify-progress", ...)`
+
+`Ctx` は `AppHandle` を持たないため、このままではバスに載らない。`Ctx` に進捗シンクを追加する。
+
+```rust
+audit: Option<&'a dyn AuditSink>,
+progress: Option<&'a dyn ProgressSink>,   // 追加
+```
+
+進捗の出し方は driver ごとに異なるのが自然であり、「全 driver が共有する借用コンテキスト」という `Ctx` の役割に合致する。既存の `AuditSink` と同じ形（`Option<&dyn Trait>` + 既定実装へのフォールバック）に揃える。
+
+| Driver | 実装 |
+|---|---|
+| Ui | `app.emit(...)` で既存のイベント名をそのまま発行 |
+| Cli | stderr に進捗表示（stdout は結果専用に保つ） |
+| Mcp | 破棄（no-op） |
+
+`AuditSink` と同様、進捗の送出失敗は本処理を止めない（ベストエフォート）。既存コードも `let _ = app.emit(...)` で失敗を無視しており、その挙動を維持する。
+
+### `spawn_embedding_pass` の扱い
+
+`sync_account` は同期成功後に `spawn_embedding_pass(app)` で埋め込み生成タスクを起動している。これは進捗通知とは別種の `AppHandle` 依存であり、進捗シンクでは解決しない。
+
+これは UseCase の外に残し、**Tauri command 側で dispatch 成功後に呼ぶ**。CLI から同期した場合は埋め込み生成が走らないが、次回 GUI 起動時の起動処理で消化されるため実害は小さい。
+
 **読み取り系（Risk::Read）**
 
 - `get_threads`
