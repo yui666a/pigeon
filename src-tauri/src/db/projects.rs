@@ -1,7 +1,10 @@
 use crate::db::assignments;
 use crate::error::AppError;
 use crate::models::classifier::ProjectSummary;
-use crate::models::project::{CreateProjectRequest, Project, UpdateProjectRequest};
+use crate::models::directory::ProjectDirectory;
+use crate::models::project::{
+    CreateProjectRequest, Project, ProjectWithDirectory, UpdateProjectRequest,
+};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -87,6 +90,49 @@ pub fn list_projects(conn: &Connection, account_id: &str) -> Result<Vec<Project>
         .query_map(params![account_id], row_to_project)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(projects)
+}
+
+/// 案件一覧を、各案件の主ディレクトリ付きで 1 クエリで返す。
+///
+/// 案件ごとに `get_directory_by_project` を呼ぶと案件数ぶんの IPC 往復が発生する
+/// ため、LEFT JOIN で集約する。ディレクトリ未設定の案件は `directory: None` で
+/// 返り、一覧から脱落しない。絞り込み・並び順は `list_projects` と一致させること。
+pub fn list_projects_with_directories(
+    conn: &Connection,
+    account_id: &str,
+) -> Result<Vec<ProjectWithDirectory>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.account_id, p.name, p.description, p.color, p.is_archived, p.parent_id,
+                p.created_at, p.updated_at,
+                d.id, d.project_id, d.path, d.is_primary, d.status, d.last_scanned_at, d.created_at
+         FROM projects p
+         LEFT JOIN project_directories d
+             ON d.project_id = p.id AND d.is_primary = TRUE
+         WHERE p.account_id = ?1 AND p.is_archived = FALSE
+         ORDER BY p.created_at",
+    )?;
+    let rows = stmt
+        .query_map(params![account_id], |row| {
+            // LEFT JOIN の未マッチ行は d.* が全て NULL。id の有無で Some/None を決める
+            let directory = match row.get::<_, Option<String>>(9)? {
+                Some(id) => Some(ProjectDirectory {
+                    id,
+                    project_id: row.get(10)?,
+                    path: row.get(11)?,
+                    is_primary: row.get(12)?,
+                    status: row.get(13)?,
+                    last_scanned_at: row.get(14)?,
+                    created_at: row.get(15)?,
+                }),
+                None => None,
+            };
+            Ok(ProjectWithDirectory {
+                project: row_to_project(row)?,
+                directory,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// 自分+全子孫の ID を深い順（depth DESC）で返す。
@@ -807,6 +853,85 @@ mod tests {
         let c = &assignments::get_recent_corrections(&conn, "acc1", 1).unwrap()[0];
         assert_eq!(c.from_path.as_deref(), Some("照明"));
         assert_eq!(c.to_path, "音響");
+    }
+
+    #[test]
+    fn test_list_projects_with_directories_returns_empty_for_no_projects() {
+        let conn = setup_db();
+        assert!(list_projects_with_directories(&conn, "acc1")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_list_projects_with_directories_mixes_linked_and_unlinked() {
+        // LEFT JOIN で未紐付けの案件が脱落せず directory=None で返ることを保証する
+        let mut conn = setup_db();
+        insert_child(&conn, "linked", "紐付け済み", None);
+        insert_child(&conn, "bare", "未紐付け", None);
+        crate::db::directories::link_directory(&mut conn, "linked", "/tmp/stage-a").unwrap();
+
+        let rows = list_projects_with_directories(&conn, "acc1").unwrap();
+        assert_eq!(rows.len(), 2, "未紐付けの案件も落とさない");
+
+        let linked = rows.iter().find(|r| r.project.id == "linked").unwrap();
+        let dir = linked.directory.as_ref().expect("紐付け済みは Some");
+        assert_eq!(dir.path, "/tmp/stage-a");
+        assert_eq!(dir.project_id, "linked");
+        assert!(dir.is_primary);
+        assert_eq!(dir.status, "ok");
+
+        let bare = rows.iter().find(|r| r.project.id == "bare").unwrap();
+        assert!(bare.directory.is_none(), "未紐付けは None");
+    }
+
+    #[test]
+    fn test_list_projects_with_directories_matches_list_projects_filtering() {
+        // アーカイブ除外・アカウント絞り込み・created_at 順が list_projects と一致すること
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('acc2', 'Other', 'other@example.com', 'imap.example.com', 'smtp.example.com', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        insert_child(&conn, "keep", "残る", None);
+        insert_child(&conn, "arch", "アーカイブ", None);
+        archive_project(&conn, "arch").unwrap();
+        insert_project_with_id(&conn, "other", "acc2", "別アカウント", None, None, None).unwrap();
+
+        let rows = list_projects_with_directories(&conn, "acc1").unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.project.id.as_str()).collect();
+        assert_eq!(ids, vec!["keep"]);
+
+        let plain: Vec<String> = list_projects(&conn, "acc1")
+            .unwrap()
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, plain, "list_projects と同じ絞り込み・順序であること");
+    }
+
+    #[test]
+    fn test_list_projects_with_directories_ignores_non_primary_rows() {
+        // is_primary = FALSE の行は JOIN されない（重複行で案件が増えない）
+        let mut conn = setup_db();
+        insert_child(&conn, "p1", "案件", None);
+        crate::db::directories::link_directory(&mut conn, "p1", "/tmp/primary").unwrap();
+        conn.execute(
+            "INSERT INTO project_directories (id, project_id, path, is_primary)
+             VALUES ('secondary', 'p1', '/tmp/secondary', FALSE)",
+            [],
+        )
+        .unwrap();
+
+        let rows = list_projects_with_directories(&conn, "acc1").unwrap();
+        assert_eq!(rows.len(), 1, "副ディレクトリで案件が重複しない");
+        assert_eq!(
+            rows[0].directory.as_ref().unwrap().path,
+            "/tmp/primary",
+            "主ディレクトリだけを返す"
+        );
     }
 
     #[test]

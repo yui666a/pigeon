@@ -1,10 +1,19 @@
 import { invokeCommand } from "./client";
-import type { DeleteImpact, EffectiveContextEntry, Project } from "../types/project";
+import type {
+  DeleteImpact,
+  EffectiveContextEntry,
+  Project,
+  ProjectWithDirectory,
+} from "../types/project";
 
 /** 案件（プロジェクト）CRUD 系 Tauri commands の型付きラッパ */
 export const projectApi = {
   fetchProjects: (accountId: string) =>
     invokeCommand<Project[]>("get_projects", { accountId }),
+
+  /** 案件一覧を主ディレクトリ付きで 1 往復で取得する（案件ごとの N+1 往復を避ける） */
+  fetchProjectsWithDirectories: (accountId: string) =>
+    invokeCommand<ProjectWithDirectory[]>("get_projects_with_directories", { accountId }),
 
   createProject: (
     accountId: string,

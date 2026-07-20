@@ -249,6 +249,7 @@ pub fn run() {
             commands::mail_commands::get_recent_unread_subjects,
             commands::project_commands::create_project,
             commands::project_commands::get_projects,
+            commands::project_commands::get_projects_with_directories,
             commands::project_commands::update_project,
             commands::project_commands::set_project_parent,
             commands::project_commands::archive_project,

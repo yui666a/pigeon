@@ -105,14 +105,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   scanningProjects: {},
   expandedIds: loadExpandedIds(),
 
+  /** 案件一覧と各案件の主ディレクトリを 1 往復で取得する。
+   *
+   * 案件ごとに fetchDirectory を呼ぶと IPC が案件数ぶん往復し、かつ 1 件ごとの set で
+   * サイドバーが案件数ぶん再レンダリングされる（ツリー構築と未読集約が毎回再計算）。
+   * 集約コマンドで取得し、projects と directories を 1 回の set で反映する。 */
   fetchProjects: async (accountId) => {
     set({ loading: true });
     try {
-      const projects = await projectApi.fetchProjects(accountId);
-      set({ projects, loading: false });
-      for (const p of projects) {
-        void get().fetchDirectory(p.id);
+      const rows = await projectApi.fetchProjectsWithDirectories(accountId);
+      const projects: Project[] = [];
+      const directories: Record<string, ProjectDirectory | null> = {};
+      for (const { directory, ...project } of rows) {
+        projects.push(project);
+        directories[project.id] = directory;
       }
+      set({ projects, directories, loading: false });
     } catch (e) {
       set({ loading: false });
       useErrorStore.getState().addError(errorMessage(e));
