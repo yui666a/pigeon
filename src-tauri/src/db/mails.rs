@@ -1,6 +1,6 @@
 use crate::db::assignments;
 use crate::error::AppError;
-use crate::models::mail::{Mail, Thread, UnreadCounts};
+use crate::models::mail::{Mail, Thread, ThreadPage, UnreadCounts};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -184,6 +184,62 @@ pub fn get_mails_by_account(
         .query_map(params![account_id, folder], row_to_mail_with_assignment)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(mails)
+}
+
+/// 指定 ID のメールを本文込みで取得する（割り当て注釈つき・date DESC）。
+/// スレッド単位ページングの「本文ハイドレート」段で、窓に入ったスレッドの
+/// メールだけを読むために使う。`ids` が空なら空 Vec（クエリを撃たない）。
+fn get_mails_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<Mail>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {}, mpa.assigned_by, mpa.confidence FROM mails m
+         LEFT JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
+         WHERE m.id IN ({placeholders})
+         ORDER BY m.date DESC",
+        *MAIL_COLUMNS_PREFIXED
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mails = stmt
+        .query_map(
+            rusqlite::params_from_iter(ids.iter()),
+            row_to_mail_with_assignment,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(mails)
+}
+
+/// スレッドのグループ列（新しい順）から1ページ分を切り出し、そのページに
+/// 属するメールだけを本文込みで読んでスレッドへ組み立てる共通処理。
+///
+/// 切り出しの単位が「スレッド」なのがこの関数の要点。メール単位で LIMIT すると
+/// スレッドの一部だけが窓に入り、mail_count・参加者・本文が欠けたスレッドが
+/// UI に出る（ADR 0006 決定5）。ページングは本文を読まないメタ側で行い、
+/// 本文の読み出しは窓に入ったスレッドのメールに限定する。
+fn page_threads_from_groups(
+    conn: &Connection,
+    groups: Vec<Vec<String>>,
+    limit: usize,
+    offset: usize,
+) -> Result<ThreadPage, AppError> {
+    let total = groups.len();
+    let page_ids: Vec<String> = groups
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .flatten()
+        .collect();
+    let has_more = total > offset.saturating_add(limit);
+
+    let mails = get_mails_by_ids(conn, &page_ids)?;
+    // ページ内のメールだけで再度スレッド判定する。窓は必ずスレッド境界で
+    // 切ってあるため、ここでの判定結果は元のグループと一致する
+    let threads = crate::threading::build_threads(mails);
+    Ok(ThreadPage { threads, has_more })
 }
 
 pub fn get_max_uid(conn: &Connection, account_id: &str, folder: &str) -> Result<u32, AppError> {
@@ -438,6 +494,20 @@ pub fn get_threads_by_project(
     let mails = assignments::get_mails_by_projects(conn, &ids)?;
     let assignment_map = assignments::get_assignment_map(conn, &ids)?;
 
+    let mut threads = crate::threading::build_threads(mails);
+    annotate_subtree_projects(conn, &mut threads, &ids, project_id, &assignment_map)?;
+    Ok(threads)
+}
+
+/// サブツリー集約表示で、選択ノード以外の案件に直接所属するメールを含む
+/// スレッドへ相対パス注釈を付ける。全件版・ページング版の双方が共用する。
+fn annotate_subtree_projects(
+    conn: &Connection,
+    threads: &mut [Thread],
+    ids: &[String],
+    project_id: &str,
+    assignment_map: &HashMap<String, String>,
+) -> Result<(), AppError> {
     // 選択ノードからの相対パス表（選択ノード自身は注釈対象外）
     let selected_path = crate::db::projects::project_path_string(conn, project_id)?;
     let prefix = format!("{selected_path} > ");
@@ -448,8 +518,7 @@ pub fn get_threads_by_project(
         rel_paths.insert(pid.clone(), rel);
     }
 
-    let mut threads = crate::threading::build_threads(mails);
-    for thread in &mut threads {
+    for thread in threads.iter_mut() {
         let mut seen = std::collections::HashSet::new();
         for mail in &thread.mails {
             if let Some(pid) = assignment_map.get(&mail.id) {
@@ -464,7 +533,107 @@ pub fn get_threads_by_project(
             }
         }
     }
-    Ok(threads)
+    Ok(())
+}
+
+/// 軽量メタ用の SELECT 句（本文カラムを読まない）。
+const THREAD_META_COLUMNS: &str =
+    "m.id, m.message_id, m.in_reply_to, m.\"references\", m.subject, m.date";
+
+fn row_to_thread_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMailMeta> {
+    Ok(ThreadMailMeta {
+        id: row.get(0)?,
+        message_id: row.get(1)?,
+        in_reply_to: row.get(2)?,
+        references: row.get(3)?,
+        subject: row.get(4)?,
+        date: row.get(5)?,
+    })
+}
+
+/// アカウント+フォルダのメールを軽量メタとして返す（date DESC・本文を読まない）。
+/// スレッド単位ページングの1段目（どのスレッドが窓に入るかの決定）に使う。
+fn get_thread_metas_by_folder(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+) -> Result<Vec<ThreadMailMeta>, AppError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {THREAD_META_COLUMNS} FROM mails m
+         WHERE m.account_id = ?1 AND m.folder = ?2
+         ORDER BY m.date DESC"
+    ))?;
+    let metas = stmt
+        .query_map(params![account_id, folder], row_to_thread_meta)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(metas)
+}
+
+/// 複数案件に所属するメールの軽量メタを返す（date DESC・本文を読まない）。
+fn get_thread_metas_by_projects(
+    conn: &Connection,
+    project_ids: &[String],
+) -> Result<Vec<ThreadMailMeta>, AppError> {
+    if project_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", project_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {THREAD_META_COLUMNS} FROM mails m
+         JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
+         WHERE mpa.project_id IN ({placeholders})
+         ORDER BY m.date DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let metas = stmt
+        .query_map(
+            rusqlite::params_from_iter(project_ids.iter()),
+            row_to_thread_meta,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(metas)
+}
+
+/// アカウント+フォルダのスレッド一覧を1ページ分返す（新しいスレッド順）。
+///
+/// `get_mails_by_account` + `build_threads` の全件版を置き換える。本文
+/// （body_text/body_html）を読むのは窓に入ったスレッドのメールだけで、
+/// スレッド判定に必要な軽量メタのみ全件走査する。
+pub fn get_thread_page_by_account(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<ThreadPage, AppError> {
+    let metas = get_thread_metas_by_folder(conn, account_id, folder)?;
+    let groups = group_mail_ids_into_threads(&metas);
+    page_threads_from_groups(conn, groups, limit, offset)
+}
+
+/// 案件のスレッド一覧を1ページ分返す（サブツリー集約・新しいスレッド順）。
+/// 相対パス注釈の付与は `annotate_subtree_projects` に委譲する。
+pub fn get_thread_page_by_project(
+    conn: &Connection,
+    project_id: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<ThreadPage, AppError> {
+    let all_ids = crate::db::projects::subtree_ids(conn, project_id)?;
+    if all_ids.is_empty() {
+        return Err(AppError::ProjectNotFound(project_id.to_string()));
+    }
+    let ids = filter_active_or_selected(conn, &all_ids, project_id)?;
+
+    let metas = get_thread_metas_by_projects(conn, &ids)?;
+    let groups = group_mail_ids_into_threads(&metas);
+    let mut page = page_threads_from_groups(conn, groups, limit, offset)?;
+
+    let assignment_map = assignments::get_assignment_map(conn, &ids)?;
+    annotate_subtree_projects(conn, &mut page.threads, &ids, project_id, &assignment_map)?;
+    Ok(page)
 }
 
 /// アカウントの全フォルダのメールをスレッド判定用の軽量メタとして返す（date DESC）。
@@ -1277,6 +1446,259 @@ mod tests {
             "同じサブ案件は1エントリにデドゥプされる"
         );
         assert_eq!(threads[0].projects[0].project_id, "sub");
+    }
+
+    // --- スレッド単位ページング（ADR 0006 決定5） ---
+
+    /// 独立した（互いにスレッド結合しない）メールを n 件作る。
+    /// 件名フォールバック結合を避けるため件名も個別にする。
+    fn insert_independent_mails(conn: &Connection, n: usize) {
+        for i in 0..n {
+            let m = make_mail(
+                &format!("m{i:04}"),
+                &format!("<m{i:04}@ex.com>"),
+                &format!("Subject {i:04}"),
+                &format!("2026-07-01T00:{:02}:{:02}", i / 60, i % 60),
+            );
+            insert_mail(conn, &m).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_get_thread_page_by_account_limits_thread_count() {
+        let conn = setup_db();
+        insert_independent_mails(&conn, 10);
+
+        let page = get_thread_page_by_account(&conn, "acc1", "INBOX", 3, 0).unwrap();
+        assert_eq!(page.threads.len(), 3, "limit 件のスレッドだけ返る");
+        assert!(page.has_more, "後続があれば has_more");
+        // date DESC: 最新スレッドが先頭
+        assert_eq!(page.threads[0].subject, "Subject 0009");
+    }
+
+    #[test]
+    fn test_get_thread_page_by_account_offset_pages_without_overlap() {
+        let conn = setup_db();
+        insert_independent_mails(&conn, 10);
+
+        let first = get_thread_page_by_account(&conn, "acc1", "INBOX", 4, 0).unwrap();
+        let second = get_thread_page_by_account(&conn, "acc1", "INBOX", 4, 4).unwrap();
+        let third = get_thread_page_by_account(&conn, "acc1", "INBOX", 4, 8).unwrap();
+
+        assert_eq!(first.threads.len(), 4);
+        assert_eq!(second.threads.len(), 4);
+        assert_eq!(third.threads.len(), 2, "端数ページ");
+        assert!(!third.has_more, "最終ページは has_more = false");
+
+        // 3ページを連結すると全スレッドが重複なく1回ずつ現れる
+        let mut ids: Vec<String> = first
+            .threads
+            .iter()
+            .chain(second.threads.iter())
+            .chain(third.threads.iter())
+            .map(|t| t.thread_id.clone())
+            .collect();
+        let total = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "ページ間で重複しない");
+        assert_eq!(total, 10, "全スレッドを網羅する");
+    }
+
+    /// 本 PR の設計判断の核心。メール単位で切ると壊れるケースを固定する:
+    /// 5通からなる1スレッドを limit=1 で取っても、5通すべてが揃って返ること。
+    #[test]
+    fn test_get_thread_page_keeps_threads_whole() {
+        let conn = setup_db();
+        let root = make_mail("r1", "<r1@ex.com>", "長いスレッド", "2026-07-01T10:00:00");
+        insert_mail(&conn, &root).unwrap();
+        for i in 0..4 {
+            let mut reply = make_mail(
+                &format!("c{i}"),
+                &format!("<c{i}@ex.com>"),
+                "Re: 長いスレッド",
+                &format!("2026-07-01T1{}:00:00", i + 1),
+            );
+            reply.in_reply_to = Some("<r1@ex.com>".into());
+            insert_mail(&conn, &reply).unwrap();
+        }
+
+        let page = get_thread_page_by_account(&conn, "acc1", "INBOX", 1, 0).unwrap();
+        assert_eq!(page.threads.len(), 1);
+        assert_eq!(
+            page.threads[0].mails.len(),
+            5,
+            "スレッドは分断されず全メールが揃う（メール単位LIMITだとここが欠ける）"
+        );
+        assert_eq!(page.threads[0].mail_count, 5);
+        assert!(!page.has_more, "5通は1スレッドなので後続なし");
+    }
+
+    #[test]
+    fn test_get_thread_page_by_account_boundaries() {
+        let conn = setup_db();
+
+        // 0件
+        let empty = get_thread_page_by_account(&conn, "acc1", "INBOX", 10, 0).unwrap();
+        assert!(empty.threads.is_empty());
+        assert!(!empty.has_more);
+
+        // 1件
+        insert_independent_mails(&conn, 1);
+        let one = get_thread_page_by_account(&conn, "acc1", "INBOX", 10, 0).unwrap();
+        assert_eq!(one.threads.len(), 1);
+        assert!(!one.has_more);
+
+        // 上限ちょうど: 5スレッドを limit=5 で取ると has_more = false
+        let conn = setup_db();
+        insert_independent_mails(&conn, 5);
+        let exact = get_thread_page_by_account(&conn, "acc1", "INBOX", 5, 0).unwrap();
+        assert_eq!(exact.threads.len(), 5);
+        assert!(
+            !exact.has_more,
+            "上限ちょうどで後続なしなら has_more = false"
+        );
+
+        // limit = 0 は空ページ（後続はある）
+        let zero = get_thread_page_by_account(&conn, "acc1", "INBOX", 0, 0).unwrap();
+        assert!(zero.threads.is_empty());
+        assert!(zero.has_more);
+
+        // offset が全件を超えたら空
+        let past = get_thread_page_by_account(&conn, "acc1", "INBOX", 5, 99).unwrap();
+        assert!(past.threads.is_empty());
+        assert!(!past.has_more);
+    }
+
+    /// ページングしても割り当て注釈（⚠ 表示に必要）が落ちないこと
+    #[test]
+    fn test_get_thread_page_carries_assignment_annotation() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(&conn, "p1", "acc1", "P", None, None, None)
+            .unwrap();
+        insert_independent_mails(&conn, 3);
+        crate::db::assignments::assign_mail(&conn, "m0002", "p1", "ai", Some(0.55)).unwrap();
+
+        let page = get_thread_page_by_account(&conn, "acc1", "INBOX", 10, 0).unwrap();
+        let mail = page
+            .threads
+            .iter()
+            .flat_map(|t| t.mails.iter())
+            .find(|m| m.id == "m0002")
+            .unwrap();
+        assert_eq!(mail.assigned_by.as_deref(), Some("ai"));
+        assert!((mail.confidence.unwrap() - 0.55).abs() < f64::EPSILON);
+    }
+
+    /// 一覧は INBOX に限定される（Sent 等が混ざらない）が、スレッド判定の
+    /// 手がかりとしての横断メタ取得（get_thread_metas_by_account）は別物
+    #[test]
+    fn test_get_thread_page_by_account_filters_folder() {
+        let conn = setup_db();
+        let inbox = make_mail("m1", "<m1@ex.com>", "Inbox", "2026-07-01T10:00:00");
+        let mut sent = make_mail("m2", "<m2@ex.com>", "Sent", "2026-07-01T11:00:00");
+        sent.folder = "Sent".into();
+        insert_mail(&conn, &inbox).unwrap();
+        insert_mail(&conn, &sent).unwrap();
+
+        let page = get_thread_page_by_account(&conn, "acc1", "INBOX", 10, 0).unwrap();
+        assert_eq!(page.threads.len(), 1);
+        assert_eq!(page.threads[0].subject, "Inbox");
+    }
+
+    #[test]
+    fn test_get_thread_page_by_project_limits_and_keeps_threads_whole() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(&conn, "p1", "acc1", "P", None, None, None)
+            .unwrap();
+        // 独立スレッド3件 + 2通スレッド1件 を p1 に割り当てる
+        insert_independent_mails(&conn, 3);
+        let mut reply = make_mail(
+            "rep",
+            "<rep@ex.com>",
+            "Re: Subject 0000",
+            "2026-07-02T10:00:00",
+        );
+        reply.in_reply_to = Some("<m0000@ex.com>".into());
+        insert_mail(&conn, &reply).unwrap();
+        for id in ["m0000", "m0001", "m0002", "rep"] {
+            crate::db::assignments::assign_mail(&conn, id, "p1", "user", None).unwrap();
+        }
+
+        let page = get_thread_page_by_project(&conn, "p1", 1, 0).unwrap();
+        assert_eq!(page.threads.len(), 1);
+        assert!(page.has_more);
+        // 最新スレッドは rep を含む m0000 のスレッド（2通揃う）
+        assert_eq!(page.threads[0].mails.len(), 2, "スレッドが分断されない");
+
+        let all = get_thread_page_by_project(&conn, "p1", 10, 0).unwrap();
+        assert_eq!(all.threads.len(), 3, "全スレッド");
+        assert!(!all.has_more);
+    }
+
+    #[test]
+    fn test_get_thread_page_by_project_boundaries() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(&conn, "p1", "acc1", "P", None, None, None)
+            .unwrap();
+
+        let empty = get_thread_page_by_project(&conn, "p1", 10, 0).unwrap();
+        assert!(empty.threads.is_empty());
+        assert!(!empty.has_more);
+
+        insert_independent_mails(&conn, 2);
+        for id in ["m0000", "m0001"] {
+            crate::db::assignments::assign_mail(&conn, id, "p1", "user", None).unwrap();
+        }
+        let exact = get_thread_page_by_project(&conn, "p1", 2, 0).unwrap();
+        assert_eq!(exact.threads.len(), 2);
+        assert!(!exact.has_more, "上限ちょうど");
+
+        let past = get_thread_page_by_project(&conn, "p1", 2, 5).unwrap();
+        assert!(past.threads.is_empty());
+    }
+
+    /// 階層集約（サブツリー）の相対パス注釈がページングでも維持されること
+    #[test]
+    fn test_get_thread_page_by_project_keeps_subtree_annotation() {
+        let conn = setup_db();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "root",
+            "acc1",
+            "ツアー",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::projects::insert_project_with_id(
+            &conn,
+            "leaf",
+            "acc1",
+            "音響",
+            None,
+            None,
+            Some("root"),
+        )
+        .unwrap();
+        let m = make_mail("m1", "<m1@ex>", "音響仕込み", "2026-07-18T10:00:00");
+        insert_mail(&conn, &m).unwrap();
+        crate::db::assignments::assign_mail(&conn, "m1", "leaf", "user", None).unwrap();
+
+        let page = get_thread_page_by_project(&conn, "root", 10, 0).unwrap();
+        assert_eq!(page.threads.len(), 1);
+        assert_eq!(page.threads[0].projects.len(), 1);
+        assert_eq!(page.threads[0].projects[0].display_path, "音響");
+    }
+
+    #[test]
+    fn test_get_thread_page_by_project_missing_project() {
+        let conn = setup_db();
+        assert!(matches!(
+            get_thread_page_by_project(&conn, "no-such", 10, 0),
+            Err(AppError::ProjectNotFound(_))
+        ));
     }
 
     #[test]

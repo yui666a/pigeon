@@ -178,27 +178,53 @@ pub fn reject_classification(
 /// 同一スレッドの既存メールが単一の案件に割り当て済みなら、後から届いた返信等の
 /// 未分類メールをその案件へ自動追従させる。一覧を開くたびに再計算する
 /// （設計: docs/archive/specs/2026-07-13-thread-follow-classify-design.md）
+///
+/// 一覧は必ず上限を持ち、切り出しはスレッド単位で行う（ADR 0006 決定5）。
 #[tauri::command]
 pub fn get_unclassified_threads(
     db: State<DbState>,
     pending: State<PendingClassifications>,
     account_id: String,
-) -> Result<Vec<crate::models::mail::Thread>, AppError> {
-    db.with_conn(|conn| get_unclassified_threads_inner(conn, &pending, &account_id))
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<crate::models::mail::ThreadPage, AppError> {
+    let limit = limit
+        .unwrap_or(crate::commands::mail_commands::DEFAULT_THREAD_PAGE_SIZE)
+        .min(crate::commands::mail_commands::MAX_THREAD_PAGE_SIZE);
+    let offset = offset.unwrap_or(0);
+    db.with_conn(|conn| get_unclassified_threads_inner(conn, &pending, &account_id, limit, offset))
 }
 
 fn get_unclassified_threads_inner(
     conn: &rusqlite::Connection,
     pending: &PendingClassifications,
     account_id: &str,
-) -> Result<Vec<crate::models::mail::Thread>, AppError> {
+    limit: usize,
+    offset: usize,
+) -> Result<crate::models::mail::ThreadPage, AppError> {
     let followed = assignments::auto_follow_threads(conn, account_id)?;
     // スレッド追従で割り当てが確定したメールの提案は不要になる
     for mail_id in &followed {
         pending.remove(mail_id)?;
     }
-    let mails = assignments::get_unclassified_mails(conn, account_id)?;
-    Ok(crate::db::mails::build_threads(&mails))
+    // 1段目: 本文を読まない軽量メタでスレッドを構成し、窓をスレッド境界で切る
+    let metas = assignments::get_unclassified_thread_metas(conn, account_id)?;
+    let groups = crate::db::mails::group_mail_ids_into_threads(&metas);
+    let total = groups.len();
+    let page_ids: Vec<String> = groups
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .flatten()
+        .collect();
+    let has_more = total > offset.saturating_add(limit);
+
+    // 2段目: 窓に入ったスレッドのメールだけを本文込みで読む
+    let mails = assignments::get_unclassified_mails_by_ids(conn, &page_ids)?;
+    Ok(crate::models::mail::ThreadPage {
+        threads: crate::db::mails::build_threads(&mails),
+        has_more,
+    })
 }
 
 /// メール1件を案件へ割り当てる本体。`bulk_move_mails` から1件ずつ再利用される。
@@ -611,12 +637,68 @@ mod tests {
             .insert("m2".into(), pending_create_result())
             .unwrap();
 
-        let threads = get_unclassified_threads_inner(&conn, &pending, "acc1").unwrap();
+        let page = get_unclassified_threads_inner(&conn, &pending, "acc1", 200, 0).unwrap();
 
-        assert!(threads.is_empty(), "m2 は追従割り当てされ一覧から消える");
+        assert!(
+            page.threads.is_empty(),
+            "m2 は追従割り当てされ一覧から消える"
+        );
+        assert!(!page.has_more);
         assert!(
             !pending.contains("m2").unwrap(),
             "追従で確定したメールの提案も除去される"
         );
+    }
+
+    /// 未分類一覧もスレッド単位で切る（ADR 0006 決定5）。スレッドが
+    /// 分断されないこと・ページ間で重複しないことを見る
+    #[test]
+    fn test_get_unclassified_threads_pages_by_thread() {
+        let conn = setup_db();
+        let pending = PendingClassifications::default();
+
+        // 独立3スレッド + 2通スレッド1件（計4スレッド、5通）
+        for i in 0..3 {
+            let m = crate::test_helpers::make_mail(
+                &format!("s{i}"),
+                &format!("<s{i}@ex.com>"),
+                &format!("単独 {i}"),
+                &format!("2026-07-12T0{i}:00:00"),
+            );
+            crate::db::mails::insert_mail(&conn, &m).unwrap();
+        }
+        let root =
+            crate::test_helpers::make_mail("r1", "<r1@ex.com>", "会話", "2026-07-12T10:00:00");
+        let mut reply =
+            crate::test_helpers::make_mail("r2", "<r2@ex.com>", "Re: 会話", "2026-07-12T11:00:00");
+        reply.in_reply_to = Some("<r1@ex.com>".into());
+        crate::db::mails::insert_mail(&conn, &root).unwrap();
+        crate::db::mails::insert_mail(&conn, &reply).unwrap();
+
+        let first = get_unclassified_threads_inner(&conn, &pending, "acc1", 1, 0).unwrap();
+        assert_eq!(first.threads.len(), 1);
+        assert!(first.has_more);
+        assert_eq!(
+            first.threads[0].mails.len(),
+            2,
+            "最新スレッドは2通揃って返る（メール単位LIMITなら1通に欠ける）"
+        );
+
+        let rest = get_unclassified_threads_inner(&conn, &pending, "acc1", 10, 1).unwrap();
+        assert_eq!(rest.threads.len(), 3, "残りの単独スレッド");
+        assert!(!rest.has_more);
+
+        // ページ間でメールが重複しない
+        let mut ids: Vec<String> = first
+            .threads
+            .iter()
+            .chain(rest.threads.iter())
+            .flat_map(|t| t.mails.iter().map(|m| m.id.clone()))
+            .collect();
+        let total = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), total);
+        assert_eq!(total, 5, "全メールを網羅する");
     }
 }

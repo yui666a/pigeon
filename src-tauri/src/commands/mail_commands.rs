@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::mail_sync::sync_service;
 use crate::mail_sync::{imap_client, oauth};
 use crate::models::account::{Account, AccountProvider, AuthType};
-use crate::models::mail::{Mail, Thread, UnreadCounts};
+use crate::models::mail::{Mail, ThreadPage, UnreadCounts};
 use crate::state::{DbState, SecureStoreState, SyncLocks};
 
 /// sync-progress イベントの payload
@@ -538,23 +538,48 @@ pub fn get_recent_unread_subjects(
     state.with_conn(|conn| mails::get_recent_unread_subjects(conn, &account_id, limit))
 }
 
+/// 一覧取得の既定ページサイズ。UI の「もっと見る」1回分と揃える。
+pub const DEFAULT_THREAD_PAGE_SIZE: usize = 200;
+
+/// 1リクエストで返せるスレッド数の上限。フロントが巨大な limit を投げても
+/// 全件転送に退化しないための歯止め（ADR 0006 決定5）。
+pub const MAX_THREAD_PAGE_SIZE: usize = 500;
+
+/// limit の指定を正規化する。未指定なら既定値、上限超えは切り詰める。
+fn resolve_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_THREAD_PAGE_SIZE)
+        .min(MAX_THREAD_PAGE_SIZE)
+}
+
+/// INBOX 等のスレッド一覧を1ページ分返す。
+/// 一覧は必ず上限を持つ（ADR 0006 決定5）。切り出しはスレッド単位。
 #[tauri::command]
 pub fn get_threads(
     state: State<DbState>,
     account_id: String,
     folder: String,
-) -> Result<Vec<Thread>, AppError> {
-    let all_mails =
-        state.with_conn(|conn| mails::get_mails_by_account(conn, &account_id, &folder))?;
-    Ok(mails::build_threads(&all_mails))
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ThreadPage, AppError> {
+    let limit = resolve_limit(limit);
+    let offset = offset.unwrap_or(0);
+    state.with_conn(|conn| {
+        mails::get_thread_page_by_account(conn, &account_id, &folder, limit, offset)
+    })
 }
 
+/// 案件のスレッド一覧を1ページ分返す（サブツリー集約）。
 #[tauri::command]
 pub fn get_threads_by_project(
     state: State<DbState>,
     project_id: String,
-) -> Result<Vec<Thread>, AppError> {
-    state.with_conn(|conn| mails::get_threads_by_project(conn, &project_id))
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<ThreadPage, AppError> {
+    let limit = resolve_limit(limit);
+    let offset = offset.unwrap_or(0);
+    state.with_conn(|conn| mails::get_thread_page_by_project(conn, &project_id, limit, offset))
 }
 
 #[cfg(test)]
