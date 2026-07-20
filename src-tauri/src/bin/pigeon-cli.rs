@@ -36,6 +36,8 @@ enum Commands {
         #[arg(long)]
         project_id: Option<String>,
     },
+    /// アカウント一覧を表示する（他コマンドに渡す account_id はここで調べる）
+    Accounts,
     /// 案件一覧を表示する
     Projects { account_id: String },
     /// スレッド一覧を表示する
@@ -132,6 +134,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 "project_id": project_id,
             }),
         ),
+        Commands::Accounts => ("get_accounts".to_string(), serde_json::json!({})),
         Commands::Projects { account_id } => (
             "get_projects".to_string(),
             serde_json::json!({ "account_id": account_id }),
