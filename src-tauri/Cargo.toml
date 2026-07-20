@@ -9,6 +9,16 @@ edition = "2021"
 name = "pigeon_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# [[bin]] を1つでも明示すると autobins が無効になるため、
+# 既存の GUI バイナリ（src/main.rs）も明示的に宣言する。
+[[bin]]
+name = "pigeon"
+path = "src/main.rs"
+
+[[bin]]
+name = "pigeon-cli"
+path = "src/bin/pigeon-cli.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -36,6 +46,9 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
+# GUI/CLI 間のプロセス排他（flock アドバイザリロック）
+fs2 = "0.4"
+clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["compat"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
