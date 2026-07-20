@@ -7,7 +7,7 @@ use crate::models::mail::SearchResult;
 use crate::usecase::{Registry, Risk, UseCase};
 
 /// `search_mails` UseCase の入力。
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SearchMailsInput {
     pub account_id: String,
     pub query: String,
@@ -46,7 +46,7 @@ impl UseCase for SearchMailsUseCase {
 
 /// `semantic_search_mails` UseCase の入力。埋め込み生成（async HTTP）は
 /// command 側で終えてあり、ここではベクトルを受け取るだけ（dispatch は同期 run のため）。
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SemanticSearchInput {
     pub account_id: String,
     pub embedding: Vec<f32>,

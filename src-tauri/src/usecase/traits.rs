@@ -12,7 +12,7 @@ use crate::usecase::Risk;
 /// Send + Sync は Tauri の managed State（レジストリ経由の dyn 共有）に載せるための境界。
 #[async_trait::async_trait]
 pub trait UseCase: Send + Sync {
-    type Input: DeserializeOwned + Send;
+    type Input: DeserializeOwned + Send + schemars::JsonSchema;
     type Output: Serialize;
 
     fn name(&self) -> &'static str;
@@ -30,6 +30,8 @@ pub trait UseCase: Send + Sync {
 #[async_trait::async_trait]
 pub trait ErasedUseCase: Send + Sync {
     fn name(&self) -> &str;
+    /// Input 型から導出した JSON Schema。MCP の tools/list と CLI の引数検証が共用する。
+    fn input_schema(&self) -> Value;
     fn risk_json(&self, input: &Value, ctx: &Ctx) -> Result<Risk, AppError>;
     async fn run_json(&self, input: Value, ctx: &Ctx) -> Result<Value, AppError>;
 }
@@ -38,6 +40,14 @@ pub trait ErasedUseCase: Send + Sync {
 impl<T: UseCase> ErasedUseCase for T {
     fn name(&self) -> &str {
         UseCase::name(self)
+    }
+
+    /// schema のシリアライズは実質失敗しないが、ここで Result を返すと
+    /// 呼び出し側（tools/list や --list）が一様に煩雑になるため、
+    /// 失敗時は最小の object schema にフォールバックする。
+    fn input_schema(&self) -> Value {
+        let schema = schemars::schema_for!(T::Input);
+        serde_json::to_value(schema).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
     }
 
     fn risk_json(&self, input: &Value, ctx: &Ctx) -> Result<Risk, AppError> {
@@ -71,7 +81,7 @@ mod tests {
     use crate::test_helpers::setup_db;
     use crate::usecase::Risk;
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, schemars::JsonSchema)]
     struct EchoInput {
         text: String,
     }

@@ -65,7 +65,7 @@ mod tests {
     use crate::test_helpers::setup_db;
     use crate::usecase::{Driver, InMemoryAuditSink, Registry, Risk, UseCase};
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, schemars::JsonSchema)]
     struct EchoInput {
         text: String,
     }
@@ -89,7 +89,7 @@ mod tests {
         }
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, schemars::JsonSchema)]
     struct NoInput {}
     #[derive(Serialize)]
     struct NoOutput {}

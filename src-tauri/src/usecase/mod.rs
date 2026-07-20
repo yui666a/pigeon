@@ -3,6 +3,7 @@ pub mod cases;
 pub mod dispatch;
 pub mod driver;
 pub mod gate;
+pub mod progress;
 pub mod registry;
 pub mod risk;
 pub mod traits;
@@ -11,6 +12,7 @@ pub use audit::{AuditEntry, AuditSink, InMemoryAuditSink, NoOpAuditSink, SqliteA
 pub use dispatch::dispatch;
 pub use driver::Driver;
 pub use gate::GateOutcome;
-pub use registry::Registry;
+pub use progress::{NoOpProgressSink, ProgressSink};
+pub use registry::{Registry, UseCaseInfo};
 pub use risk::Risk;
 pub use traits::{ErasedUseCase, UseCase};

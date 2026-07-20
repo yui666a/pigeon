@@ -53,6 +53,8 @@ jsonwebtoken = "9"
 unicode-normalization = "0.1"
 sqlite-vec = "0.1.9"
 zerocopy = "0.8"
+# UseCase Input から JSON Schema を導出する（MCP tools/list と CLI の引数検証が共用）
+schemars = "0.8"
 
 # SecureStore マスター鍵の OS キーチェーン保管（ADR 0003）。
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]

@@ -14,7 +14,7 @@ use crate::models::account::{Account, AccountProvider};
 use crate::models::mail::Mail;
 use crate::state::{ApprovedAttachments, DbState, SecureStoreState};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SendMailRequest {
     pub account_id: String,
     pub to: Vec<String>,

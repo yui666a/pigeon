@@ -69,8 +69,12 @@
 
 2026-07-15 の #161/#164/#165 で Phase 4-4 まで完了（asyncバス・Sensitive抽出・ゲート本体・audit_log v15・approval_queue v16）。残り:
 
-- 4-5: classify / sync / rescan のバス載せ替え
+- 4-5: classify / sync / rescan のバス載せ替え（うち sync / classify は CLI/MCP 設計に含む。rescan は残り）
 - 5-1: MCP server driver / 5-2: 承認キューの消費UI・承認後再実行 / 5-3: 常駐エージェント
+
+5-1 は CLI driver とあわせて設計済み（`docs/design/2026-07-20-cli-mcp-driver-design.md`）。
+
+**5-2 は 5-1 の前提になっている**。CLI（非TTY）と MCP から Sensitive 操作を呼ぶと承認キューに積まれるが、承認する導線が無いため**エージェントからのメール送信・案件削除は完了できない**。Read / Reversible（同期・分類・検索・既読・アーカイブ・案件作成）は承認不要なので主要導線は成立する。5-1 完了後、エージェント運用で最初に詰まるのはここ。
 
 2026-07-15 の #166 で Linux の secret-service 鍵保管も対応済み（ADR 0003 更新済み。master.key の廃止は Linux 正式配布時）。
 
