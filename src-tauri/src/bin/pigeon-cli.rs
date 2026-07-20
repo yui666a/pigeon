@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use pigeon_lib::cli::{output, runtime::CliRuntime, tty};
+use pigeon_lib::cli::{output, progress, runtime::CliRuntime, tty};
 use pigeon_lib::usecase::{cases, dispatch, Registry};
 
 #[derive(Parser)]
@@ -26,6 +26,26 @@ enum Commands {
         #[arg(long)]
         list: bool,
     },
+    /// アカウントのメールを同期する
+    Sync { account_id: String },
+    /// メールを全文検索する
+    Search {
+        account_id: String,
+        query: String,
+        /// 案件で絞り込む
+        #[arg(long)]
+        project_id: Option<String>,
+    },
+    /// 案件一覧を表示する
+    Projects { account_id: String },
+    /// スレッド一覧を表示する
+    Threads {
+        account_id: String,
+        #[arg(default_value = "INBOX")]
+        folder: String,
+    },
+    /// 未読件数を表示する
+    Unread { account_id: String },
     /// stdin の TTY 判定から決まる driver を表示する（DB / SecureStore を開かない）
     Driver,
     /// MCP サーバーを stdio で起動する
@@ -52,18 +72,18 @@ fn registry_only() -> Registry {
 async fn run(cli: Cli) -> Result<(), String> {
     let driver = tty::current_driver();
 
-    match cli.command {
-        // driver 判定は TTY だけで決まるのでランタイムを開く前に処理する。
-        // 実ランタイムの起動は OS キーチェーンへのアクセスを伴い、署名前の
-        // バイナリでは確認ダイアログでブロックするため、切り離せる形にしておく。
+    // ランタイム（DB / SecureStore）を必要としないコマンドを先に片付ける。
+    // 実ランタイムの起動は OS キーチェーンへのアクセスを伴うため、
+    // 不要なコマンドで開かないようにする。
+    match &cli.command {
+        // driver 判定は stdin の TTY だけで決まる。
         Commands::Driver => {
             println!("driver={}", driver.as_str());
-            Ok(())
+            return Ok(());
         }
-        // 一覧は Registry を見るだけ。DB / SecureStore は開かない。
+        // 一覧は Registry を見るだけ。
         Commands::Call { list: true, .. } => {
-            let registry = registry_only();
-            let infos = registry.describe();
+            let infos = registry_only().describe();
             if cli.json {
                 let value = serde_json::to_value(&infos).map_err(|e| e.to_string())?;
                 println!("{}", output::render(&value, true));
@@ -72,31 +92,65 @@ async fn run(cli: Cli) -> Result<(), String> {
                     println!("{}", info.name);
                 }
             }
-            Ok(())
+            return Ok(());
         }
+        Commands::Mcp => return Err("MCP サーバーは未実装です".to_string()),
+        _ => {}
+    }
+
+    // 名前付きサブコマンドは call と同じく「UseCase 名 + 入力 JSON」に落ちる。
+    // 特権的な裏口を作らず、全 driver が同じ dispatch を通る（ADR 0004）。
+    let (name, input) = match cli.command {
         Commands::Call { name, input, .. } => {
             let name =
                 name.ok_or_else(|| "UseCase 名を指定してください（一覧は --list）".to_string())?;
             let input: serde_json::Value =
                 serde_json::from_str(&input).map_err(|e| format!("入力 JSON が不正です: {e}"))?;
-            let runtime = CliRuntime::open(driver).map_err(|e| e.to_string())?;
-            call_and_print(&runtime, &name, input, cli.json).await
+            (name, input)
         }
-        Commands::Mcp => Err("MCP サーバーは未実装です".to_string()),
-    }
-}
+        Commands::Sync { account_id } => (
+            "sync_account".to_string(),
+            serde_json::json!({ "account_id": account_id }),
+        ),
+        Commands::Search {
+            account_id,
+            query,
+            project_id,
+        } => (
+            "search_mails".to_string(),
+            serde_json::json!({
+                "account_id": account_id,
+                "query": query,
+                "project_id": project_id,
+            }),
+        ),
+        Commands::Projects { account_id } => (
+            "get_projects".to_string(),
+            serde_json::json!({ "account_id": account_id }),
+        ),
+        Commands::Threads { account_id, folder } => (
+            "get_threads".to_string(),
+            serde_json::json!({ "account_id": account_id, "folder": folder }),
+        ),
+        Commands::Unread { account_id } => (
+            "get_unread_counts".to_string(),
+            serde_json::json!({ "account_id": account_id }),
+        ),
+        // 上の match で return 済み。到達したらそこの分岐漏れなので
+        // panic させずエラーとして返す。
+        Commands::Driver | Commands::Mcp => {
+            return Err("内部エラー: ランタイム不要のコマンドが処理されませんでした".to_string())
+        }
+    };
 
-/// UseCase を dispatch し、結果を stdout に出す。
-async fn call_and_print(
-    runtime: &CliRuntime,
-    name: &str,
-    input: serde_json::Value,
-    as_json: bool,
-) -> Result<(), String> {
-    let ctx = runtime.ctx();
-    let out = dispatch(runtime.registry(), name, input, &ctx)
+    let runtime = CliRuntime::open(driver).map_err(|e| e.to_string())?;
+    // 進捗は stderr へ出し stdout を結果専用に保つ。
+    // ライフタイムの都合で sink は ctx より長生きする必要があり、ここで持つ。
+    let sink = progress::StderrProgressSink;
+    let ctx = runtime.ctx().with_progress(&sink);
+    let out = dispatch(runtime.registry(), &name, input, &ctx)
         .await
         .map_err(|e| e.to_string())?;
-    println!("{}", output::render(&out, as_json));
+    println!("{}", output::render(&out, cli.json));
     Ok(())
 }
