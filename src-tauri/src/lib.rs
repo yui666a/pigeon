@@ -9,6 +9,7 @@ pub mod env_config;
 pub mod error;
 pub mod mail_chunker;
 pub mod mail_sync;
+pub mod mcp;
 pub mod models;
 pub mod project_context;
 pub mod project_note_digest;
