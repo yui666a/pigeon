@@ -43,6 +43,30 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// GUI を伴わない driver（CLI / MCP）用のコンストラクタ。
+    /// Tauri State ではなく SecureStore を直接受け取る。
+    /// CLI では IMAP 認証に secure_store が要るため、Option にせず必須引数にする。
+    pub fn new_headless(
+        db: &'a DbState,
+        secure_store: &'a SecureStore,
+        pending: &'a PendingClassifications,
+        batches: &'a ClassifyBatches,
+        sync_locks: &'a SyncLocks,
+        driver: Driver,
+    ) -> Self {
+        Self {
+            db,
+            secure_store: Some(secure_store),
+            approved_attachments: None,
+            pending,
+            batches,
+            sync_locks,
+            driver,
+            audit: None,
+            progress: None,
+        }
+    }
+
     /// 添付の送信許可リストを持たせる（send_mail use case 用のビルダー）。
     pub fn with_approved_attachments(mut self, approved: &'a ApprovedAttachments) -> Self {
         self.approved_attachments = Some(approved);
@@ -77,9 +101,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// テスト用: driver を差し替える（MCP / Agent 経路のゲート検証用。
-    /// 本番の非 UI driver 構築は Phase 5）。
-    #[cfg(test)]
+    /// driver を差し替える。非 UI driver（CLI / MCP）の構築とテストで使う。
     pub fn with_driver(mut self, driver: Driver) -> Self {
         self.driver = driver;
         self
@@ -211,6 +233,22 @@ mod tests {
         let (db, pending, batches, locks) = build_states();
         let ctx = Ctx::new_for_test(&db, &pending, &batches, &locks);
         assert_eq!(ctx.driver(), crate::usecase::Driver::Ui);
+    }
+
+    #[test]
+    fn test_new_headless_sets_driver_and_secure_store() {
+        let (db, pending, batches, sync_locks) = build_states();
+        let store = SecureStore::in_memory();
+        let ctx = Ctx::new_headless(
+            &db,
+            &store,
+            &pending,
+            &batches,
+            &sync_locks,
+            Driver::CliAutomated,
+        );
+        assert_eq!(ctx.driver(), Driver::CliAutomated);
+        assert!(ctx.secure_store().is_ok());
     }
 
     #[test]
