@@ -176,6 +176,7 @@ const MIGRATIONS: &[Migration] = &[
     (20, migrate_v20),
     (21, migrate_v21),
     (22, migrate_v22),
+    (23, migrate_v23),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
@@ -690,6 +691,29 @@ fn migrate_v22(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 未読集計・未読件名プレビューのための索引。
+///
+/// 既存の索引は `idx_mails_account_folder_uid(account_id, folder, uid)` のみで
+/// `is_read` を含まないため、`get_unread_counts` / `get_recent_unread_subjects` の
+/// 述語（account_id + folder + is_read = 0）は該当 INBOX の全行走査になっていた。
+///
+/// 部分索引（WHERE is_read = 0）を選ぶ理由: 上記2クエリはいずれも未読
+/// （is_read = 0）しか探さず、既読を引く一覧クエリは存在しない。既読は通常
+/// 大多数を占めるため、未読行だけを載せる部分索引の方が索引が小さく保たれ、
+/// 挿入・更新時の維持コストも既読行に対して発生しない。
+/// date を末尾に含めるのは `get_recent_unread_subjects` の ORDER BY date DESC を
+/// 索引順で解決し、ソートを避けるため。
+fn migrate_v23(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_mails_unread
+            ON mails(account_id, folder, date)
+            WHERE is_read = 0;
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,7 +928,7 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((23, migrate_broken_partial));
+        with_broken.push((24, migrate_broken_partial));
 
         let result = apply_migrations(&conn, &with_broken);
         assert!(result.is_err(), "壊れたマイグレーションは失敗する");
@@ -917,7 +941,7 @@ mod tests {
         // schema_version は進んでいない
         assert_eq!(
             schema_version(&conn),
-            22,
+            23,
             "失敗したバージョンに schema_version は進まない"
         );
     }
@@ -930,17 +954,17 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((23, migrate_broken_partial));
+        with_broken.push((24, migrate_broken_partial));
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
         // 修正版で再実行 → duplicate column にならず完走する
         let mut with_fixed: Vec<Migration> = MIGRATIONS.to_vec();
-        with_fixed.push((23, migrate_fixed));
+        with_fixed.push((24, migrate_fixed));
         apply_migrations(&conn, &with_fixed)
             .expect("失敗後の再実行は duplicate column にならず完走する");
 
         assert!(column_exists(&conn, "mails", "broken_col"));
-        assert_eq!(schema_version(&conn), 23);
+        assert_eq!(schema_version(&conn), 24);
     }
 
     #[test]
@@ -950,21 +974,21 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         // v0 から実行し、最後のバージョンだけ失敗させる
         let mut with_broken: Vec<Migration> = MIGRATIONS.to_vec();
-        with_broken.push((23, migrate_broken_partial));
+        with_broken.push((24, migrate_broken_partial));
 
         assert!(apply_migrations(&conn, &with_broken).is_err());
 
-        // 成功済みバージョン（v1〜v22）はコミット済みのまま
+        // 成功済みバージョン（v1〜v23）はコミット済みのまま
         assert_eq!(
             schema_version(&conn),
-            22,
+            23,
             "成功したバージョンまでは確定している"
         );
         assert!(column_exists(&conn, "mails", "is_read"), "v7 は適用済み");
 
         // その後、通常の run_migrations は冪等に成功する
         run_migrations(&conn).unwrap();
-        assert_eq!(schema_version(&conn), 22);
+        assert_eq!(schema_version(&conn), 23);
     }
 
     #[test]
@@ -1083,7 +1107,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1294,7 +1318,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1321,7 +1345,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1476,7 +1500,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1683,7 +1707,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1779,7 +1803,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1898,7 +1922,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -2026,7 +2050,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -2047,7 +2071,7 @@ mod tests {
         let version: i32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -2180,7 +2204,7 @@ mod tests {
 
         // 残りのマイグレーション（v17）を適用
         apply_migrations(&conn, MIGRATIONS).unwrap();
-        assert_eq!(schema_version(&conn), 22);
+        assert_eq!(schema_version(&conn), 23);
 
         let trigger_count: i32 = conn
             .query_row(
@@ -2211,6 +2235,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(body, "サトーノ端末");
+    }
+
+    /// 未読集計の索引（v23）。既存の索引は is_read を含まず、該当 INBOX の
+    /// 全行走査になっていた（ADR 0006 の一覧クエリ方針に付随する索引整備）
+    #[test]
+    fn test_migration_creates_unread_index() {
+        crate::db::vec_ext::register();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        // 部分索引として作られていること
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_mails_unread'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("WHERE is_read = 0"),
+            "未読のみを載せる部分索引であること: {sql}"
+        );
+
+        // クエリプランナが実際にこの索引を使うこと（全表走査に退化していない）
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN
+                 SELECT subject FROM mails
+                 WHERE account_id = 'a1' AND folder = 'INBOX' AND is_read = 0
+                 ORDER BY date DESC LIMIT 5",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            plan.contains("idx_mails_unread"),
+            "未読件名プレビューが新索引を使うこと: {plan}"
+        );
+    }
+
+    /// v23 適用前の DB（v22 まで）にも後から索引を張れること
+    #[test]
+    fn test_migration_v23_applies_on_existing_db() {
+        crate::db::vec_ext::register();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        let upto_v22: Vec<Migration> = MIGRATIONS
+            .iter()
+            .filter(|(v, _)| *v <= 22)
+            .copied()
+            .collect();
+        apply_migrations(&conn, &upto_v22).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), 22);
+
+        // 既存データがある状態で v23 を適用しても壊れない
+        conn.execute(
+            "INSERT INTO accounts (id, name, email, imap_host, smtp_host, auth_type, provider)
+             VALUES ('a1', 'T', 't@e.com', 'i', 's', 'plain', 'other')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO mails (id, account_id, folder, message_id, from_addr, to_addr,
+                                subject, date, uid, fetched_at, is_read)
+             VALUES ('m1', 'a1', 'INBOX', '<m1@e.com>', 'a@e.com', 'b@e.com',
+                     'S', '2026-07-20T10:00:00', 1, '2026-07-20T10:00:00', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_migrations(&conn, MIGRATIONS).unwrap();
+        assert_eq!(get_schema_version(&conn).unwrap(), 23);
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mails
+                 WHERE account_id = 'a1' AND folder = 'INBOX' AND is_read = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "既存の未読行は索引追加後も引ける");
     }
 
     /// AI の全判断を記録するログ。破棄された低確信 assign も残すため、
