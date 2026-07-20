@@ -369,6 +369,139 @@ pub fn run() {
             commands::bulk_commands::bulk_archive_mails,
             commands::bulk_commands::bulk_move_mails,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // `RunEvent` を扱うため build して run する。
+        //
+        // `_process_lock` との関係を補足しておく（取得位置を動かさない理由は L71 の
+        // コメントを参照）: tao の `EventLoop::run` は `-> !` で最後に
+        // `process::exit` を呼ぶため、`run()` は返らず `_process_lock` は
+        // **Drop されない**。flock は OS がプロセス終了時に解放する。
+        // したがって以下のハンドラは必ずロックを保持したまま走る。
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| match event {
+            // 終了要求の時点で flush する（主経路）。
+            //
+            // `Exit` まで待つとウィンドウが消えた後にメインスレッドで scrypt が
+            // 走り、macOS が「終了の遅いアプリ」として強制終了しうる。
+            // `ExitRequested` はウィンドウがまだ存在する段階で発火するため、
+            // ここで済ませておく方が確実に書き切れる。
+            //
+            // `api.prevent_exit()` で終了がキャンセルされても不整合は起きない:
+            // flush はメモリ上の状態をスナップショットへ書くだけで何も捨てず、
+            // 継続後に新しい遅延書き込みが来れば再び未コミットとして記録される。
+            tauri::RunEvent::ExitRequested { .. } => flush_secure_store(app_handle),
+            // 保険。`ExitRequested` を経ずに `Exit` へ至る経路と、
+            // `ExitRequested` での flush が失敗した場合の再試行を担う
+            // （コミット失敗時は未コミット状態へ戻すため、ここで拾い直せる）。
+            // 既に書き切れていれば未コミットの変更が無く、scrypt は走らない。
+            tauri::RunEvent::Exit => flush_secure_store(app_handle),
+            _ => {}
+        });
+}
+
+/// 遅延コミット中の秘密情報をスナップショットへ確定させる（ADR 0006 決定 4）。
+///
+/// 遅延対象は再取得可能な値だけなので、失っても再認証には至らない。とはいえ
+/// 正常終了で捨てる理由は無いので、終了経路で書き切っておく。未コミットの
+/// 変更が無ければスナップショット書き出しは走らないため、繰り返し呼んでも
+/// 終了が遅くなることはない。
+///
+/// 異常終了（強制終了・電源断）ではここは走らない。その場合に失われるのは
+/// アクセストークンのみで、次回同期時にリフレッシュトークンから再取得される。
+fn flush_secure_store(app_handle: &tauri::AppHandle) {
+    use tauri::Manager;
+    flush_secure_store_state(&app_handle.state::<SecureStoreState>());
+}
+
+/// `flush_secure_store` の本体。`AppHandle` はテストで構築できないため、
+/// 判断ロジックだけを state に対する関数として切り出している。
+fn flush_secure_store_state(state: &SecureStoreState) {
+    // 未初期化なら書き込みも遅延分も存在しない。ここで get() すると
+    // 終了時に不要な初期化（数十秒）を走らせてしまうので触らない
+    if !state.is_initialized() {
+        return;
+    }
+    match state.get() {
+        Ok(store) => {
+            if let Err(e) = store.flush() {
+                eprintln!("[warn] secure store: 終了時のフラッシュに失敗しました: {e}");
+            }
+        }
+        // is_initialized() が true なので実際には起きないが、
+        // 終了処理で panic させないため握り潰してログに残す
+        Err(e) => {
+            eprintln!("[warn] secure store: 終了時の解決に失敗しました: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod exit_flush_tests {
+    use super::*;
+    use crate::secure_store::{SecureStore, ACCESS_TOKEN_CACHE_PREFIX};
+
+    // 終了経路の flush 配線が外れていないことのリグレッションテスト。
+    //
+    // Deferrable な書き込みは insert 時点ではコミットされないため、終了時に
+    // flush が呼ばれないと未コミットのまま失われる。RunEvent ハンドラが将来
+    // 削除されてもここで気づけるようにする。実 Stronghold は使わない
+    // （スナップショット I/O が 1 回 55 秒）。
+
+    #[test]
+    fn test_exit_flush_reaches_initialized_store() {
+        // 遅延コミット対象のキーを書いてから終了処理を走らせる
+        let store = SecureStore::in_memory();
+        store
+            .insert(&format!("{ACCESS_TOKEN_CACHE_PREFIX}acc1"), b"at")
+            .unwrap();
+        let state = SecureStoreState::ready(store);
+
+        flush_secure_store_state(&state);
+
+        let flushed = state
+            .get()
+            .unwrap()
+            .as_in_memory()
+            .expect("in-memory store")
+            .flush_count();
+        assert_eq!(
+            flushed, 1,
+            "終了時に flush が呼ばれる（Deferrable な書き込みを未コミットで残さない）"
+        );
+    }
+
+    #[test]
+    fn test_exit_flush_does_not_initialize_unused_store() {
+        // 一度も秘密情報に触れずに終了した場合、ここで初期化を走らせない。
+        // 走らせると終了時に数十秒の scrypt が発生する
+        let state = SecureStoreState::lazy(|| {
+            panic!("終了時に SecureStore を初期化してはならない");
+        });
+
+        flush_secure_store_state(&state);
+
+        assert!(
+            !state.is_initialized(),
+            "未初期化のまま終了する（初期化を誘発しない）"
+        );
+    }
+
+    #[test]
+    fn test_exit_flush_is_safe_to_call_twice() {
+        // ExitRequested と Exit の二重呼び出し。flush 自体が冪等であり、
+        // 二度呼んでもエラーにならないこと
+        let store = SecureStore::in_memory();
+        let state = SecureStoreState::ready(store);
+
+        flush_secure_store_state(&state);
+        flush_secure_store_state(&state);
+
+        let flushed = state
+            .get()
+            .unwrap()
+            .as_in_memory()
+            .expect("in-memory store")
+            .flush_count();
+        assert_eq!(flushed, 2, "二重呼び出しでも安全に完了する");
+    }
 }
