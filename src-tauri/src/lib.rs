@@ -31,6 +31,25 @@ use state::SecureStoreState;
 use state::SyncLocks;
 use std::sync::Mutex;
 
+/// Tauri のイベントとして進捗を発行する ProgressSink。GUI driver 用。
+pub struct TauriProgressSink {
+    app: tauri::AppHandle,
+}
+
+impl TauriProgressSink {
+    pub fn new(app: tauri::AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl usecase::ProgressSink for TauriProgressSink {
+    fn emit(&self, event: &str, payload: &serde_json::Value) {
+        use tauri::Emitter;
+        // 進捗はベストエフォート（emit 失敗で本処理は止めない）
+        let _ = self.app.emit(event, payload);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // cwd 起点で見つからなければ実行ファイル位置から上方探索する。
