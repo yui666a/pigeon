@@ -160,7 +160,7 @@ Stronghold については当初「ファイルロックを取る」と想定し
 - 残り約 46 個の Tauri command の載せ替え
 - 承認キューの消費 UI・承認後の再実行（BACKLOG 5-2）
 - 常駐エージェント（BACKLOG 5-3）
-- GUI と CLI の同時実行（IPC 転送による共存）
+- GUI と CLI の同時実行（IPC 転送による共存。BACKLOG 5-4）
 
 ## 使い方
 
