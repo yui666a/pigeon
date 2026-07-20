@@ -1437,15 +1437,23 @@ name = "pigeon-cli"
 path = "src/bin/pigeon-cli.rs"
 ```
 
-- [ ] **Step 2: GUI 同時起動時の挙動を実機確認**
+- [x] **Step 2: GUI 同時起動時の挙動を実機確認（検証済み・実装不要）**
 
-Run: GUI（`pnpm tauri dev`）を起動した状態で、別ターミナルから最小の Rust テストプログラムか既存のテストで Stronghold を開いてみる。
+2026-07-20 に実測した。結論は **ロックファイル方式が必須**。
 
-確認すること:
-- Stronghold の open がエラーを返すか
-- エラーを返さない場合、スナップショットが破損しないか
+同一スナップショットを 2 インスタンスから開いて書き込む検証の結果:
 
-**この結果に応じて Step 3 の実装方針を決める。** 結果を作業ログかコミットメッセージに残すこと。
+```
+2つ目の open      = 成功（ファイルロックを取らない）
+2つ目からの読み取り = 成功（1つ目の書き込みが見える）
+最終状態           = 2つ目が書いた値が消滅
+```
+
+**Stronghold は排他ロックを取らず、後から `commit_with_keyprovider` した側が先の書き込みを丸ごと上書きする。** エラーも警告も出ない。GUI 起動中に CLI から認証情報を触ると、**無言でシークレットが消える**。
+
+`secure_store.rs` の `StrongholdStore::new` にも「create_client を先に呼ぶと空クライアントが既存データを覆い隠し、次の commit でスナップショットを空内容で上書きしてしまう（データ消失）」という同種の過去バグの記録がある。
+
+したがって Step 3 では**ロックファイルによる排他を必ず実装する**。「開けたかどうか」では検出できない。
 
 - [ ] **Step 3: ランタイムを実装**
 
@@ -1515,12 +1523,44 @@ impl CliRuntime {
 
 `open_db()` と `open_secure_store()` は `lib.rs` の `run()` 内にある初期化処理を関数として切り出して共用する。**`lib.rs` から重複コピーせず、共通関数に括り出して両者から呼ぶこと。** 切り出し先は `src-tauri/src/state.rs` か新規 `src-tauri/src/bootstrap.rs` が適切。
 
-GUI 同時起動の検出は Step 2 の結果に応じて `open()` の冒頭に実装し、失敗時は次のエラーを返す:
+#### プロセスロック（必須）
+
+Step 2 の検証により、Stronghold は排他ロックを取らず後勝ちでデータを消すことが判明している。**GUI と CLI の同時実行は必ずロックファイルで防ぐこと。**
+
+`src-tauri/src/cli/lock.rs` を作り、次の性質を持つロックを実装する。
+
+- データディレクトリ（DB と同じ場所）に `pigeon.lock` を作る
+- **アドバイザリロックを使う**（`flock(2)` / `fcntl`）。ファイルの存在有無で判定してはいけない — プロセスがクラッシュするとロックファイルが残り、以後永久に起動できなくなる。flock は OS がプロセス終了時に自動解放する
+- crate は `fs2`（`FileExt::try_lock_exclusive`）を使う。`Cargo.toml` に `fs2 = "0.4"` を追加する
+- ロック取得失敗は `AppError::Validation` にし、次のメッセージを返す:
 
 ```rust
 return Err(AppError::Validation(
     "Pigeon が起動中のため CLI から実行できません。アプリを終了してから再実行してください。".into(),
 ));
+```
+
+- ロックは `CliRuntime` がフィールドとして保持し、`CliRuntime` の drop まで生かす。取得後すぐスコープを抜けると解放されてしまう
+
+**GUI 側にも同じロックを取らせること。** CLI だけがロックを取っても、GUI が後から起動すれば同じ競合が起きる。`lib.rs` の `run()` で DB を開く前に取得し、失敗したら既存プロセスがある旨を出して終了する。
+
+テスト:
+
+```rust
+#[test]
+fn test_second_lock_fails_while_first_is_held() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let first = ProcessLock::acquire(dir.path()).expect("1つ目は取得できる");
+    assert!(
+        ProcessLock::acquire(dir.path()).is_err(),
+        "保持中は2つ目を取得できない"
+    );
+    drop(first);
+    assert!(
+        ProcessLock::acquire(dir.path()).is_ok(),
+        "解放後は再取得できる"
+    );
+}
 ```
 
 - [ ] **Step 4: 最小のエントリポイントを作る**
