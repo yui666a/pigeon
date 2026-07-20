@@ -1,4 +1,5 @@
 pub mod assign;
+pub mod classify;
 pub mod flag;
 pub mod mailbox;
 pub mod project;
@@ -17,4 +18,5 @@ pub fn register_all(registry: &mut Registry) {
     send::register_send_cases(registry);
     project::register_project_cases(registry);
     sync::register_sync_cases(registry);
+    classify::register_classify_cases(registry);
 }
