@@ -51,19 +51,20 @@ describe("ThreadList fetch triggers", () => {
     expect(callsOf("sync_account")).toHaveLength(0);
   });
 
-  it("syncs then fetches inbox threads in threads view", async () => {
+  it("fetches inbox threads from cache and syncs in threads view", async () => {
     render(<ThreadList viewMode="threads" />);
     await act(async () => {});
 
     expect(callsOf("sync_account")).toHaveLength(1);
-    expect(callsOf("get_threads")).toHaveLength(1);
+    // キャッシュの先行取得と、同期完了後の再取得の2回
+    expect(callsOf("get_threads")).toHaveLength(2);
     expect(callsOf("get_threads")[0][1]).toEqual({
       accountId: "acc1",
       folder: "INBOX",
     });
   });
 
-  it("skips fetching threads when sync requires reauth", async () => {
+  it("skips the post-sync refetch when sync requires reauth", async () => {
     mockInvoke.mockImplementation((command: unknown) => {
       if (command === "sync_account") {
         return Promise.reject("Reauth required: acc1");
@@ -75,7 +76,8 @@ describe("ThreadList fetch triggers", () => {
     await act(async () => {});
 
     expect(useMailStore.getState().needsReauth).toBe(true);
-    expect(callsOf("get_threads")).toHaveLength(0);
+    // 先行のキャッシュ取得のみ。再認証が必要なら同期後の再取得はしない
+    expect(callsOf("get_threads")).toHaveLength(1);
   });
 
   it("does not fetch stale threads after switching accounts mid-sync", async () => {
@@ -101,13 +103,18 @@ describe("ThreadList fetch triggers", () => {
     await act(async () => {
       useAccountStore.setState({ selectedAccountId: "acc2" });
     });
+    const acc1CallsBefore = callsOf("get_threads").filter(
+      (c) => (c[1] as { accountId: string }).accountId === "acc1",
+    ).length;
+
     await act(async () => {
       resolveFirstSync(0);
     });
 
-    const staleCalls = callsOf("get_threads").filter(
+    const acc1CallsAfter = callsOf("get_threads").filter(
       (c) => (c[1] as { accountId: string }).accountId === "acc1",
-    );
-    expect(staleCalls).toHaveLength(0);
+    ).length;
+    // 切替後に acc1 の同期が完了しても、古い結果で新しい一覧を上書きしない
+    expect(acc1CallsAfter).toBe(acc1CallsBefore);
   });
 });
