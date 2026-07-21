@@ -4,6 +4,9 @@ version = "0.1.2"
 description = "AI-powered email client that auto-groups mail by project"
 authors = ["you"]
 edition = "2021"
+# バイナリが複数あると `cargo run`（tauri dev が内部で使う）が対象を決められない。
+# GUI 本体を既定にする。CLI は `cargo run --bin pigeon-cli` で明示的に起動する。
+default-run = "pigeon"
 
 [lib]
 name = "pigeon_lib"
