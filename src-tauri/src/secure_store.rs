@@ -259,6 +259,98 @@ pub enum MasterKeyMigration {
     UnreadableBackedUp { backup: PathBuf },
 }
 
+/// 秘密情報を失ったときの回復コストによる書き込みの分類（ADR 0006 決定 4）。
+///
+/// Stronghold のコミットは scrypt（work factor 19、`iota-crypto` の
+/// `RECOMMENDED_MINIMUM_ENCRYPT_WORK_FACTOR`）でスナップショット鍵を導出し直すため、
+/// 保管件数や値の大きさに関係なく 1 回あたり秒オーダーの固定コストがかかる。
+/// この KDF は「性能のために弱めてはならない」ものであり（ADR 0006 却下案・
+/// `stronghold_engine` のソースコメントの双方が明記）、削れるのは**コミットの回数**
+/// だけである。
+///
+/// そこで「失ったときに何が起きるか」で書き込みを二分し、回復不能なものだけを
+/// 即座に永続化する。速度のために耐久性を一律に捨てるのではなく、捨てても
+/// ユーザーに影響が出ないものだけを遅延させる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Durability {
+    /// 失うとユーザーが再認証・再入力を強いられる秘密（リフレッシュトークンを含む
+    /// OAuth 一式・パスワード・API キー・SA JSON）。書き込み時に必ずコミットする。
+    Critical,
+    /// 失っても他の秘密から再取得でき、ユーザー操作を必要としない値。
+    /// コミットを遅延させてよい。
+    Deferrable,
+}
+
+impl Durability {
+    /// キー名から耐久性クラスを決める。
+    ///
+    /// **未知のキーは `Critical` に倒す。** 新しい秘密種別が追加されたときに
+    /// 分類を書き忘れても、「黙って失われる」side ではなく「遅いが安全」side に
+    /// 落ちるようにするための既定値である。
+    pub fn of_key(key: &str) -> Self {
+        if key.starts_with(ACCESS_TOKEN_CACHE_PREFIX) {
+            Durability::Deferrable
+        } else {
+            Durability::Critical
+        }
+    }
+}
+
+/// 再取得可能なアクセストークンのキャッシュに使うキー接頭辞。
+/// この接頭辞を持つ値だけが遅延コミットの対象になる。
+pub const ACCESS_TOKEN_CACHE_PREFIX: &str = "access_token_cache_";
+
+/// 未コミットの変更があるかを追跡し、「いまコミットすべきか」を判断する。
+///
+/// `Critical` な書き込みは、そこまでに溜まった `Deferrable` な変更も巻き込んで
+/// 1 回のコミットで永続化する。遅延分のために追加のコミットは発生しない。
+#[derive(Debug, Default)]
+struct PendingCommit {
+    dirty: std::sync::atomic::AtomicBool,
+}
+
+impl PendingCommit {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// 書き込みを記録し、いまコミットすべきなら true を返す。
+    /// true を返した時点で未コミット状態は解消済みとして扱う。
+    fn record(&self, durability: Durability) -> bool {
+        use std::sync::atomic::Ordering;
+        match durability {
+            // 溜まっていた Deferrable もこのコミットで一緒に永続化される
+            Durability::Critical => {
+                self.dirty.store(false, Ordering::SeqCst);
+                true
+            }
+            Durability::Deferrable => {
+                self.dirty.store(true, Ordering::SeqCst);
+                false
+            }
+        }
+    }
+
+    /// 未コミットの変更があれば true を返し、同時に解消済みにする。
+    /// 変更が無いときにコミットしないことで、無駄な scrypt を避ける。
+    fn take_if_uncommitted(&self) -> bool {
+        self.dirty.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// コミットに失敗したときに未コミット状態へ戻す。
+    /// 失敗したまま「コミット済み」にすると、遅延中だった変更が
+    /// 次の flush でも拾われずに失われる。
+    fn restore_after_failed_commit(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 未コミットの変更が残っているか（コミット判断の検証用）。
+    #[cfg(test)]
+    fn has_uncommitted(&self) -> bool {
+        self.dirty.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// Simple secure key-value store backed by the filesystem.
 /// Tokens and passwords are stored as JSON in an encrypted file using iota_stronghold.
 /// For now, we use a simpler approach: an in-memory HashMap persisted to an encrypted JSON file
@@ -268,6 +360,9 @@ pub enum MasterKeyMigration {
 /// We use our own wrapper for Rust-side operations.
 pub struct StrongholdStore {
     inner: Mutex<SecureStoreInner>,
+    /// 未コミットの遅延書き込みの有無。`inner` とは独立に触れるよう
+    /// Mutex の外に置く（`has_uncommitted` のためにロックを取らない）。
+    pending: PendingCommit,
 }
 
 /// 秘密情報の保管先。本番は Stronghold、テストは InMemory。
@@ -275,8 +370,10 @@ pub struct StrongholdStore {
 /// enum ディスパッチにより呼び出し側の `&SecureStore` を変えずに、
 /// テストで実 Stronghold（スナップショット I/O が 1 回 55 秒）を回避する。
 pub enum SecureStore {
-    Stronghold(StrongholdStore),
-    InMemory(Mutex<std::collections::HashMap<String, Vec<u8>>>),
+    /// Box で包むのは、Stronghold 側が InMemory より大幅に大きく、
+    /// enum 全体のサイズが常に大きい方へ引きずられるため（clippy::large_enum_variant）。
+    Stronghold(Box<StrongholdStore>),
+    InMemory(InMemoryStore),
 }
 
 struct SecureStoreInner {
@@ -318,6 +415,7 @@ impl StrongholdStore {
                 keyprovider,
                 client_path,
             }),
+            pending: PendingCommit::new(),
         })
     }
 
@@ -383,11 +481,38 @@ impl StrongholdStore {
         store
             .insert(key.as_bytes().to_vec(), value.to_vec(), None)
             .map_err(|e| AppError::Stronghold(format!("Failed to insert: {}", e)))?;
+        // ここまででメモリ上の状態は更新済み。get() は常に最新値を読む。
+        // スナップショットへの書き出しは耐久性クラスに応じて判断する
+        if self.pending.record(Durability::of_key(key)) {
+            self.commit_or_restore(&inner)?;
+        }
+        Ok(())
+    }
+
+    /// コミットし、失敗したら未コミット状態へ戻す（次の機会に再試行させる）。
+    fn commit_or_restore(&self, inner: &SecureStoreInner) -> Result<(), AppError> {
+        Self::commit(inner).inspect_err(|_| self.pending.restore_after_failed_commit())
+    }
+
+    /// メモリ上の状態をスナップショットへ書き出す（scrypt が走る重い処理）。
+    fn commit(inner: &SecureStoreInner) -> Result<(), AppError> {
         inner
             .stronghold
             .commit_with_keyprovider(&inner.snapshot_path, &inner.keyprovider)
-            .map_err(|e| AppError::Stronghold(format!("Failed to save: {}", e)))?;
-        Ok(())
+            .map_err(|e| AppError::Stronghold(format!("Failed to save: {}", e)))
+    }
+
+    /// 未コミットの遅延書き込みがあればスナップショットへ書き出す。
+    /// 変更が無ければ何もしない（無駄な scrypt を走らせない）。
+    fn flush(&self) -> Result<(), AppError> {
+        if !self.pending.take_if_uncommitted() {
+            return Ok(());
+        }
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AppError::Stronghold(e.to_string()))?;
+        self.commit_or_restore(&inner)
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, AppError> {
@@ -416,20 +541,46 @@ impl StrongholdStore {
             .map_err(|e| AppError::Stronghold(format!("Failed to get client: {}", e)))?;
         let store = client.store();
         let _ = store.delete(key.as_bytes());
-        inner
-            .stronghold
-            .commit_with_keyprovider(&inner.snapshot_path, &inner.keyprovider)
-            .map_err(|e| AppError::Stronghold(format!("Failed to save: {}", e)))?;
+        // 削除は「秘密を消す」操作なので、Critical なキーでは即座に永続化する。
+        // 遅延させると削除したはずの秘密がスナップショットに残り続ける
+        if self.pending.record(Durability::of_key(key)) {
+            self.commit_or_restore(&inner)?;
+        }
         Ok(())
+    }
+}
+
+impl Drop for StrongholdStore {
+    /// 遅延分の取りこぼしを防ぐが、**効くのは CLI / MCP とテストだけである。**
+    ///
+    /// - CLI / MCP: `CliRuntime` が `SecureStore` を値で保持し、`_lock`
+    ///   （`ProcessLock`）より前に宣言されている。構造体のフィールドは宣言順に
+    ///   drop されるため、ここでの flush はロック解放より先に走る。
+    ///   CLI / MCP は eager 初期化のため、**これが唯一の flush 経路**である。
+    /// - GUI: **到達しない。** `SecureStoreState` に `Drop` は無く、Tauri が
+    ///   `manage` した state は `cleanup_before_exit` でも drop されない
+    ///   （tray と resources_table のみ clear される）。加えて tao の
+    ///   `EventLoop::run` は `-> !` で `process::exit` するので `run()` の
+    ///   ローカルも drop されない。GUI の flush は `lib.rs` の
+    ///   `RunEvent::ExitRequested` / `RunEvent::Exit` ハンドラが担っており、
+    ///   **この `Drop` を保険として当てにしてはいけない**（当てにして
+    ///   ハンドラを外すと GUI で遅延分が確定しなくなる）。
+    ///
+    /// いずれにせよ異常終了（強制終了・電源断）では走らないため、耐久性の
+    /// 保証ではなく best-effort である。
+    fn drop(&mut self) {
+        if let Err(e) = self.flush() {
+            eprintln!("[warn] secure store: failed to flush pending writes on drop: {e}");
+        }
     }
 }
 
 impl SecureStore {
     /// スナップショットを現行鍵で開く（本番: Stronghold バリアント）。
     pub fn new(path: PathBuf, password: &[u8]) -> Result<Self, AppError> {
-        Ok(SecureStore::Stronghold(StrongholdStore::new(
+        Ok(SecureStore::Stronghold(Box::new(StrongholdStore::new(
             path, password,
-        )?))
+        )?)))
     }
 
     /// スナップショットを現行鍵で開く。開けない場合は旧固定鍵からの移行を試み、
@@ -439,19 +590,31 @@ impl SecureStore {
         key: &[u8],
     ) -> Result<(Self, MasterKeyMigration), AppError> {
         let (store, migration) = StrongholdStore::open_with_migration(path, key)?;
-        Ok((SecureStore::Stronghold(store), migration))
+        Ok((SecureStore::Stronghold(Box::new(store)), migration))
     }
 
     /// テスト/フォールバック用のインメモリ実装。スナップショット I/O を行わない。
     pub fn in_memory() -> Self {
-        SecureStore::InMemory(Mutex::new(std::collections::HashMap::new()))
+        SecureStore::InMemory(InMemoryStore::default())
+    }
+
+    /// InMemory バリアントの中身を借りる（テストでの検証用）。
+    /// Stronghold バリアントでは `None`。
+    pub fn as_in_memory(&self) -> Option<&InMemoryStore> {
+        match self {
+            SecureStore::InMemory(m) => Some(m),
+            SecureStore::Stronghold(_) => None,
+        }
     }
 
     pub fn insert(&self, key: &str, value: &[u8]) -> Result<(), AppError> {
         match self {
             SecureStore::Stronghold(s) => s.insert(key, value),
             SecureStore::InMemory(m) => {
-                let mut map = m.lock().map_err(|e| AppError::Stronghold(e.to_string()))?;
+                let mut map = m
+                    .map
+                    .lock()
+                    .map_err(|e| AppError::Stronghold(e.to_string()))?;
                 map.insert(key.to_string(), value.to_vec());
                 Ok(())
             }
@@ -462,7 +625,10 @@ impl SecureStore {
         match self {
             SecureStore::Stronghold(s) => s.get(key),
             SecureStore::InMemory(m) => {
-                let map = m.lock().map_err(|e| AppError::Stronghold(e.to_string()))?;
+                let map = m
+                    .map
+                    .lock()
+                    .map_err(|e| AppError::Stronghold(e.to_string()))?;
                 Ok(map.get(key).cloned())
             }
         }
@@ -472,11 +638,52 @@ impl SecureStore {
         match self {
             SecureStore::Stronghold(s) => s.delete(key),
             SecureStore::InMemory(m) => {
-                let mut map = m.lock().map_err(|e| AppError::Stronghold(e.to_string()))?;
+                let mut map = m
+                    .map
+                    .lock()
+                    .map_err(|e| AppError::Stronghold(e.to_string()))?;
                 map.remove(key);
                 Ok(())
             }
         }
+    }
+
+    /// 遅延中の書き込みをスナップショットへ確定させる。
+    ///
+    /// `Durability::Deferrable` な書き込み（再取得可能なアクセストークン等）は
+    /// 書き込み時点ではコミットされない。アプリ終了時など、次にプロセスが
+    /// 死んでも困らない状態にしておきたい地点で明示的に呼ぶ。
+    /// 未コミットの変更が無ければ何もしないため、繰り返し呼んでも安全。
+    pub fn flush(&self) -> Result<(), AppError> {
+        match self {
+            SecureStore::Stronghold(s) => s.flush(),
+            // InMemory は永続化しないので何もすることがない。
+            // テストでは「flush が呼ばれたか」だけを記録する
+            SecureStore::InMemory(m) => {
+                m.record_flush();
+                Ok(())
+            }
+        }
+    }
+}
+
+/// InMemory バリアントの中身。永続化しない代わりに、flush が呼ばれた回数を
+/// 数えて終了経路の配線をテストから検証できるようにしている。
+#[derive(Default)]
+pub struct InMemoryStore {
+    map: Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    flush_count: std::sync::atomic::AtomicUsize,
+}
+
+impl InMemoryStore {
+    fn record_flush(&self) {
+        self.flush_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// flush が呼ばれた回数。終了時の flush 配線が外れていないことの検証用。
+    pub fn flush_count(&self) -> usize {
+        self.flush_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -490,6 +697,45 @@ mod tests {
         let store = SecureStore::in_memory();
         store.insert("k", b"v").unwrap();
         assert_eq!(store.get("k").unwrap().as_deref(), Some(b"v".as_ref()));
+    }
+
+    // --- 書き込みの耐久性クラス分け（ADR 0006 決定 4） ---
+    //
+    // 実 Stronghold のコミットは scrypt(work factor 19) が固定で走るため
+    // 1 回あたり秒オーダーであり、書き込みのたびに実行するとその間 get() が
+    // 同じ Mutex で待たされる。コミット回数そのものを減らすのが本質的な対策で、
+    // ここではその「いつコミットするか」の判断ロジックを実 I/O 抜きで検証する。
+
+    #[test]
+    fn test_durability_of_key_classifies_credentials_as_critical() {
+        // 再取得不能な秘密（リフレッシュトークンを含む OAuth 一式・パスワード・
+        // API キー・SA JSON）は、失うとユーザーが再認証を強いられる。
+        // これらは即座にスナップショットへ書き出す
+        assert_eq!(Durability::of_key("oauth_acc1"), Durability::Critical);
+        assert_eq!(Durability::of_key("password_acc1"), Durability::Critical);
+        assert_eq!(Durability::of_key("claude_api_key"), Durability::Critical);
+        assert_eq!(Durability::of_key("vertex_sa_json"), Durability::Critical);
+    }
+
+    #[test]
+    fn test_durability_defaults_to_critical_for_unknown_keys() {
+        // 新しい秘密種別を追加したときに、分類漏れが「失ってよい」側へ
+        // 倒れてはならない。未知のキーは安全側（即コミット）に倒す
+        assert_eq!(
+            Durability::of_key("some_future_secret"),
+            Durability::Critical,
+            "未知のキーは安全側（即コミット）に倒す"
+        );
+    }
+
+    #[test]
+    fn test_durability_classifies_access_token_cache_as_deferrable() {
+        // アクセストークンはリフレッシュトークンから再取得できる。
+        // 失っても再認証は不要（次回同期で再発行される）ため遅延コミットしてよい
+        assert_eq!(
+            Durability::of_key("access_token_cache_acc1"),
+            Durability::Deferrable
+        );
     }
 
     #[test]
@@ -506,6 +752,98 @@ mod tests {
         assert_eq!(store.get("k").unwrap().as_deref(), Some(b"v2".as_ref()));
         store.delete("k").unwrap();
         assert_eq!(store.get("k").unwrap(), None);
+    }
+
+    // --- コミット回数の制御（PendingCommit） ---
+    //
+    // 実 Stronghold を使わずに「何回コミットが発火したか」を数えるため、
+    // コミット先を差し替えられる PendingCommit のロジックだけを検証する。
+
+    #[test]
+    fn test_critical_write_commits_immediately() {
+        let pending = PendingCommit::new();
+        assert!(
+            pending.record(Durability::Critical),
+            "再取得不能な秘密は即コミットする"
+        );
+        assert!(
+            !pending.has_uncommitted(),
+            "即コミット後は未コミットの変更が残らない"
+        );
+    }
+
+    #[test]
+    fn test_deferrable_write_does_not_commit_immediately() {
+        let pending = PendingCommit::new();
+        assert!(
+            !pending.record(Durability::Deferrable),
+            "再取得可能な値は即コミットしない"
+        );
+        assert!(
+            pending.has_uncommitted(),
+            "未コミットの変更として記録される"
+        );
+    }
+
+    #[test]
+    fn test_critical_write_flushes_pending_deferrable_writes() {
+        // 遅延中の変更があるところに Critical が来たら、両方まとめて 1 回で書く。
+        // 遅延分のために追加のコミットを発生させない（コミット回数を増やさない）
+        let pending = PendingCommit::new();
+        pending.record(Durability::Deferrable);
+        assert!(pending.has_uncommitted());
+
+        assert!(pending.record(Durability::Critical));
+        assert!(
+            !pending.has_uncommitted(),
+            "Critical のコミットが遅延分もまとめて永続化する"
+        );
+    }
+
+    #[test]
+    fn test_flush_commits_only_when_there_are_pending_writes() {
+        let pending = PendingCommit::new();
+        assert!(
+            !pending.take_if_uncommitted(),
+            "未コミットの変更が無ければコミットしない（無駄な scrypt を避ける）"
+        );
+
+        pending.record(Durability::Deferrable);
+        assert!(
+            pending.take_if_uncommitted(),
+            "未コミットの変更があればコミットする"
+        );
+        assert!(
+            !pending.take_if_uncommitted(),
+            "同じ変更を二度コミットしない"
+        );
+    }
+
+    #[test]
+    fn test_failed_commit_keeps_pending_state_for_retry() {
+        // コミットが失敗したら未コミット状態を戻す。
+        // 戻さないと、遅延中だった変更が「書けていないのに書けたことになる」
+        // 状態で忘れ去られ、次の flush でも拾われずに失われる
+        let pending = PendingCommit::new();
+        pending.record(Durability::Deferrable);
+        assert!(pending.record(Durability::Critical));
+
+        pending.restore_after_failed_commit();
+        assert!(
+            pending.has_uncommitted(),
+            "コミット失敗後は未コミット扱いに戻し、次の機会に再試行する"
+        );
+    }
+
+    #[test]
+    fn test_many_deferrable_writes_collapse_into_one_commit() {
+        // 遅延書き込みが何回来てもコミットは 1 回に畳まれる
+        let pending = PendingCommit::new();
+        for _ in 0..100 {
+            assert!(!pending.record(Durability::Deferrable));
+        }
+        assert!(pending.take_if_uncommitted());
+        assert!(!pending.take_if_uncommitted());
     }
 
     /// テスト用のインメモリ鍵バックエンド（キーチェーンの代役）。
@@ -756,6 +1094,114 @@ mod tests {
             other => panic!("expected UnreadableBackedUp, got {other:?}"),
         }
         assert!(store.get("k").unwrap().is_none(), "新規ストアは空");
+    }
+
+    // --- 遅延コミットの永続化（実 Stronghold でしか検証できない） ---
+    //
+    // PendingCommit のロジックは上のユニットテストで実 I/O 抜きに検証済みだが、
+    // 「遅延させた値が本当に再オープン後も読めるか」「Critical な書き込みが
+    // 遅延分を巻き込んで永続化するか」はスナップショットへの往復が要る。
+
+    #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
+    fn test_deferrable_write_is_readable_before_flush() {
+        // 遅延中でもメモリ上の状態は更新済みなので get() は最新値を返す
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pigeon.stronghold");
+        let key = random_key();
+        let store = SecureStore::new(path, &key).unwrap();
+        let cache_key = format!("{ACCESS_TOKEN_CACHE_PREFIX}acc1");
+        store.insert(&cache_key, b"at").unwrap();
+        assert_eq!(
+            store.get(&cache_key).unwrap().as_deref(),
+            Some(b"at".as_ref()),
+            "コミット前でも読み出せる"
+        );
+    }
+
+    #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
+    fn test_flush_persists_deferred_write() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pigeon.stronghold");
+        let key = random_key();
+        let cache_key = format!("{ACCESS_TOKEN_CACHE_PREFIX}acc1");
+        {
+            let store = SecureStore::new(path.clone(), &key).unwrap();
+            store.insert(&cache_key, b"at").unwrap();
+            store.flush().unwrap();
+        }
+        let store = SecureStore::new(path, &key).unwrap();
+        assert_eq!(
+            store.get(&cache_key).unwrap().as_deref(),
+            Some(b"at".as_ref()),
+            "flush 後は再オープンしても残る"
+        );
+    }
+
+    #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
+    fn test_critical_write_persists_pending_deferrable_write_too() {
+        // Critical の書き込みは、それまでに溜まった Deferrable も
+        // 同じ 1 回のコミットで永続化する
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pigeon.stronghold");
+        let key = random_key();
+        let cache_key = format!("{ACCESS_TOKEN_CACHE_PREFIX}acc1");
+        {
+            let store = SecureStore::new(path.clone(), &key).unwrap();
+            store.insert(&cache_key, b"at").unwrap();
+            // Critical（再取得不能な秘密）の書き込み
+            store.insert("oauth_acc1", b"token").unwrap();
+        }
+        let store = SecureStore::new(path, &key).unwrap();
+        assert_eq!(
+            store.get("oauth_acc1").unwrap().as_deref(),
+            Some(b"token".as_ref())
+        );
+        assert_eq!(
+            store.get(&cache_key).unwrap().as_deref(),
+            Some(b"at".as_ref()),
+            "遅延分も Critical のコミットに巻き込まれて永続化される"
+        );
+    }
+
+    #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
+    fn test_critical_write_persists_without_explicit_flush() {
+        // 再取得不能な秘密は flush を呼ばなくても失われない
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pigeon.stronghold");
+        let key = random_key();
+        {
+            let store = SecureStore::new(path.clone(), &key).unwrap();
+            store.insert("password_acc1", b"pw").unwrap();
+        }
+        let store = SecureStore::new(path, &key).unwrap();
+        assert_eq!(
+            store.get("password_acc1").unwrap().as_deref(),
+            Some(b"pw".as_ref())
+        );
+    }
+
+    #[test]
+    #[ignore = "実StrongholdのスナップショットI/Oが1回55秒。日次nightly-strongholdジョブで担保"]
+    fn test_delete_of_critical_key_is_persisted_immediately() {
+        // 削除した秘密がスナップショットに残り続けないこと
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pigeon.stronghold");
+        let key = random_key();
+        {
+            let store = SecureStore::new(path.clone(), &key).unwrap();
+            store.insert("oauth_acc1", b"token").unwrap();
+            store.delete("oauth_acc1").unwrap();
+        }
+        let store = SecureStore::new(path, &key).unwrap();
+        assert_eq!(
+            store.get("oauth_acc1").unwrap(),
+            None,
+            "削除は即座に永続化される"
+        );
     }
 
     #[test]
