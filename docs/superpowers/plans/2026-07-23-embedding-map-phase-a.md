@@ -168,7 +168,7 @@ const ITERATIONS: usize = 50;
 pub fn project_2d(vectors: &[Vec<f32>]) -> Result<Vec<(f32, f32)>, AppError> {
     let n = vectors.len();
     if n < 2 {
-        return Err(AppError::InvalidInput(format!(
+        return Err(AppError::Validation(format!(
             "PCA には 2 点以上が必要です（入力: {n} 点）"
         )));
     }
@@ -245,7 +245,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 }
 ```
 
-`AppError::InvalidInput` が存在するか確認する。無ければ `src-tauri/src/error.rs` を見て、入力エラーに相当する既存バリアント（例: `AppError::Validation` など）を使う。どのバリアントも合わなければ `error.rs` に `#[error("{0}")] InvalidInput(String)` を追加する（他バリアントの定義に倣う）。
+`AppError::Validation`（`src-tauri/src/error.rs`、`#[error("Validation error: {0}")]`）を入力エラーに使う。これはコードベース全体で入力検証エラーに使われている既存バリアントで、「2 点未満」もこれに該当する。新規バリアントは追加しない（Task 1 のレビューで、重複する `InvalidInput` を追加せず既存 `Validation` に統一する方針に確定済み）。
 
 - [ ] **Step 4: テストが通ることを確認**
 
@@ -340,7 +340,7 @@ pub struct MapChunkRow {
 /// 書き込みは zerocopy::IntoBytes（chunks.rs）でリトルエンディアン。
 pub fn decode_embedding(blob: &[u8]) -> Result<Vec<f32>, AppError> {
     if blob.len() % 4 != 0 {
-        return Err(AppError::InvalidInput(format!(
+        return Err(AppError::Validation(format!(
             "f32 境界に揃っていません: {} バイト",
             blob.len()
         )));
@@ -566,7 +566,7 @@ pub fn embedding_map_points(db: State<DbState>) -> Result<Vec<MapPoint>, AppErro
     let rows = db.with_conn(load_map_chunks)?;
     let mails = aggregate_by_mail(rows);
     if mails.len() < 2 {
-        return Err(AppError::InvalidInput(
+        return Err(AppError::Validation(
             "埋め込みマップには 2 通以上の埋め込み済みメールが必要です".to_string(),
         ));
     }
@@ -590,7 +590,7 @@ pub fn embedding_map_points(db: State<DbState>) -> Result<Vec<MapPoint>, AppErro
 }
 ```
 
-注意: `aggregate_by_mail` 内の `.expect(...)` はテストコードではないが、直前に `order` に入れた mail_id が必ず `groups` にある不変条件が成立するため理論上到達不能。気になる場合は `filter_map` + `continue` で回避してよいが、ロジック上は安全。**Global Constraints の unwrap/expect 禁止を厳守するなら**、`groups.remove(...).ok_or_else(|| AppError::InvalidInput("集約の不変条件違反".into()))?` にして `map` を `collect::<Result<Vec<_>,_>>()` にする形へ変える。実装者はどちらか選ぶ（後者が規約に忠実）。
+注意: `aggregate_by_mail` 内の `.expect(...)` はテストコードではないが、直前に `order` に入れた mail_id が必ず `groups` にある不変条件が成立するため理論上到達不能。気になる場合は `filter_map` + `continue` で回避してよいが、ロジック上は安全。**Global Constraints の unwrap/expect 禁止を厳守するなら**、`groups.remove(...).ok_or_else(|| AppError::Validation("集約の不変条件違反".into()))?` にして `map` を `collect::<Result<Vec<_>,_>>()` にする形へ変える。実装者はどちらか選ぶ（後者が規約に忠実）。
 
 - [ ] **Step 4: テストが通ることを確認**
 
