@@ -89,6 +89,9 @@ pub enum AppError {
 
     #[error("Internal lock error: {0}")]
     LockError(String),
+
+    #[error("{0}")]
+    InvalidInput(String),
 }
 
 impl Serialize for AppError {

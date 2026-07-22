@@ -11,6 +11,7 @@ pub mod mail_chunker;
 pub mod mail_sync;
 pub mod mcp;
 pub mod models;
+pub mod pca;
 pub mod project_context;
 pub mod project_note_digest;
 pub mod project_notes_sync;
