@@ -1,0 +1,7 @@
+numpy>=2.0
+scikit-learn>=1.5
+matplotlib>=3.9
+sqlite-vec>=0.1.6
+pytest>=8.0
+# UMAP は任意。--method umap を使う場合のみ必要（インストールが重いため既定では入れない）
+# umap-learn>=0.5
