@@ -67,6 +67,17 @@ def group_by_project(points: list[Point]) -> dict[str, list[int]]:
     return dict(sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True))
 
 
+def project_colors(n: int) -> list:
+    """tab20 カラーマップから n 個の案件用の色を割り当てる。
+
+    件数の少ない案件が分離しているかを見ることがこのツールの目的そのものなので、
+    凡例に載るかどうかに関わらず、すべての案件に個別の色を割り当てる。
+    tab20 は 20 色しか無いため、21 個目以降は周期的に再利用する。
+    """
+    color_map = plt.get_cmap("tab20")
+    return [color_map(i % 20) for i in range(n)]
+
+
 def save_scatter(
     points: list[Point],
     coords: np.ndarray,
@@ -76,15 +87,15 @@ def save_scatter(
 ) -> None:
     """散布図を PNG として保存する。
 
-    max_legend を超える案件は凡例に出さない（件数の少ない案件から省く）。
-    点は描くが色は共通のグレーにする。
+    max_legend はあくまで凡例に載せる項目数の上限であり、件数の少ない案件から
+    ラベルが省かれる（凡例が長くなりすぎないように）。ただし色は max_legend に
+    関わらずすべての案件に個別に割り当てる。件数の少ない案件が他と分離して
+    見えるかどうかがこのツールの目的であり、色を共有させるとその判断ができなくなる。
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     groups = group_by_project(points)
 
     figure, axes = plt.subplots(figsize=(12, 10))
-    color_map = plt.get_cmap("tab20")
-    color_index = 0
 
     # 未分類を先に描いて背面へ回す。案件の点が隠れないようにするため。
     if UNASSIGNED_LABEL in groups:
@@ -99,18 +110,18 @@ def save_scatter(
             label=f"{UNASSIGNED_LABEL} ({len(indices)})",
         )
 
-    for label, indices in groups.items():
+    colors = project_colors(len(groups))
+    for color_index, (label, indices) in enumerate(groups.items()):
         shown = color_index < max_legend
         axes.scatter(
             coords[indices, 0],
             coords[indices, 1],
             s=14,
-            color=color_map(color_index % 20) if shown else "#999999",
+            color=colors[color_index],
             alpha=0.8,
             linewidths=0,
             label=f"{label} ({len(indices)})" if shown else None,
         )
-        color_index += 1
 
     axes.set_title(title)
     axes.set_xlabel("dim 1")

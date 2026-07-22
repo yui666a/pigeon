@@ -4,6 +4,7 @@ from embedding_viz.plot import (
     UNASSIGNED_LABEL,
     group_by_project,
     pick_japanese_font,
+    project_colors,
     save_scatter,
 )
 
@@ -61,3 +62,22 @@ def test_save_scatter_writes_png(tmp_path):
     save_scatter(points, coords, out, title="test")
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_project_colors_returns_distinct_colors_beyond_max_legend():
+    """凡例の上限を超えても、色は tab20 から個別に割り当てられ続ける（I-2）。
+
+    小さな案件が凡例に出ないだけで、点の色まで共通のグレーになると
+    「件数の少ない案件が分離しているか」を確かめるというツールの目的が壊れる。
+    """
+    colors = project_colors(4)
+    assert len(colors) == 4
+    assert len(set(colors)) == 4
+    assert "#999999" not in colors
+
+
+def test_project_colors_wraps_around_tab20_for_many_projects():
+    """tab20 は 20 色までしか無いので、21 個目以降は周期的に再利用される。"""
+    colors = project_colors(21)
+    assert len(colors) == 21
+    assert colors[0] == colors[20]
