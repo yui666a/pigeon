@@ -30,3 +30,16 @@ def test_build_query_applies_limit_as_parameter():
     sql, params = build_query(limit=500, assigned_only=True)
     assert "LIMIT ?" in sql
     assert params == [500]
+
+
+def test_build_query_orders_assigned_first_for_limit():
+    """--include-unassigned + --limit のとき、割り当て済みの点が LIMIT で
+    間引かれないよう、割り当て済みを先に並べる（I-1）。"""
+    sql, _ = build_query(limit=1000, assigned_only=False)
+    assert "ORDER BY (mpa.project_id IS NULL)" in sql
+    # 割り当て済み優先の並びが、mail_id によるタイブレークより先に来ること
+    # （SELECT 句にも c.mail_id が出るため、ORDER BY 句だけを見て比較する）。
+    order_by_clause = sql[sql.index("ORDER BY") :]
+    assert order_by_clause.index("mpa.project_id IS NULL") < order_by_clause.index(
+        "c.mail_id"
+    )

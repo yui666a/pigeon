@@ -59,7 +59,7 @@ UMAP を使う場合のみ追加で:
 | `--db PATH` | OS の data_dir | DB パス |
 | `--method {pca,tsne,umap}` | `tsne` | 次元削減の手法 |
 | `--granularity {mail,chunk}` | `mail` | 点の粒度 |
-| `--limit N` | 1000 | 読み出すチャンク数の上限（`visualize_embeddings.py` の `DEFAULT_LIMIT`）。**`--include-unassigned` 指定時のみ有効**。案件割り当て済みのみ（既定）のときは、`mail_id` の辞書順切り出しで小さな案件が消えるのを避けるため、常に全件を読む |
+| `--limit N` | 1000 | 読み出すチャンク数の上限（`visualize_embeddings.py` の `DEFAULT_LIMIT`）。**`--include-unassigned` 指定時のみ有効**。案件割り当て済みのみ（既定）のときは、`mail_id` の辞書順切り出しで小さな案件が消えるのを避けるため、常に全件を読む。`--include-unassigned` 指定時は案件割り当て済みの行を先に並べてから `LIMIT` を適用するため、間引かれるのは常に未分類側で、色付きの点（可視化の対象）は保持される |
 | `--include-unassigned` | off | 未分類メールも含める |
 | `--out PATH` | `out/<method>-<granularity>.png` | 出力先 |
 | `--seed N` | 42 | 乱数シード（t-SNE / UMAP の再現性） |
