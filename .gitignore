@@ -35,3 +35,10 @@ npm-debug.log*
 
 # Docker
 docker-compose.override.yaml
+
+# Python（scripts/ 配下の可視化ツール）
+__pycache__/
+*.py[cod]
+.venv/
+scripts/.venv/
+scripts/out/

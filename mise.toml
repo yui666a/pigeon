@@ -2,3 +2,4 @@
 node = "22"
 pnpm = "latest"
 rust = "latest"
+python = "3.14"
