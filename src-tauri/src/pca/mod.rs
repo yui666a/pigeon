@@ -13,7 +13,7 @@ const ITERATIONS: usize = 50;
 pub fn project_2d(vectors: &[Vec<f32>]) -> Result<Vec<(f32, f32)>, AppError> {
     let n = vectors.len();
     if n < 2 {
-        return Err(AppError::InvalidInput(format!(
+        return Err(AppError::Validation(format!(
             "PCA には 2 点以上が必要です（入力: {n} 点）"
         )));
     }
@@ -152,5 +152,32 @@ mod tests {
         let a = project_2d(&two_axis_data()).unwrap();
         let b = project_2d(&two_axis_data()).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// 平均が非ゼロのデータ。中心化を忘れると主成分が原点方向へ歪むため、
+    /// 中心化ステップが実際に効いていることを検証する。
+    fn shifted_two_axis_data() -> Vec<Vec<f32>> {
+        // two_axis_data を全次元 +100 平行移動（分散構造は同じ、平均だけ非ゼロ）
+        two_axis_data()
+            .into_iter()
+            .map(|row| row.iter().map(|&v| v + 100.0).collect())
+            .collect()
+    }
+
+    #[test]
+    fn centering_makes_shift_invariant() {
+        // 中心化が効いていれば、全体を平行移動しても射影後の相対配置は不変。
+        // 中心化を忘れると平行移動で主成分の向きが変わり、この不変性が壊れる。
+        let base = project_2d(&two_axis_data()).unwrap();
+        let shifted = project_2d(&shifted_two_axis_data()).unwrap();
+        // PC1 座標の点間差分（相対配置）が一致することを確認
+        for i in 1..base.len() {
+            let d_base = base[i].0 - base[i - 1].0;
+            let d_shift = shifted[i].0 - shifted[i - 1].0;
+            assert!(
+                (d_base.abs() - d_shift.abs()).abs() < 1e-2,
+                "中心化が効いていれば平行移動で相対配置は不変: base={d_base} shift={d_shift}"
+            );
+        }
     }
 }
