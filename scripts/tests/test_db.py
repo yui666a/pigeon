@@ -1,4 +1,3 @@
-import sqlite3
 import numpy as np
 import pytest
 from embedding_viz.db import decode_vector, build_query
