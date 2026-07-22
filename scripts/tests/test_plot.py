@@ -1,6 +1,12 @@
 import numpy as np
 from embedding_viz.aggregate import Point
-from embedding_viz.plot import UNASSIGNED_LABEL, group_by_project, save_scatter
+from embedding_viz.plot import (
+    UNASSIGNED_LABEL,
+    group_by_project,
+    pick_japanese_font,
+    project_colors,
+    save_scatter,
+)
 
 
 def _point(label_id, project_name):
@@ -32,6 +38,23 @@ def test_group_by_project_orders_largest_first():
     assert list(group_by_project(points).keys())[0] == "big"
 
 
+def test_pick_japanese_font_returns_first_available():
+    """優先度リストの先頭に近い候補が Meiryo より優先される。"""
+    available = {"Meiryo", "Hiragino Sans", "Arial"}
+    assert pick_japanese_font(available) == "Hiragino Sans"
+
+
+def test_pick_japanese_font_respects_priority_order():
+    """mac 系フォントが無い環境でも、タプルの並び順（MS Gothic が Noto より先）を尊重する。"""
+    available = {"Noto Sans CJK JP", "MS Gothic"}
+    assert pick_japanese_font(available) == "MS Gothic"
+
+
+def test_pick_japanese_font_returns_none_when_absent():
+    available = {"Arial", "DejaVu Sans"}
+    assert pick_japanese_font(available) is None
+
+
 def test_save_scatter_writes_png(tmp_path):
     points = [_point("1", "A"), _point("2", "B")]
     coords = np.array([[0.0, 0.0], [1.0, 1.0]])
@@ -39,3 +62,22 @@ def test_save_scatter_writes_png(tmp_path):
     save_scatter(points, coords, out, title="test")
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_project_colors_returns_distinct_colors_beyond_max_legend():
+    """凡例の上限を超えても、色は tab20 から個別に割り当てられ続ける（I-2）。
+
+    小さな案件が凡例に出ないだけで、点の色まで共通のグレーになると
+    「件数の少ない案件が分離しているか」を確かめるというツールの目的が壊れる。
+    """
+    colors = project_colors(4)
+    assert len(colors) == 4
+    assert len(set(colors)) == 4
+    assert "#999999" not in colors
+
+
+def test_project_colors_wraps_around_tab20_for_many_projects():
+    """tab20 は 20 色までしか無いので、21 個目以降は周期的に再利用される。"""
+    colors = project_colors(21)
+    assert len(colors) == 21
+    assert colors[0] == colors[20]

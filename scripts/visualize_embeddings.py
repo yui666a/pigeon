@@ -4,8 +4,9 @@
 使い方の詳細は scripts/README.md を参照。
 
 例:
-    python visualize_embeddings.py --method pca --limit 1000
+    python visualize_embeddings.py --method pca
     python visualize_embeddings.py --method tsne --granularity chunk
+    python visualize_embeddings.py --include-unassigned --limit 2000
 """
 
 from __future__ import annotations

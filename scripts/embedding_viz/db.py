@@ -74,6 +74,12 @@ def build_query(limit: int | None, assigned_only: bool) -> tuple[str, list]:
 
     JOIN 構造は src-tauri/src/db/vec_search.rs の search_mails_semantic を踏襲する。
     limit は必ずパラメータとして渡す（SQL 文字列に埋め込まない）。
+
+    ORDER BY は `(mpa.project_id IS NULL)` を先頭に置き、割り当て済み（0）を
+    未分類（1）より先に並べる。assigned_only=False で --limit を使うのは
+    --include-unassigned のときだけだが、その場合でも案件割り当て済みの点
+    （可視化の対象そのもの）が LIMIT で間引かれず、未分類側が優先的に
+    切り詰められるようにするため。
     """
     where = "WHERE mpa.project_id IS NOT NULL" if assigned_only else ""
     limit_clause = "LIMIT ?" if limit is not None else ""
@@ -86,7 +92,7 @@ def build_query(limit: int | None, assigned_only: bool) -> tuple[str, list]:
         LEFT JOIN mail_project_assignments mpa ON mpa.mail_id = m.id
         LEFT JOIN projects p ON p.id = mpa.project_id
         {where}
-        ORDER BY c.mail_id, c.chunk_index
+        ORDER BY (mpa.project_id IS NULL), c.mail_id, c.chunk_index
         {limit_clause}
     """
     return sql, params
