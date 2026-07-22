@@ -42,10 +42,15 @@ def parse_args() -> argparse.Namespace:
         help="点の粒度（既定: mail = チャンクを平均してメール単位にする）",
     )
     # 設計書 §4.4 の「既定 1000 件、いつでも簡単に変えられること」に対応する。
-    # ここはチャンク数の上限であり、mail 粒度では 1 メール平均約 3 チャンクなので
-    # 点数はおよそ 1/3 になる。数字自体に根拠はないので実データを見ながら調整する。
+    # ただし --limit が効くのは --include-unassigned 指定時（未分類も含める場合）
+    # のみ。案件割り当て済みのみのとき（既定）は mail_id (TEXT PK) の辞書順で
+    # 切られると小さな案件がまるごと消えかねないため、常に全件を読む。
     parser.add_argument(
-        "--limit", type=int, default=DEFAULT_LIMIT, help=f"読み出すチャンク数の上限（既定: {DEFAULT_LIMIT}）"
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+        help=f"読み出すチャンク数の上限（既定: {DEFAULT_LIMIT}）。--include-unassigned 指定時のみ有効。"
+        "案件割り当て済みのみのときは全件読む",
     )
     parser.add_argument(
         "--include-unassigned",
@@ -71,9 +76,12 @@ def main() -> int:
         print(f"エラー: {exc}", file=sys.stderr)
         return 1
 
-    rows = load_chunks(
-        conn, limit=args.limit, assigned_only=not args.include_unassigned
-    )
+    assigned_only = not args.include_unassigned
+    # 案件割り当て済みのみのときは全件読む。--limit は未分類を含める場合の
+    # 点数爆発を抑えるためのものであり、assigned だけなら数千件で軽いので
+    # 上限で小さな案件を取りこぼす方が有害（Task 7 は小規模案件の分離を見る）。
+    limit = None if assigned_only else args.limit
+    rows = load_chunks(conn, limit=limit, assigned_only=assigned_only)
     if not rows:
         print(
             "埋め込み済みのチャンクが 0 件でした。\n"
