@@ -8,6 +8,7 @@ pub mod classification_log;
 pub mod cloud_rules;
 pub mod directories;
 pub mod drafts;
+pub mod embedding_map;
 pub mod fts;
 pub mod mails;
 pub mod migrations;
