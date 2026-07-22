@@ -10,6 +10,42 @@ import matplotlib
 # pyplot の import より前に設定する必要がある。
 matplotlib.use("Agg")
 
+import matplotlib.font_manager  # noqa: E402
+
+# 日本語対応の候補フォント（プラットフォーム別）。先に書いたものが優先される。
+_JP_FONT_CANDIDATES = (
+    "Hiragino Sans",  # macOS
+    "Hiragino Maru Gothic Pro",
+    "YuGothic",  # macOS/Windows
+    "Yu Gothic",  # Windows
+    "Meiryo",  # Windows
+    "MS Gothic",  # Windows
+    "Noto Sans CJK JP",  # Linux
+    "IPAexGothic",  # Linux
+    "TakaoGothic",  # Linux
+)
+
+
+def pick_japanese_font(available: set[str]) -> str | None:
+    """`available` の中から優先度順で最初に見つかった日本語対応フォント名を返す。
+
+    `available` は matplotlib のフォントマネージャから得たインストール済みフォント名の集合。
+    グローバル状態に触れない純粋関数にして、ユニットテストしやすくしている。
+    """
+    for name in _JP_FONT_CANDIDATES:
+        if name in available:
+            return name
+    return None
+
+
+# 案件名の日本語が凡例で豆腐（□）にならないよう、インストール済みフォントから自動選択する。
+# 見つからない場合は既定フォントのままにし、処理は継続する（豆腐にはなるが致命的ではない）。
+_available_fonts = {f.name for f in matplotlib.font_manager.fontManager.ttflist}
+_jp_font = pick_japanese_font(_available_fonts)
+if _jp_font is not None:
+    matplotlib.rcParams["font.family"] = _jp_font
+matplotlib.rcParams["axes.unicode_minus"] = False
+
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
