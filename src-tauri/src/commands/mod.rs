@@ -5,6 +5,7 @@ pub mod bulk_commands;
 pub mod classify_commands;
 pub mod directory_commands;
 pub mod draft_commands;
+pub mod embedding_map_commands;
 pub mod flag_commands;
 pub mod inline_image_commands;
 pub mod mail_commands;

@@ -369,6 +369,7 @@ pub fn run() {
             commands::bulk_commands::bulk_delete_mails,
             commands::bulk_commands::bulk_archive_mails,
             commands::bulk_commands::bulk_move_mails,
+            commands::embedding_map_commands::embedding_map_points,
         ])
         // `RunEvent` を扱うため build して run する。
         //
