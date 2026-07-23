@@ -5,6 +5,7 @@ import { embeddingMapApi } from "./api/embeddingMapApi";
 import { EmbeddingMapCanvas } from "./components/embedding-map/EmbeddingMapCanvas";
 import { PreviewPane } from "./components/embedding-map/PreviewPane";
 import type { MapPoint, MailPreview } from "./types/embeddingMap";
+import { errorMessage } from "./api/errors";
 
 function VisualizationRoot() {
   const [points, setPoints] = useState<MapPoint[]>([]);
@@ -13,7 +14,7 @@ function VisualizationRoot() {
   const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
-    embeddingMapApi.points().then(setPoints).catch((e) => setError(String(e)));
+    embeddingMapApi.points().then(setPoints).catch((e) => setError(errorMessage(e)));
   }, []);
 
   const handlePointClick = (mailId: string) => {
@@ -21,7 +22,7 @@ function VisualizationRoot() {
     embeddingMapApi
       .preview(mailId)
       .then(setPreview)
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setPreviewLoading(false));
   };
 
