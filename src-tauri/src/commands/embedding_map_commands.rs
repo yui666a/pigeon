@@ -3,6 +3,7 @@
 //! べき乗法 PCA（pca::project_2d）を束ね、2D 座標 + ラベルを返す。
 
 use crate::db::embedding_map::{load_map_chunks, MapChunkRow};
+use crate::db::mails::get_mail_by_id;
 use crate::error::AppError;
 use crate::pca::project_2d;
 use crate::state::DbState;
@@ -101,6 +102,37 @@ pub fn embedding_map_points(db: State<DbState>) -> Result<Vec<MapPoint>, AppErro
     Ok(points)
 }
 
+/// 点クリック時に表示する軽量なメールプレビュー。
+/// フル本文（HTML/添付/cid 画像）ではなく、案件を判断できる最小限に留める。
+#[derive(serde::Serialize)]
+pub struct MailPreview {
+    pub mail_id: String,
+    pub subject: String,
+    pub from_addr: String,
+    pub date: String,
+    pub body_excerpt: String,
+}
+
+/// 本文テキストの先頭を最大 max_chars 文字で切り出す（文字境界を尊重）。
+fn body_excerpt(body: Option<&str>, max_chars: usize) -> String {
+    match body {
+        None => String::new(),
+        Some(text) => text.chars().take(max_chars).collect(),
+    }
+}
+
+#[tauri::command]
+pub fn mail_preview(db: State<DbState>, mail_id: String) -> Result<MailPreview, AppError> {
+    let mail = db.with_conn(|conn| get_mail_by_id(conn, &mail_id))?;
+    Ok(MailPreview {
+        mail_id: mail.id,
+        subject: mail.subject,
+        from_addr: mail.from_addr,
+        date: mail.date,
+        body_excerpt: body_excerpt(mail.body_text.as_deref(), 300),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +171,22 @@ mod tests {
         let rows = vec![row("m1", vec![1.0, 0.0]), row("m1", vec![0.0, 2.0])];
         let mails = aggregate_by_mail(rows).unwrap();
         assert_eq!(mails[0].project_color.as_deref(), Some("#ff0000"));
+    }
+
+    #[test]
+    fn excerpt_truncates_long_body() {
+        let body = "あ".repeat(1000);
+        let out = body_excerpt(Some(&body), 300);
+        assert_eq!(out.chars().count(), 300);
+    }
+
+    #[test]
+    fn excerpt_handles_none_body() {
+        assert_eq!(body_excerpt(None, 300), "");
+    }
+
+    #[test]
+    fn excerpt_keeps_short_body() {
+        assert_eq!(body_excerpt(Some("短い本文"), 300), "短い本文");
     }
 }
