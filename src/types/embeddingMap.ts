@@ -15,3 +15,10 @@ export interface MailPreview {
   date: string;
   body_excerpt: string;
 }
+
+/** 案件パネル（ドロップ先）用の軽量な案件情報。Rust 側 MapProject と対 */
+export interface MapProject {
+  id: string;
+  name: string;
+  color: string | null;
+}
