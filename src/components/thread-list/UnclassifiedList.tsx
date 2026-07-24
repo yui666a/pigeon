@@ -12,6 +12,7 @@ import { NewProjectProposal } from "../common/NewProjectProposal";
 import { useLoadMore } from "../../hooks/useLoadMore";
 import { useBulkActions } from "../../hooks/useBulkActions";
 import { useCreateProjectFromSelection } from "../../hooks/useCreateProjectFromSelection";
+import { openEmbeddingMapWindow } from "../embedding-map/openMapWindow";
 import type { Thread } from "../../types/mail";
 
 export function UnclassifiedList() {
@@ -96,6 +97,12 @@ export function UnclassifiedList() {
           <h3 className="text-sm font-medium text-gray-700">
             未分類メール ({unclassifiedMails.length})
           </h3>
+          <button
+            onClick={() => void openEmbeddingMapWindow()}
+            className="shrink-0 rounded bg-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-300"
+          >
+            マップで見る
+          </button>
         </div>
 
         <ClassifyButton accountId={selectedAccountId} />

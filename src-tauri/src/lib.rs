@@ -11,6 +11,7 @@ pub mod mail_chunker;
 pub mod mail_sync;
 pub mod mcp;
 pub mod models;
+pub mod pca;
 pub mod project_context;
 pub mod project_note_digest;
 pub mod project_notes_sync;
@@ -368,6 +369,8 @@ pub fn run() {
             commands::bulk_commands::bulk_delete_mails,
             commands::bulk_commands::bulk_archive_mails,
             commands::bulk_commands::bulk_move_mails,
+            commands::embedding_map_commands::embedding_map_points,
+            commands::embedding_map_commands::mail_preview,
         ])
         // `RunEvent` を扱うため build して run する。
         //
