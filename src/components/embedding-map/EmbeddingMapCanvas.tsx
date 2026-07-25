@@ -8,10 +8,11 @@ const DEFAULT_PROJECT_COLOR = "#6b7280";
 
 interface Props {
   points: MapPoint[];
-  onPointClick: (mailId: string) => void;
+  /** 点の上で mousedown したとき（クリックかドラッグかは呼び出し側が判定） */
+  onPointMouseDown: (point: MapPoint, e: React.MouseEvent) => void;
 }
 
-export function EmbeddingMapCanvas({ points, onPointClick }: Props) {
+export function EmbeddingMapCanvas({ points, onPointMouseDown }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const transformRef = useRef<Transform | null>(null);
 
@@ -52,7 +53,7 @@ export function EmbeddingMapCanvas({ points, onPointClick }: Props) {
     ctx.globalAlpha = 1;
   }, [points]);
 
-  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const t = transformRef.current;
     const canvas = canvasRef.current;
     if (!t || !canvas) return;
@@ -60,7 +61,7 @@ export function EmbeddingMapCanvas({ points, onPointClick }: Props) {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
     const hit = hitTest(points, t, sx, sy, 6);
-    if (hit) onPointClick(hit.mail_id);
+    if (hit) onPointMouseDown(hit, e);
   };
 
   return (
@@ -68,7 +69,7 @@ export function EmbeddingMapCanvas({ points, onPointClick }: Props) {
       ref={canvasRef}
       width={800}
       height={800}
-      onClick={handleClick}
+      onMouseDown={handleMouseDown}
       className="bg-white"
     />
   );

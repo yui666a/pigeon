@@ -92,6 +92,21 @@ pub fn list_projects(conn: &Connection, account_id: &str) -> Result<Vec<Project>
     Ok(projects)
 }
 
+/// 全アカウントの未アーカイブ案件を名前順で返す。
+/// 埋め込みマップの案件パネル用（マップは全アカウント横断のため絞らない）。
+pub fn list_all_active_projects(conn: &Connection) -> Result<Vec<Project>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, account_id, name, description, color, is_archived, parent_id, created_at, updated_at
+         FROM projects
+         WHERE is_archived = FALSE
+         ORDER BY name",
+    )?;
+    let projects = stmt
+        .query_map([], row_to_project)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(projects)
+}
+
 /// 案件一覧を、各案件の主ディレクトリ付きで 1 クエリで返す。
 ///
 /// 案件ごとに `get_directory_by_project` を呼ぶと案件数ぶんの IPC 往復が発生する
@@ -1169,5 +1184,21 @@ mod tests {
         }
         assert_eq!(count_subtree_mails(&conn, "root").unwrap(), 2);
         assert_eq!(count_subtree_mails(&conn, "mid").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_list_all_active_projects_excludes_archived_and_sorts_by_name() {
+        let conn = setup_db();
+
+        let b = insert_child(&conn, "pb", "Bravo", None);
+        let a = insert_child(&conn, "pa", "Alpha", None);
+        let archived = insert_child(&conn, "pc", "Zulu", None);
+        archive_project(&conn, &archived.id).unwrap();
+
+        let all = list_all_active_projects(&conn).unwrap();
+        assert_eq!(
+            all.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec![a.id.as_str(), b.id.as_str()]
+        );
     }
 }

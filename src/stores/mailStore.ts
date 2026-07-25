@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { listen } from "@tauri-apps/api/event";
 import type { BulkResult, Mail, Thread, ThreadPage, UnreadCounts } from "../types/mail";
-import type { NewMailEvent, SyncProgress } from "../types/events";
+import type { MailAssignedEvent, NewMailEvent, SyncProgress } from "../types/events";
 import { mailApi } from "../api/mailApi";
 import { errorMessage, isReauthError } from "../api/errors";
 import { useErrorStore } from "./errorStore";
@@ -55,6 +55,9 @@ interface MailState {
   applyAssignmentApproved: (mailId: string, projectId: string) => void;
   initSyncListener: () => Promise<() => void>;
   initNewMailListener: () => Promise<() => void>;
+  /** 埋め込みマップでの手動割り当て（mail-assigned）を表示へ反映する */
+  handleMailAssigned: (payload: MailAssignedEvent) => void;
+  initMailAssignedListener: () => Promise<() => void>;
   initBackfillListener: () => Promise<() => void>;
   bulkDeleteMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
   bulkArchiveMails: (accountId: string, mailIds: string[]) => Promise<BulkResult | null>;
@@ -569,6 +572,25 @@ export const useMailStore = create<MailState>((set, get) => ({
           // 同期中ガード・エラー時の count=0 では空通知を出さない）
           if (count > 0) void notifyNewMail(count, event.payload.account_id);
         });
+    });
+    return unlisten;
+  },
+
+  handleMailAssigned: (payload) => {
+    // 割り当て済みになったメールを未分類リストから除去する
+    get().removeUnclassifiedMail(payload.mail_id);
+    // 割り当て先の案件を表示中なら一覧を取り直して新着行を反映する
+    const viewing = useProjectStore.getState().selectedProjectId;
+    if (viewing === payload.project_id) {
+      void get().fetchThreadsByProject(payload.project_id);
+    }
+  },
+
+  initMailAssignedListener: async () => {
+    // 埋め込みマップウィンドウが割り当て成功時に emit する（設計書
+    // 2026-07-22-embedding-map-window-design.md §4.4）
+    const unlisten = await listen<MailAssignedEvent>("mail-assigned", (event) => {
+      get().handleMailAssigned(event.payload);
     });
     return unlisten;
   },

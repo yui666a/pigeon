@@ -371,6 +371,7 @@ pub fn run() {
             commands::bulk_commands::bulk_move_mails,
             commands::embedding_map_commands::embedding_map_points,
             commands::embedding_map_commands::mail_preview,
+            commands::embedding_map_commands::embedding_map_projects,
         ])
         // `RunEvent` を扱うため build して run する。
         //

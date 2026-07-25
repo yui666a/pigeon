@@ -133,6 +133,27 @@ pub fn mail_preview(db: State<DbState>, mail_id: String) -> Result<MailPreview, 
     })
 }
 
+/// 案件パネル（D&D ドロップ先）用の軽量な案件情報。
+#[derive(serde::Serialize)]
+pub struct MapProject {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+}
+
+#[tauri::command]
+pub fn embedding_map_projects(db: State<DbState>) -> Result<Vec<MapProject>, AppError> {
+    let projects = db.with_conn(crate::db::projects::list_all_active_projects)?;
+    Ok(projects
+        .into_iter()
+        .map(|p| MapProject {
+            id: p.id,
+            name: p.name,
+            color: p.color,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

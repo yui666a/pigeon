@@ -14,3 +14,10 @@ export interface SyncProgress {
 export interface NewMailEvent {
   account_id: string;
 }
+
+/** "mail-assigned" イベント（埋め込みマップでの手動割り当て）のペイロード。
+ *  別ウィンドウが emit し、メインウィンドウが listen して表示へ反映する */
+export interface MailAssignedEvent {
+  mail_id: string;
+  project_id: string;
+}
