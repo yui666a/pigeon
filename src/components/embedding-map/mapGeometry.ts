@@ -53,12 +53,49 @@ export function worldToScreen(t: Transform, x: number, y: number): { sx: number;
   return { sx, sy };
 }
 
+/** 基底変換（全体を canvas に収める）の上に載る、画面座標のビュー変換。 */
+export interface View {
+  /** 拡大率。1 = 全体表示 */
+  k: number;
+  ox: number;
+  oy: number;
+}
+
+export const IDENTITY_VIEW: View = { k: 1, ox: 0, oy: 0 };
+export const MIN_ZOOM = 1;
+export const MAX_ZOOM = 40;
+
+export function applyView(v: View, sx: number, sy: number): { sx: number; sy: number } {
+  return { sx: sx * v.k + v.ox, sy: sy * v.k + v.oy };
+}
+
+/**
+ * カーソル位置 (cx, cy) を不動点にしてズームする。
+ * k がクランプで変わらない場合はオフセットも動かさない。
+ */
+export function zoomAt(v: View, cx: number, cy: number, factor: number): View {
+  const k = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, v.k * factor));
+  if (k === v.k) return v;
+  const ratio = k / v.k;
+  return {
+    k,
+    ox: cx - (cx - v.ox) * ratio,
+    oy: cy - (cy - v.oy) * ratio,
+  };
+}
+
+export function panBy(v: View, dx: number, dy: number): View {
+  return { k: v.k, ox: v.ox + dx, oy: v.oy + dy };
+}
+
 /**
  * 画面座標(sx,sy) に最も近い点を radius(px) 以内で返す。無ければ null。
+ * 点の画面位置は基底変換 t にビュー変換 view を重ねて求める。
  */
 export function hitTest(
   points: MapPoint[],
   t: Transform,
+  view: View,
   sx: number,
   sy: number,
   radius: number,
@@ -66,7 +103,8 @@ export function hitTest(
   let best: MapPoint | null = null;
   let bestDist = radius * radius;
   for (const p of points) {
-    const s = worldToScreen(t, p.x, p.y);
+    const base = worldToScreen(t, p.x, p.y);
+    const s = applyView(view, base.sx, base.sy);
     const dx = s.sx - sx;
     const dy = s.sy - sy;
     const d = dx * dx + dy * dy;
