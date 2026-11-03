@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `unwrap()` / `expect()` はテストコード以外で使用しない（agent.md）
+- `unwrap()` / `expect()` はテストコード以外で使用しない（AGENTS.md）
 - アプリケーションエラーは `AppError`（thiserror）で定義する
 - `cargo fmt` はリポジトリ全体でなく変更ファイルのみ整形する意識で行い、最後に `cargo fmt` 差分を確認する
 - マイグレーション番号の変更は本計画には無い（DB スキーマ非変更）

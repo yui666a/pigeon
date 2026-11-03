@@ -58,7 +58,7 @@ import DOMPurify from "dompurify";
 mousedown → mousemove → mouseup のドラッグ処理（5px スレッショルド判定、dragStore 操作、グローバルイベントリスナーの登録/解除）が 2 箇所に重複している。
 変更時に片方だけ修正して不整合が生じるリスクがある。
 
-また、`MailDragItem` が `UnclassifiedList.tsx` 内にインラインで定義されており、agent.md の「1ファイル1コンポーネント」ルールにも違反している。
+また、`MailDragItem` が `UnclassifiedList.tsx` 内にインラインで定義されており、AGENTS.md の「1ファイル1コンポーネント」ルールにも違反している。
 
 **対策**:
 1. `src/hooks/useDrag.ts` にカスタムフックとして抽出する
@@ -249,7 +249,7 @@ const submitRename = async () => {
 **関数**: `OllamaClassifier::new()`
 
 **問題**:
-`reqwest::Client` の構築で `.expect()` を使用しており、agent.md の「テストコード以外で unwrap() / expect() を使用しない」ルールに違反している。
+`reqwest::Client` の構築で `.expect()` を使用しており、AGENTS.md の「テストコード以外で unwrap() / expect() を使用しない」ルールに違反している。
 
 ```rust
 // 現状（違反）

@@ -24,7 +24,7 @@
 - `src-tauri/src/db/assignments.rs` — `get_top_senders` 追加
 - `src-tauri/src/db/projects.rs` — `build_project_summaries` に `top_senders` と件名10件
 - `src-tauri/src/classifier/prompt.rs` — `Frequent senders` 行、`SYSTEM_PROMPT` 追記、テストヘルパ/テスト更新
-- `agent.md`, `docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md`, `docs/superpowers/specs/2026-07-09-project-directory-context-design.md` — 文字数記述
+- `AGENTS.md`, `docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md`, `docs/superpowers/specs/2026-07-09-project-directory-context-design.md` — 文字数記述
 - `src/components/sidebar/LlmSettingsDialog.tsx` — 警告バナー文言
 
 ---
@@ -430,14 +430,14 @@ git commit -m "feat(classifier): プロンプトに案件の頻出送信者を�
 ## Task 5: セキュリティルール・警告文言の更新（300→1000）
 
 **Files:**
-- Modify: `agent.md`
+- Modify: `AGENTS.md`
 - Modify: `docs/superpowers/specs/2026-07-09-project-directory-context-design.md`
 - Modify: `docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md`
 - Modify: `src/components/sidebar/LlmSettingsDialog.tsx`
 
-- [ ] **Step 1: agent.md の文字数を更新**
+- [ ] **Step 1: AGENTS.md の文字数を更新**
 
-`agent.md` のセキュリティルール行の「本文冒頭300文字」を「本文冒頭1000文字」に変更する（該当は1箇所）。
+`AGENTS.md` のセキュリティルール行の「本文冒頭300文字」を「本文冒頭1000文字」に変更する（該当は1箇所）。
 
 - [ ] **Step 2: 設計書の文字数を更新**
 
@@ -456,7 +456,7 @@ Expected: エラーなし・PASS（既存ダイアログテストは文言の部
 - [ ] **Step 5: コミット**
 
 ```bash
-git add agent.md docs/superpowers/specs/2026-07-09-project-directory-context-design.md docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md src/components/sidebar/LlmSettingsDialog.tsx
+git add AGENTS.md docs/superpowers/specs/2026-07-09-project-directory-context-design.md docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md src/components/sidebar/LlmSettingsDialog.tsx
 git commit -m "docs(classifier): LLM送信の本文文字数を300→1000に更新"
 ```
 

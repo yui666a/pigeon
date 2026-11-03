@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `unwrap()` / `expect()` はテストコード以外で使用しない（agent.md）
+- `unwrap()` / `expect()` はテストコード以外で使用しない（AGENTS.md）
 - アプリケーションエラーは `thiserror` で定義した `AppError` を使う
 - TDD: Red → Green → Refactor。テストを先に書く
 - コミットは Conventional Commits 形式。scope は `cli`, `mcp`, `usecase`, `ctx` 等

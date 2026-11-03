@@ -25,7 +25,7 @@
 
 プロバイダ選択を導入すると、この分散した構築ロジックが破綻する。よって**構築ロジックをファクトリ関数に集約する**リファクタリングを本作業の中核とする。既存の `LlmClassifier` / `TextGenerator` trait はすでに抽象化されているため、これを活かす。
 
-これは agent.md「不具合修正方針（負債を残しにくくする）」に沿い、その場しのぎの分岐追加ではなく構造の健全化を選ぶ判断である。
+これは AGENTS.md「不具合修正方針（負債を残しにくくする）」に沿い、その場しのぎの分岐追加ではなく構造の健全化を選ぶ判断である。
 
 ## 3. アーキテクチャ
 
@@ -109,7 +109,7 @@ pub fn set(conn: &Connection, key: &str, value: &str) -> Result<(), AppError>;
 | `claude_api_key` | Claude APIキー |
 | `openai_api_key` | 将来用 |
 
-APIキーを settings（平文DB）に置かないのは agent.md セキュリティルール（キー・トークンはOSキーチェーン相当に保存、SQLiteに平文で保存しない）に沿うため。Pigeon では「OSキーチェーン相当」＝ Stronghold（`SecureStore`）である。
+APIキーを settings（平文DB）に置かないのは AGENTS.md セキュリティルール（キー・トークンはOSキーチェーン相当に保存、SQLiteに平文で保存しない）に沿うため。Pigeon では「OSキーチェーン相当」＝ Stronghold（`SecureStore`）である。
 
 ## 5. Claude API 連携（ClaudeClassifier）
 
@@ -131,7 +131,7 @@ APIキーを settings（平文DB）に置かないのは agent.md セキュリ�
   ```
 - レスポンス: `content[0].text` に本文テキスト。ここから共通の JSON 抽出でパースする。
 
-送信データは既存ポリシー通り「件名・送信者・本文冒頭1000文字＋案件リスト＋（許可された場合の）案件ディレクトリコンテキスト」に限定する（agent.md / `2026-07-09-project-directory-context-design.md`）。プロンプト構築 (`classifier::prompt`) はプロバイダ非依存なので流用する。
+送信データは既存ポリシー通り「件名・送信者・本文冒頭1000文字＋案件リスト＋（許可された場合の）案件ディレクトリコンテキスト」に限定する（AGENTS.md / `2026-07-09-project-directory-context-design.md`）。プロンプト構築 (`classifier::prompt`) はプロバイダ非依存なので流用する。
 
 ### 5.1 モデル選択の根拠
 
@@ -176,7 +176,7 @@ claude_api_key_set: bool   // キー本体ではなく登録有無のみ
 - **Claude 選択時**:
   - APIキー入力（`type="password"`）。登録済みなら `••••••••` プレースホルダを表示し、空のまま保存すれば既存キー維持。
   - モデル自由入力欄（placeholder `claude-haiku-4-5`）。
-  - **警告バナー**を表示（agent.md: クラウドAPI選択時はユーザーに警告）。文言例: 「クラウドLLMを使用します。件名・送信者・本文冒頭1000文字と、許可した案件コンテキストが Anthropic に送信されます。」
+  - **警告バナー**を表示（AGENTS.md: クラウドAPI選択時はユーザーに警告）。文言例: 「クラウドLLMを使用します。件名・送信者・本文冒頭1000文字と、許可した案件コンテキストが Anthropic に送信されます。」
 - **接続テストボタン**: `test_llm_connection` を呼び、成功「接続成功」/失敗「接続失敗: <理由>」を表示。
 - **保存ボタン / 閉じるボタン**。
 
@@ -330,7 +330,7 @@ SA JSON → アクセストークン取得に `gcp_auth` クレート（`CustomS
 
 ### 12.9 セキュリティ
 
-- SA JSON は Stronghold 暗号保存。settings（平文 DB）・リポジトリには置かない（agent.md セキュリティルール準拠）。
+- SA JSON は Stronghold 暗号保存。settings（平文 DB）・リポジトリには置かない（AGENTS.md セキュリティルール準拠）。
 - クラウド送信の警告文言を Vertex 用に出す（送信先が Anthropic ではなく Google Cloud (Vertex AI) 上の Claude であることを明示）。送信データ範囲は既存ポリシー（件名・送信者・本文冒頭1000文字＋許可された案件コンテキスト）と同一。
 
 ### 12.10 影響ファイル（追加分）

@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `unwrap()` / `expect()` はテストコード以外で使用しない（agent.md）
+- `unwrap()` / `expect()` はテストコード以外で使用しない（AGENTS.md）
 - アプリケーションエラーは `thiserror` の `AppError`（error.rs）。新バリアントは追加しない。JSON パース失敗・未登録名・ゲート拒否は全て `AppError::Validation(String)` に載せる
 - モジュール名 snake_case / 構造体・enum PascalCase / 関数 snake_case
 - TDD: Red → Green → Refactor。新しいロジックはテストを先に書く

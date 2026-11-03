@@ -42,7 +42,7 @@ impl DbState {
 /// 必要とする操作の時点まで初期化を遅延させる。
 ///
 /// 初期化に失敗した場合は panic せず `AppError` を呼び出し元のコマンドへ伝播する
-/// （agent.md の unwrap/expect 禁止規約。遅延化後の失敗は既にウィンドウが出ている
+/// （AGENTS.md の unwrap/expect 禁止規約。遅延化後の失敗は既にウィンドウが出ている
 /// 時点で起きるため、落とすのは体験上最悪である）。失敗は記憶されないため、
 /// 次回アクセス時に再試行される。
 ///
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn test_secure_store_init_failure_returns_error_instead_of_panicking() {
         // 遅延化後の失敗はウィンドウ表示後に起きる。panic せず
-        // 呼び出し元のコマンドへ伝播すること（agent.md の expect 禁止規約）
+        // 呼び出し元のコマンドへ伝播すること（AGENTS.md の expect 禁止規約）
         let state =
             SecureStoreState::lazy(|| Err(AppError::Stronghold("keychain unavailable".into())));
         let err = match state.get() {

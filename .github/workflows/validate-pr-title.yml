@@ -31,7 +31,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # https://github.com/amannn/action-semantic-pull-request#configuration
         # type はアクションのデフォルト（feat/fix/docs/style/refactor/perf/test/build/ci/chore/revert）。
-        # scopes は指定しない: agent.md のスコープ定義は非網羅（mail-sync, classifier, search, ui, db 等）
+        # scopes は指定しない: AGENTS.md のスコープ定義は非網羅（mail-sync, classifier, search, ui, db 等）
         # のため、任意のスコープを許容する（スコープ省略も可）
         with:
           # タイトルのprefixに [WIP] があれば検証を保留にする

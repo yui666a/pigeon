@@ -88,7 +88,7 @@ GCP プロジェクト ID のようにセンシティブ度が中程度の値は
 
 ### 全部 SQLite に置く（秘密も含む）
 
-実装が単純で読み書きも一元化できるが、DB ファイル流出＝資格情報流出となり、セキュリティルール（`agent.md`）に真っ向から反する。却下。
+実装が単純で読み書きも一元化できるが、DB ファイル流出＝資格情報流出となり、セキュリティルール（`AGENTS.md`）に真っ向から反する。却下。
 
 ### 環境変数で秘密を渡す
 
@@ -129,4 +129,4 @@ OAuth クライアント ID/シークレットの供給（2026-07-16 追記）: 
 - `docs/design/2026-04-12-pigeon-design.md`（OS キーチェーン、`tauri-plugin-stronghold`、SQLite に平文保存しない方針）
 - `docs/design/2026-04-13-oauth-support-design.md`（OAuth 2.0 / PKCE / deep-link、Stronghold キー体系 `oauth_{id}` / `password_{id}`）
 - `docs/design/2026-07-10-llm-provider-selection-design.md`（SecureStore = Stronghold、API キー / サービスアカウント JSON の暗号化保管、非機密は settings テーブル）
-- `agent.md` セキュリティルール（パスワード / OAuth トークン / API キーは OS キーチェーンに保存、SQLite に平文保存しない）
+- `AGENTS.md` セキュリティルール（パスワード / OAuth トークン / API キーは OS キーチェーンに保存、SQLite に平文保存しない）
