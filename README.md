@@ -45,7 +45,7 @@ cd src-tauri && cargo clippy -- -D warnings
 pnpm tauri build                           # リリースビルド
 ```
 
-開発フロー・Git戦略・コーディング規約は [CONTRIBUTING.md](CONTRIBUTING.md) と [agent.md](agent.md) を参照。
+開発フロー・Git戦略・コーディング規約は [CONTRIBUTING.md](CONTRIBUTING.md) と [AGENTS.md](AGENTS.md) を参照。
 
 ## 📁 プロジェクト構成
 

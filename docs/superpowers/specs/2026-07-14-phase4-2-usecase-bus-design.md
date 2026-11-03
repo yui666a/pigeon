@@ -366,7 +366,7 @@ test / 将来の driver
 - JSON パース失敗 → `AppError::Validation`。
 - 未登録 name → `AppError::Validation`。
 - Reversible / Sensitive のゲート拒否 → `AppError::Validation`（4-4 で置換）。
-- `unwrap()` / `expect()` はテスト以外で使わない（agent.md）。
+- `unwrap()` / `expect()` はテスト以外で使わない（AGENTS.md）。
 
 ## テスト戦略（TDD: Red → Green → Refactor）
 

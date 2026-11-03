@@ -69,7 +69,7 @@ cancel():
 
 ### 4.1 削除
 
-一括ループとその周辺は逐次制御に置き換わるため削除する（agent.md「その場しのぎで残さない」）:
+一括ループとその周辺は逐次制御に置き換わるため削除する（AGENTS.md「その場しのぎで残さない」）:
 
 - `commands/classify_commands.rs`:
   - `classify_unassigned` 関数

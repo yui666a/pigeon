@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- `unwrap()` / `expect()` はテストコード以外で使用しない（agent.md）
+- `unwrap()` / `expect()` はテストコード以外で使用しない（AGENTS.md）
 - アプリケーションエラーは `thiserror` の `AppError` で定義済み。use case / Ctx は `Result<T, AppError>` を返す
 - Tauri commands は `Result<T, String>` ではなく既存踏襲で `Result<T, AppError>`（`AppError` は Serialize 実装済み）
 - モジュール名 snake_case / 構造体 PascalCase / 関数 snake_case

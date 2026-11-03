@@ -73,7 +73,7 @@
 
 本文送信文字数を 300 → 1000 に変更するため、関連ドキュメントの記述を更新する。
 
-- `agent.md`（= `CLAUDE.md` が読む本体）のセキュリティルール:
+- `AGENTS.md`（= `CLAUDE.md` が読む本体）のセキュリティルール:
   「本文冒頭300文字」→「本文冒頭1000文字」。
 - `docs/superpowers/specs/2026-07-09-project-directory-context-design.md` に本文文字数の記述があれば整合させる。
 - `docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md` の警告バナー文言（「本文冒頭300文字」）→「本文冒頭1000文字」。
@@ -118,7 +118,7 @@ HTTP 実通信はテストしない（プロンプト整形とクエリのユニ
 - `src-tauri/src/classifier/prompt.rs` — `Frequent senders` 行、`SYSTEM_PROMPT` 追記、テスト更新
 
 **ドキュメント / UI**
-- `agent.md` — セキュリティルールの文字数
+- `AGENTS.md` — セキュリティルールの文字数
 - `docs/superpowers/specs/2026-07-10-llm-provider-selection-design.md` — 警告文言
 - `docs/superpowers/specs/2026-07-09-project-directory-context-design.md` — 本文文字数の整合（該当があれば）
 - `src/components/sidebar/LlmSettingsDialog.tsx` — 警告バナー文言

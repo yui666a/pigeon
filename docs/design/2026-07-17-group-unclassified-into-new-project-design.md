@@ -68,7 +68,7 @@ clearSelection() + fetchUnclassified(accountId)           ← 既存
 
 ### 4.2 送信境界（セキュリティ）
 
-`agent.md` セキュリティルールおよび `2026-07-09-project-directory-context-design.md` の送信可否ポリシーに従う。
+`AGENTS.md` セキュリティルールおよび `2026-07-09-project-directory-context-design.md` の送信可否ポリシーに従う。
 
 - LLM へ送るのは **選択メールそれぞれの 件名・送信者・本文冒頭1000文字** のみ。
 - 未分類メールは案件ディレクトリに紐づいていないため、**ディレクトリ由来コンテキストは一切送らない**。
